@@ -1,0 +1,86 @@
+[package]
+name = "qdrant-datafusion"
+version = "0.1.0"
+edition = "2024"
+authors = ["George Lee Patterson <patterson.george@gmail.com>"]
+description = "Qdrant integration for Apache DataFusion"
+license = "Apache-2.0"
+keywords = ["qdrant", "datafusion", "arrow", "vector-search", "search-engine"]
+categories = ["Database Interfaces"]
+repository = "https://github.com/georgeleepatterson/qdrant-datafusion"
+homepage = "https://github.com/georgeleepatterson/qdrant-datafusion"
+documentation = "https://docs.rs/qdrant-datafusion"
+
+[features]
+
+# -- Testing --
+test-utils = ["dep:testcontainers", "dep:tracing-subscriber", "dep:tokio"]
+
+[dependencies]
+thiserror = "2.0.16"
+tracing = "0.1.41"
+
+# Optional
+testcontainers = { version = "0.25", optional = true }
+tokio = { version = "1", features = ["sync", "rt", "macros"], optional = true }
+tracing-subscriber = { version = "0.3", features = [
+    "fmt",
+    "env-filter",
+], optional = true }
+qdrant-client = "1.15.0"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+# Detects large stack-allocated futures that may cause stack overflow crashes (see threshold in clippy.toml)
+large_futures = "warn"
+clone_on_ref_ptr = "warn"
+must_use_candidate = "allow"
+
+[lints.rust]
+unused_imports = "deny"
+elided_lifetimes_in_paths = "deny"
+explicit_outlives_requirements = "warn"
+let_underscore_drop = "warn"
+missing_copy_implementations = "warn"
+redundant_lifetimes = "warn"
+rust_2024_incompatible_pat = "warn"
+single_use_lifetimes = "warn"
+trivial_numeric_casts = "warn"
+unit_bindings = "warn"
+unnameable_types = "warn"
+unreachable_pub = "warn"
+unsafe_op_in_unsafe_fn = "warn"
+unused_crate_dependencies = "warn"
+unused_import_braces = "warn"
+unused_lifetimes = "warn"
+unused_macro_rules = "warn"
+unused_results = "warn"
+unused_qualifications = "warn"
+variant_size_differences = "warn"
+
+[profile.release-with-debug]
+inherits = "release"
+debug = "full"
+
+[profile.release-lto]
+inherits = "release"
+lto = true
+opt-level = 3
+codegen-units = 1
+
+[profile.ci]
+inherits = "dev"
+incremental = false
+
+# ci turns off debug info, etc. for dependencies to allow for smaller binaries making caching more effective
+[profile.ci.package."*"]
+debug = false
+debug-assertions = false
+strip = "debuginfo"
+incremental = false
+
+# INTEGRATION TESTS
+
+[[test]]
+name = "e2e"
+required-features = ["test-utils"]
