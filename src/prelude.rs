@@ -10,3 +10,4 @@ mod reexports {
 pub use reexports::*;
 
 pub use crate::error::Result;
+pub use crate::table::{QdrantScanExec, QdrantTableProvider};
