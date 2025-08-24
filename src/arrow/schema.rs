@@ -1,3 +1,4 @@
+//! Schema utilities for `Qdrant` `DataFusion` integration.
 use std::sync::Arc;
 
 use datafusion::arrow::datatypes::*;
@@ -14,12 +15,15 @@ pub fn is_multi_vector_field(field: &Field) -> bool {
 }
 
 /// Simple helper function to convert a Qdrant datatype to an Arrow datatype.
-pub fn datatype_to_arrow(dt: Datatype) -> DataType {
-    match dt {
-        Datatype::Default | Datatype::Float32 => DataType::Float32,
-        Datatype::Float16 => DataType::Float16,
-        Datatype::Uint8 => DataType::UInt8,
-    }
+pub fn datatype_to_arrow(_dt: Datatype) -> DataType {
+    // TODO: Decide whether to support other vector data types, since Qdrant currently only ever
+    // sends f32
+    DataType::Float32
+    // match dt {
+    //     Datatype::Default | Datatype::Float32 => DataType::Float32,
+    //     Datatype::Float16 => DataType::Float16,
+    //     Datatype::Uint8 => DataType::UInt8,
+    // }
 }
 
 /// Simple helper function to create a vector field

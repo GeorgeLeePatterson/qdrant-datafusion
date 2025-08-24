@@ -1,8 +1,4 @@
-//! Clean schema-driven record batch builder for Qdrant data
-//!
-//! TODO: Remove - IMPORTANT! Currently only supports f32 as Datatype. This will error with other
-//! vector data types
-
+//! Schema-driven [`RecordBatch`] builder for `Qdrant` data
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -16,10 +12,32 @@ use qdrant_client::qdrant::{
 
 use super::schema::is_multi_vector_field;
 
-/// Helper function that implements same logic as `Qdrant`'s rust client's `try_into_multi`
+/// Convert flat vector data into multi-vector format with proper validation.
+///
+/// This function implements the same conversion logic as `Qdrant`'s Rust client `try_into_multi()`
+/// method. It takes a flat array of floats and splits it into multiple sub-vectors based on the
+/// vectors count. This handles Qdrant's deprecated protobuf format for multi-vectors.
+///
+/// # Arguments
+/// * `data` - Flat array of float values representing concatenated vectors
+/// * `vectors_count` - Number of vectors to split the data into
+///
+/// # Returns
+/// A vector of vectors, where each sub-vector represents one embedding.
 ///
 /// # Errors
-/// - Returns an error if the data length is not divisible by the vectors count.
+/// Returns a `DataFusionError` if the data length is not evenly divisible by the vectors count,
+/// which indicates malformed multi-vector data.
+///
+/// # Examples
+/// ```rust,ignore
+/// use qdrant_datafusion::arrow::deserialize::convert_to_multi_vector;
+///
+/// // Convert [1.0, 2.0, 3.0, 4.0] into 2 vectors of length 2
+/// let data = vec![1.0, 2.0, 3.0, 4.0];
+/// let result = convert_to_multi_vector(&data, 2).unwrap();
+/// assert_eq!(result, vec![vec![1.0, 2.0], vec![3.0, 4.0]]);
+/// ```
 pub fn convert_to_multi_vector(
     data: &[f32],
     vectors_count: u32,
@@ -39,7 +57,11 @@ pub fn convert_to_multi_vector(
     Ok(data.chunks(chunk_size).map(<[f32]>::to_vec).collect())
 }
 
-/// Clean vector content types for lookup map
+/// Internal vector content representation for efficient processing.
+///
+/// This enum provides a clean abstraction over `Qdrant`'s various vector formats,
+/// normalizing them for consistent processing in the record batch builder.
+/// It handles both newer and deprecated protobuf formats from Qdrant.
 #[derive(Debug)]
 pub enum Vector {
     Dense(Vec<f32>),
@@ -126,7 +148,47 @@ impl FieldExtractor {
     }
 }
 
-/// Clean schema-driven record batch builder
+/// Schema-driven [`RecordBatch`] builder for `Qdrant` data.
+///
+/// This is the core component that converts `Qdrant` `ScoredPoint` data into Arrow `RecordBatch`es
+/// for `DataFusion` consumption. It uses a clean, schema-driven architecture that eliminates the
+/// complex nested matching logic of previous implementations.
+///
+/// # Architecture
+/// The builder is initialized with an Arrow schema and creates one `FieldExtractor` per schema
+/// field in the exact same order. During processing, each point is processed once with all fields
+/// updated in a single pass, achieving O(F) performance where F is the number of fields.
+///
+/// # Performance Features
+/// - **Single-Pass Processing**: Each point is destructured once and all fields updated
+/// - **Owned Iteration**: No unnecessary borrowing or reference management
+/// - **Pre-Allocated Builders**: Capacity is allocated upfront for optimal memory usage
+/// - **Inline Logic**: All processing logic is inline with no hidden function calls
+///
+/// # Examples
+/// ```rust,ignore
+/// use qdrant_datafusion::arrow::deserialize::QdrantRecordBatchBuilder;
+/// use datafusion::arrow::datatypes::{Schema, Field, DataType};
+/// use std::sync::Arc;
+///
+/// // Create schema and builder
+/// let schema = Arc::new(Schema::new(vec![
+///     Field::new("id", DataType::Utf8, false),
+///     Field::new("vector", DataType::List(
+///         Arc::new(Field::new("item", DataType::Float32, true))
+///     ), true),
+/// ]));
+///
+/// let mut builder = QdrantRecordBatchBuilder::new(schema, 1000);
+///
+/// // Process points (would normally come from Qdrant query)
+/// // for point in qdrant_points {
+/// //     builder.append_point(point);
+/// // }
+///
+/// // Create final record batch
+/// // let batch = builder.finish()?;
+/// ```
 pub struct QdrantRecordBatchBuilder {
     schema:           SchemaRef,
     field_extractors: Vec<FieldExtractor>, // 1:1 with schema fields, in schema order

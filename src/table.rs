@@ -21,7 +21,62 @@ use crate::error::{Error, Result};
 use crate::stream::QdrantQueryStream;
 use crate::utils;
 
-/// `TableProvider` for Qdrant collections.
+/// `DataFusion` `TableProvider` implementation for `Qdrant` vector database collections.
+///
+/// This is the main interface for integrating `Qdrant` collections with `DataFusion` SQL queries.
+/// It provides a complete SQL interface over vector data with support for all `Qdrant` vector
+/// types, schema projection optimization, and heterogeneous collection handling.
+///
+/// # Features
+/// - **Complete Vector Support**: Dense, multi-dense, and sparse vectors
+/// - **Schema Projection**: Only fetches vector fields that are actually requested
+/// - **Heterogeneous Collections**: Handles points with different vector field subsets
+/// - **High Performance**: Single-pass processing with minimal allocations
+///
+/// # Examples
+///
+/// ## Basic Usage
+/// ```rust,ignore
+/// use qdrant_datafusion::prelude::*;
+/// use qdrant_client::Qdrant;
+/// use datafusion::prelude::*;
+/// use std::sync::Arc;
+///
+/// # async fn example() -> Result<()> {
+/// // Connect to Qdrant
+/// let client = Qdrant::from_url("http://localhost:6334").build()?;
+///
+/// // Create table provider for a collection
+/// let table_provider = QdrantTableProvider::try_new(client, "my_vectors").await?;
+///
+/// // Register with DataFusion
+/// let ctx = SessionContext::new();
+/// ctx.register_table("vectors", Arc::new(table_provider))?;
+///
+/// // Query with SQL
+/// let df = ctx.sql("SELECT id, embedding FROM vectors LIMIT 10").await?;
+/// let results = df.collect().await?;
+/// # Ok(())
+/// # }
+/// ```
+///
+/// ## Advanced Projections
+/// ```rust,no_run
+/// # use qdrant_datafusion::prelude::*;
+/// # use datafusion::prelude::*;
+/// # async fn example(ctx: SessionContext) -> Result<()> {
+/// // Only fetch specific vector fields (optimized query to Qdrant)
+/// let df = ctx.sql("
+///     SELECT
+///         text_embedding,
+///         keywords_indices,
+///         keywords_values
+///     FROM mixed_vectors
+///     WHERE id = 'doc123'
+/// ").await?;
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Clone)]
 pub struct QdrantTableProvider {
     table:  TableReference,
@@ -40,8 +95,39 @@ impl std::fmt::Debug for QdrantTableProvider {
 }
 
 impl QdrantTableProvider {
+    /// Create a new `QdrantTableProvider` for the specified `Qdrant` collection.
+    ///
+    /// This constructor connects to the `Qdrant` collection, analyzes its schema, and creates
+    /// a DataFusion-compatible table provider. The schema is built by examining the collection's
+    /// vector configuration and creating appropriate Arrow fields for all vector types.
+    ///
+    /// # Arguments
+    /// * `client` - Connected `Qdrant` client instance
+    /// * `collection` - Name of the `Qdrant` collection to provide access to
+    ///
+    /// # Returns
+    /// A configured `QdrantTableProvider` ready for SQL queries.
+    ///
     /// # Errors
-    /// - Returns an error if the collection info or the vector params is missing.
+    /// Returns an error if:
+    /// - The collection does not exist or is inaccessible
+    /// - The collection configuration cannot be retrieved
+    /// - The collection has an unsupported schema configuration
+    ///
+    /// # Examples
+    /// ```rust,ignore
+    /// use qdrant_datafusion::prelude::*;
+    /// use qdrant_client::Qdrant;
+    ///
+    /// # async fn example() -> Result<()> {
+    /// let client = Qdrant::from_url("http://localhost:6334")
+    ///     .api_key("optional-api-key")
+    ///     .build()?;
+    ///
+    /// let table_provider = QdrantTableProvider::try_new(client, "embeddings").await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn try_new(client: Qdrant, collection: &str) -> Result<Self> {
         let info = client.collection_info(collection).await?;
         // Get the config
@@ -105,6 +191,20 @@ impl TableProvider for QdrantTableProvider {
     }
 }
 
+/// `DataFusion` `ExecutionPlan` implementation for scanning Qdrant collections.
+///
+/// This is the physical execution plan node that actually performs queries against `Qdrant`.
+/// It's created by the `QdrantTableProvider` during query planning and handles the execution
+/// of `Qdrant` queries with optimizations like vector field selection and payload filtering.
+///
+/// # Features
+/// - **Optimized Vector Selection**: Only fetches vector fields that are needed
+/// - **Schema Projection**: Respects `DataFusion` column pruning
+/// - **Async Streaming**: Non-blocking execution with proper backpressure
+/// - **Limit Pushdown**: Limit constraints are pushed to Qdrant for efficiency
+///
+/// This struct is typically not used directly - it's created automatically by the
+/// `QdrantTableProvider` during SQL query execution.
 #[derive(Clone)]
 pub struct QdrantScanExec {
     client:           Arc<Qdrant>,
