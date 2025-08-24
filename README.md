@@ -159,8 +159,8 @@ FROM homogeneous_collection;
 
 ## 🎯 Current Capabilities
 
-✅ **Complete TableProvider Implementation**
-- Full SQL querying via DataFusion
+✅ **Complete `TableProvider` Implementation**
+- Full SQL querying via `DataFusion`
 - All Qdrant vector types supported
 - Schema projection optimization
 - Proper null handling for missing fields
@@ -179,7 +179,7 @@ FROM homogeneous_collection;
 - **Advanced Filters**: Native Qdrant filter integration with SQL WHERE clauses
 
 🎯 **Planned**
-- **Multi-Database Joins**: Join Qdrant data with other DataFusion sources
+- **Multi-Database Joins**: Join Qdrant data with other `DataFusion` sources
 - **Vector Search UDFs**: `similarity()`, `recommend()`, `discover()` like functions
 - **Extension Nodes**: Custom physical plan nodes for complex vector operations
 
