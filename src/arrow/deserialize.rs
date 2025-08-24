@@ -286,9 +286,9 @@ mod tests {
         // Test the error path when data length is not divisible by vectors count
         let data = vec![1.0, 2.0, 3.0]; // length = 3
         let vectors_count = 2; // 3 % 2 != 0
-        
+
         let result = convert_to_multi_vector(&data, vectors_count);
-        
+
         assert!(result.is_err());
         if let Err(DataFusionError::External(boxed_error)) = result {
             let error_msg = boxed_error.to_string();
@@ -301,18 +301,18 @@ mod tests {
 
     #[test]
     fn test_vector_from_new_format() {
-        use qdrant_client::qdrant::{vector_output, DenseVector, SparseVector, MultiDenseVector};
+        use qdrant_client::qdrant::{DenseVector, MultiDenseVector, SparseVector, vector_output};
 
         // Test newer format dense vector (lines 55-59)
         let dense_vector_output = VectorOutput {
-            vector: Some(vector_output::Vector::Dense(DenseVector {
+            vector:        Some(vector_output::Vector::Dense(DenseVector {
                 data: vec![1.0, 2.0, 3.0],
             })),
-            data: vec![], // Should be ignored when vector.is_some()
-            indices: None,
+            data:          vec![], // Should be ignored when vector.is_some()
+            indices:       None,
             vectors_count: None,
         };
-        
+
         let result = Vector::from_vector_output(dense_vector_output);
         if let Some(Vector::Dense(data)) = result {
             assert_eq!(data, vec![1.0, 2.0, 3.0]);
@@ -322,15 +322,15 @@ mod tests {
 
         // Test newer format sparse vector
         let sparse_vector_output = VectorOutput {
-            vector: Some(vector_output::Vector::Sparse(SparseVector {
+            vector:        Some(vector_output::Vector::Sparse(SparseVector {
                 indices: vec![0, 2, 5],
-                values: vec![0.1, 0.2, 0.3],
+                values:  vec![0.1, 0.2, 0.3],
             })),
-            data: vec![], // Should be ignored
-            indices: None,
+            data:          vec![], // Should be ignored
+            indices:       None,
             vectors_count: None,
         };
-        
+
         let result = Vector::from_vector_output(sparse_vector_output);
         if let Some(Vector::Sparse(sparse)) = result {
             assert_eq!(sparse.indices, vec![0, 2, 5]);
@@ -341,17 +341,16 @@ mod tests {
 
         // Test newer format multi-dense vector
         let multi_vector_output = VectorOutput {
-            vector: Some(vector_output::Vector::MultiDense(MultiDenseVector {
-                vectors: vec![
-                    DenseVector { data: vec![1.0, 2.0] },
-                    DenseVector { data: vec![3.0, 4.0] },
-                ],
+            vector:        Some(vector_output::Vector::MultiDense(MultiDenseVector {
+                vectors: vec![DenseVector { data: vec![1.0, 2.0] }, DenseVector {
+                    data: vec![3.0, 4.0],
+                }],
             })),
-            data: vec![], // Should be ignored
-            indices: None,
+            data:          vec![], // Should be ignored
+            indices:       None,
             vectors_count: None,
         };
-        
+
         let result = Vector::from_vector_output(multi_vector_output);
         if let Some(Vector::MultiDense(multi)) = result {
             assert_eq!(multi, vec![vec![1.0, 2.0], vec![3.0, 4.0]]);
