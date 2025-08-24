@@ -106,33 +106,6 @@ let df = ctx.sql("SELECT text_embedding FROM vectors").await?;
 | **Multi** | `List<List<Float32>>` | Multiple embeddings per field | `SELECT multi_embeddings FROM docs` |
 | **Sparse** | `List<UInt32>` + `List<Float32>` | Efficient sparse vectors | `SELECT keywords_indices, keywords_values FROM docs` |
 
-## 🏗️ Architecture
-
-### Schema-Driven Design
-Built around a clean, schema-driven architecture that eliminates complex matching logic and leaves room for future expansion:
-
-```rust
-// Schema defines extractors upfront
-enum FieldExtractor {
-    Id(StringBuilder),
-    Payload(StringBuilder),
-    DenseVector { name: String, builder: ListBuilder<Float32Builder> },
-    MultiVector { name: String, builder: ListBuilder<ListBuilder<Float32Builder>> },
-    SparseIndices { name: String, builder: ListBuilder<UInt32Builder> },
-    SparseValues { name: String, builder: ListBuilder<Float32Builder> },
-}
-
-// Single pass processing with owned iteration
-pub fn append_point(&mut self, point: ScoredPoint) {
-    let ScoredPoint { id, payload, vectors, .. } = point;
-    let vector_lookup = build_vector_lookup(vectors);
-
-    for extractor in &mut self.field_extractors {
-        // All logic inline - no hidden abstractions
-    }
-}
-```
-
 ## 🔧 Collection Types
 
 ### Named Collections (Heterogeneous)
@@ -166,7 +139,7 @@ FROM homogeneous_collection;
 - Proper null handling for missing fields
 
 ✅ **Production Ready**
-- > 90% test coverage with real Qdrant instances
+- 90% test coverage with real Qdrant instances
 - Comprehensive error handling
 - Memory-safe Rust implementation
 - Async streaming execution
@@ -198,15 +171,37 @@ cargo test --features test-utils
 just coverage
 ```
 
+
+## 🏗️ Architecture
+
+### Schema-Driven Design
+Built around a schema-driven architecture that reduces complex matching logic and leaves room for future expansion:
+
+```rust
+// Schema defines extractors upfront
+enum FieldExtractor {
+    Id(StringBuilder),
+    Payload(StringBuilder),
+    DenseVector { name: String, builder: ListBuilder<Float32Builder> },
+    MultiVector { name: String, builder: ListBuilder<ListBuilder<Float32Builder>> },
+    SparseIndices { name: String, builder: ListBuilder<UInt32Builder> },
+    SparseValues { name: String, builder: ListBuilder<Float32Builder> },
+}
+
+// Single pass processing with owned iteration
+pub fn append_point(&mut self, point: ScoredPoint) {
+    let ScoredPoint { id, payload, vectors, .. } = point;
+    let vector_lookup = build_vector_lookup(vectors);
+
+    for extractor in &mut self.field_extractors {
+        // All logic inline - no hidden abstractions
+    }
+}
+```
+
 ## 🤝 Contributing
 
-We welcome contributions! The codebase follows strict quality standards:
-- **Clean Architecture**: No nested iterations, massive functions, or hidden abstractions
-- **Rust Idioms**: Proper ownership, inline logic, and clear error handling
-- **Comprehensive Testing**: All features must have test coverage
-- **Documentation**: Public APIs must be well documented
-
-Please see [CONTRIBUTING.md](https://github.com/GeorgeLeePatterson/qdrant-datafusion/blob/main/CONTRIBUTING.md) for guidelines.
+We welcome contributions! Please see [CONTRIBUTING.md](https://github.com/GeorgeLeePatterson/qdrant-datafusion/blob/main/CONTRIBUTING.md) for guidelines.
 
 ## 📝 License
 
