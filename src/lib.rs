@@ -12,5 +12,5 @@ pub mod utils;
 
 #[cfg(feature = "test-utils")]
 mod dev_deps {
-    use {testcontainers as _, tokio as _, tracing_subscriber as _};
+    use {testcontainers as _, tokio as _, tracing as _, tracing_subscriber as _};
 }

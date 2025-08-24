@@ -1,6 +1,6 @@
 [package]
 name = "qdrant-datafusion"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 authors = ["George Lee Patterson <patterson.george@gmail.com>"]
 description = "Qdrant integration for Apache DataFusion"
@@ -11,20 +11,27 @@ repository = "https://github.com/georgeleepatterson/qdrant-datafusion"
 homepage = "https://github.com/georgeleepatterson/qdrant-datafusion"
 documentation = "https://docs.rs/qdrant-datafusion"
 
+[package.metadata.docs.rs]
+all-features = false
+features = ["test-utils"]
+# Disable qdrant-client's build script that generates snippets
+default-target = "x86_64-unknown-linux-gnu"
+
 [features]
+default = []
 
 # -- Testing --
-test-utils = ["dep:testcontainers", "dep:tracing-subscriber", "dep:tokio"]
+test-utils = ["dep:testcontainers", "dep:tracing-subscriber", "dep:tokio", "dep:tracing"]
 
 [dependencies]
 async-trait = "0.1.89"
 datafusion = "49.0.1"
 datafusion-functions-json = "0.49.0"
 futures-util = "0.3"
-qdrant-client = "1.15.0"
+qdrant-client = { version = "1.15.0", default-features = false, features = ["serde"] }
 serde_json = "1.0"
 thiserror = "2.0.16"
-tracing = "0.1.41"
+tracing = { version = "0.1.41", optional = true }
 
 # Optional
 testcontainers = { version = "0.25", optional = true }

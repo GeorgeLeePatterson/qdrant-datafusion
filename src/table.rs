@@ -1,3 +1,4 @@
+//! `DataFusion` `TableProvider` implementation for `Qdrant` vector database collections.
 use std::any::Any;
 use std::sync::Arc;
 
@@ -157,7 +158,7 @@ impl TableProvider for QdrantTableProvider {
         &self,
         _state: &dyn Session,
         projection: Option<&Vec<usize>>,
-        _filters: &[Expr],
+        filters: &[Expr],
         limit: Option<usize>,
     ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
         // Apply projection to schema ONCE, here
@@ -177,6 +178,7 @@ impl TableProvider for QdrantTableProvider {
             projected_schema,
             vector_selector,
             payload_selector,
+            filters,
             limit,
         )))
     }
@@ -212,6 +214,7 @@ pub struct QdrantScanExec {
     schema:           SchemaRef, // Already projected
     vector_selector:  utils::VectorSelectorSpec,
     payload_selector: bool,
+    filter:           Arc<[Expr]>,
     limit:            Option<usize>,
     properties:       PlanProperties,
 }
@@ -236,6 +239,7 @@ impl QdrantScanExec {
         schema: SchemaRef,
         vector_selector: utils::VectorSelectorSpec,
         payload_selector: bool,
+        filter: &[Expr],
         limit: Option<usize>,
     ) -> Self {
         let properties = PlanProperties::new(
@@ -245,7 +249,16 @@ impl QdrantScanExec {
             Boundedness::Bounded,
         );
 
-        Self { client, collection, schema, vector_selector, payload_selector, limit, properties }
+        Self {
+            client,
+            collection,
+            schema,
+            vector_selector,
+            payload_selector,
+            filter: Arc::from(filter),
+            limit,
+            properties,
+        }
     }
 }
 
@@ -253,12 +266,13 @@ impl QdrantScanExec {
 ///
 /// # Errors
 /// - Returns an error if the query fails.
-pub async fn execute_qdrant_query(
+pub(crate) async fn execute_qdrant_query(
     client: Arc<Qdrant>,
     collection: String,
     schema: SchemaRef,
     vector_selector: utils::VectorSelectorSpec,
     payload_selector: bool,
+    _filters: &[Expr],
     limit: Option<usize>,
 ) -> DataFusionResult<RecordBatch> {
     // Build query using QueryPointsBuilder
@@ -331,6 +345,7 @@ impl ExecutionPlan for QdrantScanExec {
         let schema = Arc::clone(&self.schema);
         let vector_selector = self.vector_selector.clone();
         let payload_selector = self.payload_selector;
+        let filter = Arc::clone(&self.filter);
         let limit = self.limit;
         let inner = Box::pin(futures_util::stream::once(async move {
             execute_qdrant_query(
@@ -339,6 +354,7 @@ impl ExecutionPlan for QdrantScanExec {
                 schema,
                 vector_selector,
                 payload_selector,
+                &filter,
                 limit,
             )
             .await
