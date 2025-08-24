@@ -1,4 +1,4 @@
-//! Efficient record batch builder over `ScoredPoint` vectors
+//! Clean schema-driven record batch builder for Qdrant data
 //!
 //! TODO: Remove - IMPORTANT! Currently only supports f32 as Datatype. This will error with other
 //! vector data types
@@ -15,44 +15,36 @@ use qdrant_client::qdrant::{
 };
 
 use super::schema::is_multi_vector_field;
-use crate::arrow::convert_to_multi_vector;
 
-/// Owned vector data extracted from a point
-#[derive(Debug)]
-pub enum VectorData {
-    /// Single unnamed vector
-    Unnamed(Vector),
-    /// Multiple named vectors
-    Named(HashMap<String, Vector>),
+/// Helper function that implements same logic as `Qdrant`'s rust client's `try_into_multi`
+///
+/// # Errors
+/// - Returns an error if the data length is not divisible by the vectors count.
+pub fn convert_to_multi_vector(
+    data: &[f32],
+    vectors_count: u32,
+) -> DataFusionResult<Vec<Vec<f32>>> {
+    if data.len() % vectors_count as usize != 0 {
+        return Err(DataFusionError::External(Box::new(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "Malformed multi vector: data length {} is not divisible by vectors count {}",
+                data.len(),
+                vectors_count
+            ),
+        ))));
+    }
+
+    let chunk_size = data.len() / vectors_count as usize;
+    Ok(data.chunks(chunk_size).map(<[f32]>::to_vec).collect())
 }
 
-/// The vector values
+/// Clean vector content types for lookup map
 #[derive(Debug)]
 pub enum Vector {
     Dense(Vec<f32>),
     Sparse(SparseVector),
     MultiDense(Vec<Vec<f32>>),
-}
-
-impl VectorData {
-    /// Extract vector data from `ScoredPoint` vectors field
-    pub fn from_vectors(vectors: VectorsOutput) -> Option<Self> {
-        match vectors.vectors_options? {
-            vectors_output::VectorsOptions::Vector(vector) => {
-                let content = Vector::from_vector_output(vector)?;
-                Some(Self::Unnamed(content))
-            }
-            vectors_output::VectorsOptions::Vectors(named_vectors) => {
-                let mut named_content = HashMap::new();
-                for (name, vector_output) in named_vectors.vectors {
-                    if let Some(content) = Vector::from_vector_output(vector_output) {
-                        drop(named_content.insert(name, content));
-                    }
-                }
-                if named_content.is_empty() { None } else { Some(Self::Named(named_content)) }
-            }
-        }
-    }
 }
 
 impl Vector {
@@ -95,265 +87,138 @@ impl Vector {
     }
 }
 
-// pub trait VectorArrayBuilder {
-//     fn append(&mut self, vector: VectorData);
+/// Schema-driven field extractor - one per schema field
+enum FieldExtractor {
+    Id(StringBuilder),
+    Payload(StringBuilder),
+    DenseVector { name: String, builder: ListBuilder<Float32Builder> },
+    MultiVector { name: String, builder: ListBuilder<ListBuilder<Float32Builder>> },
+    SparseIndices { name: String, builder: ListBuilder<UInt32Builder> },
+    SparseValues { name: String, builder: ListBuilder<Float32Builder> },
+}
 
-//     fn finish(&mut self) -> ArrayRef;
-// }
+impl FieldExtractor {
+    /// Create field extractor from schema field
+    fn from_schema_field(field: &datafusion::arrow::datatypes::Field, capacity: usize) -> Self {
+        match field.name().as_str() {
+            "id" => Self::Id(StringBuilder::with_capacity(capacity, capacity * 16)),
+            "payload" => Self::Payload(StringBuilder::with_capacity(capacity, capacity * 64)),
+            name if name.ends_with("_indices") => Self::SparseIndices {
+                name:    name.to_string(),
+                builder: ListBuilder::with_capacity(UInt32Builder::new(), capacity),
+            },
+            name if name.ends_with("_values") => Self::SparseValues {
+                name:    name.to_string(),
+                builder: ListBuilder::with_capacity(Float32Builder::new(), capacity),
+            },
+            name if is_multi_vector_field(field) => Self::MultiVector {
+                name:    name.to_string(),
+                builder: ListBuilder::with_capacity(
+                    ListBuilder::new(Float32Builder::new()),
+                    capacity,
+                ),
+            },
+            name => Self::DenseVector {
+                name:    name.to_string(),
+                builder: ListBuilder::with_capacity(Float32Builder::new(), capacity),
+            },
+        }
+    }
+}
 
-// pub enum QdrantVectorBuilder {
-//     Dense(ListBuilder<Float32Builder>),
-//     Multi(ListBuilder<ListBuilder<Float32Builder>>),
-//     Sparse((ListBuilder<UInt32Builder>, ListBuilder<Float32Builder>)),
-// }
-
-// impl VectorArrayBuilder for QdrantVectorBuilder {
-//     fn append(&mut self, vector: VectorData) {
-//         match self {
-//             Self::Dense(builder) => builder.append(vector.data),
-//             Self::Multi(builder) => builder.append(vector.data),
-//             Self::Sparse((keys, values)) => {
-//                 keys.append(vector.keys);
-//                 values.append(vector.data);
-//             }
-//         }
-//     }
-
-//     fn finish(&mut self) -> ArrayRef {
-//         match self {
-//             Self::Dense(builder) => builder.finish(),
-//             Self::Multi(builder) => builder.finish(),
-//             Self::Sparse((keys, values)) => {
-//                 keys.finish();
-//                 values.finish();
-//             }
-//         }
-//     }
-// }
-
-/// Efficient record batch builder that destructures points once
+/// Clean schema-driven record batch builder
 pub struct QdrantRecordBatchBuilder {
-    schema: SchemaRef,
-
-    // Simple builders for non-vector fields
-    id_builder:      Option<StringBuilder>,
-    payload_builder: Option<StringBuilder>,
-
-    // Vector builders organized by field name
-    dense_builders:  HashMap<String, ListBuilder<Float32Builder>>,
-    multi_builders:  HashMap<String, ListBuilder<ListBuilder<Float32Builder>>>,
-    sparse_builders: HashMap<String, (ListBuilder<UInt32Builder>, ListBuilder<Float32Builder>)>,
+    schema:           SchemaRef,
+    field_extractors: Vec<FieldExtractor>, // 1:1 with schema fields, in schema order
 }
 
 impl QdrantRecordBatchBuilder {
     /// Create builder from schema with proper capacity allocation
     pub fn new(schema: SchemaRef, point_count: usize) -> Self {
-        let mut id_builder = None;
-        let mut payload_builder = None;
-        let mut dense_builders = HashMap::new();
-        let mut multi_builders = HashMap::new();
-        let mut sparse_builders = HashMap::new();
+        // Schema-driven initialization - one extractor per field, in schema order
+        let field_extractors = schema
+            .fields()
+            .iter()
+            .map(|field| FieldExtractor::from_schema_field(field, point_count))
+            .collect();
 
-        for field in schema.fields() {
-            match field.name().as_str() {
-                "id" => {
-                    id_builder = Some(StringBuilder::with_capacity(point_count, point_count * 16));
-                }
-                "payload" => {
-                    payload_builder =
-                        Some(StringBuilder::with_capacity(point_count, point_count * 64));
-                }
-                // Sparse vector (List<u32>, List<f32>)
-                name if name.ends_with("_indices") => {
-                    drop(sparse_builders.insert(
-                        name.trim_end_matches("_indices").to_string(),
-                        (
-                            ListBuilder::with_capacity(UInt32Builder::new(), point_count),
-                            ListBuilder::with_capacity(Float32Builder::new(), point_count),
-                        ),
-                    ));
-                }
-                // Handled via indices above
-                name if name.ends_with("_values") => {}
-                // Multi vector (List<List<T>>)
-                name if is_multi_vector_field(field) => drop(multi_builders.insert(
-                    name.to_string(),
-                    ListBuilder::with_capacity(
-                        ListBuilder::new(Float32Builder::new()),
-                        point_count,
-                    ),
-                )),
-                // Dense vector (List<T>)
-                name => drop(dense_builders.insert(
-                    name.to_string(),
-                    ListBuilder::with_capacity(Float32Builder::new(), point_count),
-                )),
-            }
-        }
-
-        Self {
-            schema,
-            id_builder,
-            payload_builder,
-            dense_builders,
-            multi_builders,
-            sparse_builders,
-        }
+        Self { schema, field_extractors }
     }
 
-    /// Append a point using owned destructuring
+    /// Append a point using owned destructuring - defines its own invariants
     pub fn append_point(&mut self, point: ScoredPoint) {
+        // Single destructuring
         let ScoredPoint { id, payload, vectors, .. } = point;
 
-        // Handle ID
-        if let Some(ref mut builder) = self.id_builder {
-            if let Some(id) = id {
-                match id.point_id_options {
-                    Some(point_id::PointIdOptions::Num(n)) => builder.append_value(n.to_string()),
-                    Some(point_id::PointIdOptions::Uuid(s)) => builder.append_value(s),
-                    None => builder.append_value(""),
-                }
-            } else {
-                builder.append_null();
-            }
-        }
+        // Build lookup once per point
+        let vector_lookup = build_vector_lookup(vectors);
 
-        // Handle payload
-        if let Some(ref mut builder) = self.payload_builder {
-            if !payload.is_empty()
-                && let Ok(json) = serde_json::to_string(&payload)
-            {
-                builder.append_value(json);
-            } else {
-                builder.append_null();
-            }
-        }
-
-        // Handle vectors
-        if let Some(owned_vectors) = vectors.and_then(VectorData::from_vectors) {
-            self.append_vector_data(owned_vectors);
-        } else {
-            // No vectors - append nulls to all vector builders
-            for builder in self.dense_builders.values_mut() {
-                builder.append(false);
-            }
-            for builder in self.multi_builders.values_mut() {
-                builder.append(false);
-            }
-            for (idxs, vals) in self.sparse_builders.values_mut() {
-                idxs.append(false);
-                vals.append(false);
-            }
-        }
-    }
-
-    /// Append owned vector data to appropriate builders
-    #[expect(clippy::too_many_lines)]
-    fn append_vector_data(&mut self, vector_data: VectorData) {
-        macro_rules! append_vector {
-            ($builder:expr, $data:expr) => {
-                if let Some(builder) = $builder {
-                    builder.values().append_slice($data);
-                    builder.append(true);
-                }
-            };
-            (multi => $builder:expr, $vectors:expr) => {
-                if let Some(builder) = $builder {
-                    for vector in $vectors {
-                        builder.values().values().append_slice(vector);
-                        builder.values().append(true);
-                    }
-                    builder.append(true);
-                }
-            };
-            (sparse => $builders:expr, $vectors:expr) => {
-                if let Some((idxs, vals)) = $builders {
-                    let SparseVector { indices, values } = $vectors;
-                    idxs.values().append_slice(indices);
-                    vals.values().append_slice(values);
-                    idxs.append(true);
-                    vals.append(true);
-                }
-            };
-        }
-
-        match vector_data {
-            VectorData::Unnamed(content) => {
-                // Handle unnamed vector (field name "vector")
-                match &content {
-                    Vector::Dense(data) => {
-                        append_vector!(self.dense_builders.get_mut("vector"), data);
-                    }
-                    Vector::MultiDense(vectors) => {
-                        append_vector!(multi => self.multi_builders.get_mut("vector"), vectors);
-                    }
-                    Vector::Sparse(sparse) => {
-                        append_vector!(sparse => self.sparse_builders.get_mut("vector"), sparse);
+        // Schema-driven extraction - inline logic, no hidden functions
+        for extractor in &mut self.field_extractors {
+            match extractor {
+                FieldExtractor::Id(builder) => {
+                    if let Some(id) = &id {
+                        match &id.point_id_options {
+                            Some(point_id::PointIdOptions::Num(n)) => {
+                                builder.append_value(n.to_string());
+                            }
+                            Some(point_id::PointIdOptions::Uuid(s)) => builder.append_value(s),
+                            None => builder.append_value(""),
+                        }
+                    } else {
+                        builder.append_null();
                     }
                 }
-                // Append nulls to other vector types that don't match
-                if !matches!(content, Vector::Dense(_)) {
-                    for builder in self.dense_builders.values_mut() {
+
+                FieldExtractor::Payload(builder) => {
+                    if !payload.is_empty()
+                        && let Ok(json) = serde_json::to_string(&payload)
+                    {
+                        builder.append_value(json);
+                    } else {
+                        builder.append_null();
+                    }
+                }
+
+                FieldExtractor::DenseVector { name, builder } => {
+                    if let Some(Vector::Dense(data)) = vector_lookup.get(name) {
+                        builder.values().append_slice(data);
+                        builder.append(true);
+                    } else {
                         builder.append(false);
                     }
                 }
-                if !matches!(content, Vector::MultiDense(_)) {
-                    for builder in self.multi_builders.values_mut() {
+
+                FieldExtractor::MultiVector { name, builder } => {
+                    if let Some(Vector::MultiDense(vectors)) = vector_lookup.get(name) {
+                        for vector in vectors {
+                            builder.values().values().append_slice(vector);
+                            builder.values().append(true);
+                        }
+                        builder.append(true);
+                    } else {
                         builder.append(false);
                     }
                 }
-                if !matches!(content, Vector::Sparse { .. }) {
-                    let sparse_builders = self
-                        .sparse_builders
-                        .iter_mut()
-                        .filter(|(n, _)| *n != "vector")
-                        .map(|(_, b)| b);
-                    for (idx, val) in sparse_builders {
-                        idx.append(false);
-                        val.append(false);
+
+                FieldExtractor::SparseIndices { name, builder } => {
+                    let sparse_name = name.trim_end_matches("_indices");
+                    if let Some(Vector::Sparse(sparse)) = vector_lookup.get(sparse_name) {
+                        builder.values().append_slice(&sparse.indices);
+                        builder.append(true);
+                    } else {
+                        builder.append(false);
                     }
                 }
-            }
-            VectorData::Named(named_vectors) => {
-                // Handle each named vector
-                for (name, content) in &named_vectors {
-                    match content {
-                        Vector::Dense(data) => {
-                            append_vector!(self.dense_builders.get_mut(name), data);
-                        }
-                        Vector::MultiDense(vectors) => {
-                            append_vector!(multi => self.multi_builders.get_mut(name), vectors);
-                        }
-                        Vector::Sparse(sparse) => {
-                            append_vector!(sparse => self.sparse_builders.get_mut(name), sparse);
-                        }
+
+                FieldExtractor::SparseValues { name, builder } => {
+                    let sparse_name = name.trim_end_matches("_values");
+                    if let Some(Vector::Sparse(sparse)) = vector_lookup.get(sparse_name) {
+                        builder.values().append_slice(&sparse.values);
+                        builder.append(true);
+                    } else {
+                        builder.append(false);
                     }
-                }
-                // Append nulls to builders that didn't get data
-                let dense_builders = self
-                    .dense_builders
-                    .iter_mut()
-                    .filter(|(n, _)| !named_vectors.contains_key(*n))
-                    .map(|(_, b)| b);
-                for builder in dense_builders {
-                    builder.append(false);
-                }
-                let multi_builders = self
-                    .multi_builders
-                    .iter_mut()
-                    .filter(|(n, _)| !named_vectors.contains_key(*n))
-                    .map(|(_, b)| b);
-                for builder in multi_builders {
-                    builder.append(false);
-                }
-                for (idx, val) in &mut self
-                    .sparse_builders
-                    .iter_mut()
-                    .filter(|(n, _)| !named_vectors.contains_key(*n))
-                    .map(|(_, b)| b)
-                {
-                    idx.append(false);
-                    val.append(false);
                 }
             }
         }
@@ -362,62 +227,52 @@ impl QdrantRecordBatchBuilder {
     /// Finish building and create the final `RecordBatch`
     ///
     /// # Errors
-    pub fn finish(mut self) -> DataFusionResult<RecordBatch> {
+    /// - Returns an error if `RecordBatch` creation fails.
+    pub fn finish(self) -> DataFusionResult<RecordBatch> {
         let mut arrays: Vec<ArrayRef> = Vec::with_capacity(self.schema.fields().len());
 
-        // Build arrays in schema order
-        for field in self.schema.fields() {
-            match field.name().as_str() {
-                "id" => {
-                    let Some(mut builder) = self.id_builder.take() else {
-                        return Err(DataFusionError::Internal("Missing ID builder".to_string()));
-                    };
-                    arrays.push(Arc::new(builder.finish()));
+        // Extract arrays from field extractors in schema order
+        for extractor in self.field_extractors {
+            let array: ArrayRef = match extractor {
+                FieldExtractor::Id(mut builder) | FieldExtractor::Payload(mut builder) => {
+                    Arc::new(builder.finish())
                 }
-                "payload" => {
-                    let Some(mut builder) = self.payload_builder.take() else {
-                        return Err(DataFusionError::Internal(
-                            "Missing payload builder".to_string(),
-                        ));
-                    };
-                    arrays.push(Arc::new(builder.finish()));
-                }
-                name if name.ends_with("_indices") => {
-                    let base_name = name.trim_end_matches("_indices");
-                    if let Some((idxs, _)) = self.sparse_builders.get_mut(base_name) {
-                        arrays.push(Arc::new(std::mem::take(idxs).finish()));
-                    } else {
-                        return Err(DataFusionError::Internal(format!(
-                            "Missing sparse indices builder for {base_name}"
-                        )));
-                    }
-                }
-                // Handled above
-                name if name.ends_with("_values") => {
-                    let base_name = name.trim_end_matches("_values");
-                    if let Some((_, vals)) = self.sparse_builders.get_mut(base_name) {
-                        arrays.push(Arc::new(std::mem::take(vals).finish()));
-                    } else {
-                        return Err(DataFusionError::Internal(format!(
-                            "Missing sparse values builder for {base_name}"
-                        )));
-                    }
-                }
-                name => {
-                    // Try multi-vector first, then dense
-                    if let Some(mut builder) = self.multi_builders.remove(name) {
-                        arrays.push(Arc::new(builder.finish()));
-                    } else if let Some(mut builder) = self.dense_builders.remove(name) {
-                        arrays.push(Arc::new(builder.finish()));
-                    } else {
-                        return Err(DataFusionError::Internal(format!(
-                            "Missing vector builder for {name}"
-                        )));
-                    }
-                }
-            }
+                FieldExtractor::DenseVector { mut builder, .. }
+                | FieldExtractor::SparseValues { mut builder, .. } => Arc::new(builder.finish()),
+                FieldExtractor::MultiVector { mut builder, .. } => Arc::new(builder.finish()),
+                FieldExtractor::SparseIndices { mut builder, .. } => Arc::new(builder.finish()),
+            };
+            arrays.push(array);
         }
+
         RecordBatch::try_new(self.schema, arrays)
             .map_err(|e| DataFusionError::ArrowError(Box::new(e), None))
     }
+}
+
+/// Simple helper - builds flat lookup map once per point
+fn build_vector_lookup(vectors: Option<VectorsOutput>) -> HashMap<String, Vector> {
+    let mut lookup = HashMap::new();
+
+    if let Some(vectors) = vectors {
+        match vectors.vectors_options {
+            Some(vectors_output::VectorsOptions::Vector(vector_output)) => {
+                // Unnamed case - use "vector" as key
+                if let Some(content) = Vector::from_vector_output(vector_output) {
+                    drop(lookup.insert("vector".to_string(), content));
+                }
+            }
+            Some(vectors_output::VectorsOptions::Vectors(named_vectors)) => {
+                // Named case - use actual names
+                for (name, vector_output) in named_vectors.vectors {
+                    if let Some(content) = Vector::from_vector_output(vector_output) {
+                        drop(lookup.insert(name, content));
+                    }
+                }
+            }
+            None => {}
+        }
+    }
+
+    lookup
 }
