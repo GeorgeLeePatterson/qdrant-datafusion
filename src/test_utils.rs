@@ -22,13 +22,13 @@ pub const GRPC_PORT_ENV: &str = "QDRANT_HTTP_PORT";
 pub const API_KEY_ENV: &str = "QDRANT_API_KEY";
 pub const QDRANT_API_KEY_ENV: &str = "QDRANT__SERVICE__API_KEY";
 
-const QDRANT_VERSION: &str = "latest";
-const QDRANT_REST_PORT: u16 = 6333;
-const QDRANT_GRPC_PORT: u16 = 6334;
-const QDRANT_ENDPOINT: &str = "localhost";
-const QDRANT_CONFIG_SRC: &str = "tests/bin/";
-const QDRANT_CONFIG_DEST: &str = "/qdrant/config/config.yaml";
-const QDRANT_API_KEY: &str = "qdrant-datafusion-api-key";
+pub const QDRANT_VERSION: &str = "latest";
+pub const QDRANT_REST_PORT: u16 = 6333;
+pub const QDRANT_GRPC_PORT: u16 = 6334;
+pub const QDRANT_ENDPOINT: &str = "localhost";
+pub const QDRANT_CONFIG_SRC: &str = "tests/bin/";
+pub const QDRANT_CONFIG_DEST: &str = "/qdrant/config/config.yaml";
+pub const QDRANT_API_KEY: &str = "qdrant-datafusion-api-key";
 
 // Initialize tracing in a test setup
 pub fn init_tracing(directives: Option<&[(&str, &str)]>) {

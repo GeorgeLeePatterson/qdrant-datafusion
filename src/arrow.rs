@@ -1,23 +1,12 @@
 //! Conversion utilities for `Qdrant` data types to `Arrow` data types.
+pub mod deserialize;
+pub mod schema;
 
 use std::sync::Arc;
 
 use datafusion::arrow::array::*;
-use datafusion::arrow::datatypes::*;
 use datafusion::error::{DataFusionError, Result as DataFusionResult};
-use qdrant_client::qdrant::{Datatype, ScoredPoint, point_id, vector_output, vectors_output};
-
-pub fn datatype_to_arrow(dt: Datatype) -> DataType {
-    match dt {
-        Datatype::Default | Datatype::Float32 => DataType::Float32,
-        Datatype::Float16 => DataType::Float16,
-        Datatype::Uint8 => DataType::UInt8,
-    }
-}
-
-pub fn create_vector_field(name: &str, dt: Datatype, nullable: bool) -> FieldRef {
-    Field::new(name, datatype_to_arrow(dt), nullable).into()
-}
+use qdrant_client::qdrant::{ScoredPoint, point_id, vector_output, vectors_output};
 
 /// Helper function that implements same logic as `Qdrant`'s rust client's `try_into_multi`
 ///

@@ -13,15 +13,10 @@ use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, Pla
 use datafusion::prelude::Expr;
 use datafusion::sql::TableReference;
 use qdrant_client::Qdrant;
-use qdrant_client::qdrant::{
-    CollectionConfig, Datatype, QueryPointsBuilder, VectorsSelector, vectors_config,
-};
+use qdrant_client::qdrant::{QueryPointsBuilder, VectorsSelector};
 
-use super::arrow::create_vector_field;
-use crate::arrow::{
-    extract_dense_vector_from_scored, extract_ids_from_scored, extract_payload_from_scored,
-    extract_sparse_indices_from_scored, extract_sparse_values_from_scored,
-};
+use crate::arrow::deserialize::QdrantRecordBatchBuilder;
+use crate::arrow::schema::collection_to_arrow_schema;
 use crate::error::{Error, Result};
 use crate::stream::QdrantQueryStream;
 use crate::utils;
@@ -49,104 +44,18 @@ impl QdrantTableProvider {
     /// - Returns an error if the collection info or the vector params is missing.
     pub async fn try_new(client: Qdrant, collection: &str) -> Result<Self> {
         let info = client.collection_info(collection).await?;
-
         // Get the config
         let config = info
             .result
             .ok_or(Error::MissingCollectionInfo(collection.into()))?
             .config
             .ok_or(Error::MissingCollectionInfo(collection.into()))?;
-        let schema = Self::build_schema(collection, &config)?;
-
+        let schema = collection_to_arrow_schema(collection, &config)?;
         Ok(Self {
             table:  TableReference::bare(collection),
             client: Arc::new(client),
             schema: Arc::new(schema),
         })
-    }
-
-    fn build_schema(collection: &str, config: &CollectionConfig) -> Result<Schema> {
-        let mut fields = vec![
-            // Always present - the point ID (can be numeric or UUID string)
-            Field::new("id", DataType::Utf8, false),
-        ];
-
-        // Get the params from config
-        let params =
-            config.params.as_ref().ok_or(Error::MissingCollectionInfoParams(collection.into()))?;
-
-        // Parse vectors_config if present
-        if let Some(vectors_config) = &params.vectors_config
-            && let Some(ref config) = vectors_config.config
-        {
-            match config {
-                vectors_config::Config::Params(vector_params) => {
-                    // Single unnamed vector
-                    fields.push(Field::new(
-                        "vector",
-                        DataType::List(create_vector_field("item", vector_params.datatype(), true)),
-                        false,
-                    ));
-                }
-                vectors_config::Config::ParamsMap(params_map) => {
-                    // Multiple named vectors
-                    for (name, vector_params) in &params_map.map {
-                        // Check if it's a multi-vector based on multivector_config
-                        if vector_params.multivector_config.is_some() {
-                            // Multi-vector (list of lists)
-                            fields.push(Field::new(
-                                name,
-                                DataType::List(Arc::new(Field::new(
-                                    "item",
-                                    DataType::List(create_vector_field(
-                                        "item",
-                                        vector_params.datatype(),
-                                        true,
-                                    )),
-                                    true,
-                                ))),
-                                false,
-                            ));
-                        } else {
-                            // Regular dense vector
-                            fields.push(Field::new(
-                                name,
-                                DataType::List(create_vector_field(
-                                    "item",
-                                    vector_params.datatype(),
-                                    true,
-                                )),
-                                false,
-                            ));
-                        }
-                    }
-                }
-            }
-        }
-
-        // Parse sparse_vectors_config if present
-        if let Some(sparse_config) = &params.sparse_vectors_config {
-            // SparseVectorConfig has a map field
-            for name in sparse_config.map.keys() {
-                // Sparse indices are always u32, regardless of index config datatype
-                fields.push(Field::new(
-                    format!("{name}_indices"),
-                    DataType::List(Field::new("item", DataType::UInt32, true).into()),
-                    true,
-                ));
-                // Sparse values are always f32
-                fields.push(Field::new(
-                    format!("{name}_values"),
-                    DataType::List(create_vector_field("item", Datatype::Float32, true)),
-                    true,
-                ));
-            }
-        }
-
-        // Payload as JSON string
-        fields.push(Field::new("payload", DataType::Utf8, true));
-
-        Ok(Schema::new(fields))
     }
 }
 
@@ -277,33 +186,22 @@ pub async fn execute_qdrant_query(
     let response =
         client.query(query_builder).await.map_err(|e| DataFusionError::External(Box::new(e)))?;
 
-    // Convert points to RecordBatch using existing logic
+    // Convert points to RecordBatch using incremental builder
     let points = response.result;
 
     if points.is_empty() {
         return Ok(RecordBatch::new_empty(schema));
     }
 
-    let mut arrays: Vec<ArrayRef> = Vec::with_capacity(schema.fields().len());
+    // Create incremental builder with pre-allocated capacity
+    let mut builder = QdrantRecordBatchBuilder::new(schema, points.len());
 
-    for field in schema.fields() {
-        let array = match field.name().as_str() {
-            "id" => extract_ids_from_scored(&points),
-            "payload" => extract_payload_from_scored(&points),
-            name if name.ends_with("_indices") => {
-                let base_name = name.trim_end_matches("_indices");
-                extract_sparse_indices_from_scored(&points, base_name)
-            }
-            name if name.ends_with("_values") => {
-                let base_name = name.trim_end_matches("_values");
-                extract_sparse_values_from_scored(&points, base_name)
-            }
-            name => extract_dense_vector_from_scored(&points, name),
-        };
-        arrays.push(array);
+    // Single pass through points with true owned iteration
+    for point in points {
+        builder.append_point(point); // Pass owned point, not borrowed
     }
 
-    RecordBatch::try_new(schema, arrays).map_err(|e| DataFusionError::ArrowError(Box::new(e), None))
+    builder.finish()
 }
 
 impl ExecutionPlan for QdrantScanExec {
