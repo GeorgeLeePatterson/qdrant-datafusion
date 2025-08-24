@@ -37,13 +37,13 @@ pub fn create_vector_param_field(name: &str, vector_params: &VectorParams) -> Fi
                 DataType::List(create_vector_field("item", vector_params.datatype(), true)),
                 true,
             ))),
-            false,
+            true, // Allow nulls - points may not have all vectors
         )
     } else {
         Field::new(
             name,
             DataType::List(create_vector_field("item", vector_params.datatype(), true)),
-            false,
+            true, // Allow nulls - points may not have all vectors
         )
     }
 }
@@ -91,13 +91,13 @@ pub fn collection_to_arrow_schema(collection: &str, config: &CollectionConfig) -
             fields.push(Field::new(
                 format!("{name}_indices"),
                 DataType::List(Field::new("item", DataType::UInt32, true).into()),
-                true,
+                true, // Allow nulls - points may not have all sparse vectors
             ));
             // Sparse values are always f32
             fields.push(Field::new(
                 format!("{name}_values"),
                 DataType::List(create_vector_field("item", Datatype::Float32, true)),
-                true,
+                true, // Allow nulls - points may not have all sparse vectors
             ));
         }
     }
