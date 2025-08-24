@@ -105,6 +105,7 @@ impl TableProvider for QdrantTableProvider {
     }
 }
 
+#[derive(Clone)]
 pub struct QdrantScanExec {
     client:           Arc<Qdrant>,
     collection:       String,

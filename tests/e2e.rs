@@ -16,19 +16,24 @@ e2e_test!(table_provider_named, tests::test_table_provider_named, TRACING_DIRECT
 e2e_test!(table_provider_unnamed, tests::test_table_provider_unnamed, TRACING_DIRECTIVES, None);
 
 #[cfg(feature = "test-utils")]
+e2e_test!(table_provider, tests::test_table_provider, TRACING_DIRECTIVES, None);
+
+#[cfg(feature = "test-utils")]
 mod tests {
     use std::sync::Arc;
 
     use datafusion::arrow;
+    use datafusion::datasource::TableProvider;
+    use datafusion::physical_plan::{DisplayAs, DisplayFormatType};
     use datafusion::prelude::*;
     use qdrant_client::Qdrant;
     use qdrant_client::qdrant::{
-        CreateCollectionBuilder, Distance, NamedVectors, PointStruct, SparseVectorParamsBuilder,
-        SparseVectorsConfigBuilder, UpsertPointsBuilder, Vector, VectorParamsBuilder,
-        VectorsConfigBuilder,
+        CreateCollectionBuilder, Distance, MultiVectorComparator, MultiVectorConfig, NamedVectors,
+        PointStruct, SparseVectorParamsBuilder, SparseVectorsConfigBuilder, UpsertPointsBuilder,
+        Vector, VectorParamsBuilder, VectorsConfigBuilder,
     };
     use qdrant_datafusion::error::Result;
-    use qdrant_datafusion::table::QdrantTableProvider;
+    use qdrant_datafusion::table::{QdrantScanExec, QdrantTableProvider};
     use qdrant_datafusion::test_utils::QdrantContainer;
     use tracing::debug;
 
@@ -37,6 +42,68 @@ mod tests {
         let url = c.get_url();
         eprintln!(">> Connecting to Qdrant @ {url}");
         Qdrant::from_url(&url).api_key(api_key).build().map_err(Into::into)
+    }
+
+    /// Simple test coverage for `TableProvider` and `ScanExec`
+    pub(super) async fn test_table_provider(c: Arc<QdrantContainer>) -> Result<()> {
+        struct QdrantScanExecDebug(QdrantScanExec);
+        impl std::fmt::Display for QdrantScanExecDebug {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                self.0.fmt_as(DisplayFormatType::Default, f)?;
+                self.0.fmt_as(DisplayFormatType::TreeRender, f)
+            }
+        }
+
+        eprintln!("> Testing TableProvider coverage methods");
+        let client = create_qdrant_client(&c)?;
+
+        let collection_name = "test_coverage";
+
+        // Create simple collection
+        let _ = client
+            .create_collection(
+                CreateCollectionBuilder::new(collection_name)
+                    .vectors_config(VectorParamsBuilder::new(2, Distance::Cosine)),
+            )
+            .await?;
+
+        // Insert one simple point
+        let mut payload = qdrant_client::Payload::new();
+        payload.insert("title", "Test Point");
+
+        let points = vec![PointStruct::new(1, Vector::new_dense(vec![0.1, 0.2]), payload)];
+
+        drop(client.upsert_points(UpsertPointsBuilder::new(collection_name, points)).await?);
+
+        // Create TableProvider
+        let table_provider = QdrantTableProvider::try_new(client.clone(), collection_name).await?;
+
+        // Test Debug implementation
+        eprintln!("QdrantTableProvider debug: {table_provider:?}");
+
+        // Test as_any method by checking downcast
+        let any_ref = table_provider.as_any();
+        let is_correct_type = any_ref.downcast_ref::<QdrantTableProvider>().is_some();
+        eprintln!("QdrantTableProvider as_any downcast success: {is_correct_type}");
+        assert!(is_correct_type);
+
+        // Test table_type method
+        let table_type = table_provider.table_type();
+        eprintln!("QdrantTableProvider table_type: {table_type:?}");
+        assert_eq!(table_type, datafusion::datasource::TableType::Base);
+
+        let ctx = SessionContext::new();
+        let scan = table_provider.scan(&ctx.state(), None, &[], None).await.unwrap();
+        let qdrant_scan = scan.as_any().downcast_ref::<QdrantScanExec>().unwrap();
+        eprintln!("QdrantScanExec debug: {qdrant_scan:?}");
+        let scan_display = QdrantScanExecDebug(qdrant_scan.clone());
+        eprintln!("Physical plan debug: {scan_display}");
+
+        eprintln!(">> ✅ TableProvider coverage test completed!");
+        eprintln!("   - QdrantTableProvider Debug, as_any, table_type: ✅");
+        eprintln!("   - QdrantScanExec Debug and DisplayAs: ✅");
+
+        Ok(())
     }
 
     /// Test heterogeneous vector sets - different points have different vector fields
@@ -71,6 +138,14 @@ mod tests {
             "audio_embedding",
             VectorParamsBuilder::new(2, Distance::Euclid).build(),
         );
+        let _ = vectors_config.add_named_vector_params(
+            "multi_embeddings",
+            VectorParamsBuilder::new(2, Distance::Dot)
+                .multivector_config(MultiVectorConfig {
+                    comparator: MultiVectorComparator::MaxSim.into(),
+                })
+                .build(),
+        );
 
         // Add sparse vectors (MUST be named per docs)
         let mut sparse_config = SparseVectorsConfigBuilder::default();
@@ -94,7 +169,11 @@ mod tests {
             named_vectors1.add_vector("test_embedding", Vector::new_dense(vec![0.1, 0.2]));
         named_vectors1 =
             named_vectors1.add_vector("keywords", Vector::new_sparse(vec![0, 5], vec![0.1, 0.9]));
-        // Deliberately NO other vector fields!
+        named_vectors1 = named_vectors1.add_vector(
+            "multi_embeddings",
+            Vector::new_multi(vec![vec![0.7, 0.8], vec![0.9, 0.1]]),
+        );
+        // Deliberately NO audio_embedding or text_embedding or image_embedding!
 
         // Point 2: Has text_embedding + image_embedding + keywords
         let mut payload2 = qdrant_client::Payload::new();
@@ -160,6 +239,7 @@ mod tests {
             assert!(field_names.contains(&"text_embedding"));
             assert!(field_names.contains(&"image_embedding"));
             assert!(field_names.contains(&"audio_embedding"));
+            assert!(field_names.contains(&"multi_embeddings"));
             assert!(field_names.contains(&"keywords_indices"));
             assert!(field_names.contains(&"keywords_values"));
             assert!(field_names.contains(&"id"));
@@ -240,10 +320,11 @@ mod tests {
         }
 
         eprintln!(">> ✅ Named vectors TableProvider test completed!");
-        eprintln!("   - Point 1: only test_embedding + keywords");
+        eprintln!("   - Point 1: only test_embedding + multi_embeddings + keywords");
         eprintln!("   - Point 2: only text_embedding + image_embedding + keywords");
         eprintln!("   - Point 3: only text_embedding + audio_embedding + keywords");
         eprintln!("   - Schema contains ALL vector fields with proper nulls");
+        eprintln!("   - Multi-vectors: List<List<Float32>> schema and extraction: ✅");
         eprintln!("   - Projection works for all vector field combinations: ✅");
         eprintln!("   - Heterogeneous data with nulls handled correctly: ✅");
 
@@ -294,14 +375,12 @@ mod tests {
 
         // Test: SELECT * - Should show "vector" field
         eprintln!(">> Test: SELECT * FROM unnamed_table (unnamed vectors)");
-        let df = ctx.sql("SELECT * FROM unnamed_table").await?;
-        let results = df.collect().await?;
+        let results = ctx.sql("SELECT * FROM unnamed_table").await?.collect().await?;
 
         eprintln!(">>> Unnamed vectors query results:");
         for (i, batch) in results.iter().enumerate() {
             let schema = batch.schema();
             eprintln!("    Batch {i}: {} rows, {} columns", batch.num_rows(), batch.num_columns());
-            debug!("      Schema: {schema:?}");
 
             // Should have: id, payload, vector
             assert_eq!(batch.num_rows(), 3);
@@ -325,8 +404,7 @@ mod tests {
 
         // Test 2: Projection - Only vector field
         eprintln!(">> Test 2: SELECT vector FROM unnamed_table");
-        let df = ctx.sql("SELECT vector FROM unnamed_table").await?;
-        let results = df.collect().await?;
+        let results = ctx.sql("SELECT vector FROM unnamed_table").await?.collect().await?;
 
         for batch in &results {
             assert_eq!(batch.num_columns(), 1);
@@ -336,8 +414,7 @@ mod tests {
 
         // Test 3: Projection - Only metadata fields
         eprintln!(">> Test 3: SELECT id, payload FROM unnamed_table (no vectors)");
-        let df = ctx.sql("SELECT id, payload FROM unnamed_table").await?;
-        let results = df.collect().await?;
+        let results = ctx.sql("SELECT id, payload FROM unnamed_table").await?.collect().await?;
 
         for batch in &results {
             assert_eq!(batch.num_columns(), 2);
@@ -348,8 +425,7 @@ mod tests {
 
         // Test 4: Projection - Only ID field
         eprintln!(">> Test 4: SELECT id FROM unnamed_table");
-        let df = ctx.sql("SELECT id FROM unnamed_table").await?;
-        let results = df.collect().await?;
+        let results = ctx.sql("SELECT id FROM unnamed_table").await?.collect().await?;
 
         for batch in &results {
             assert_eq!(batch.num_columns(), 1);
@@ -359,8 +435,8 @@ mod tests {
 
         // Test 5: Projection - Mixed order
         eprintln!(">> Test 5: SELECT payload, vector, id FROM unnamed_table (reordered)");
-        let df = ctx.sql("SELECT payload, vector, id FROM unnamed_table").await?;
-        let results = df.collect().await?;
+        let sql = "SELECT payload, vector, id FROM unnamed_table";
+        let results = ctx.sql(sql).await?.collect().await?;
 
         for batch in &results {
             assert_eq!(batch.num_columns(), 3);
@@ -372,12 +448,21 @@ mod tests {
 
         // Test 6: Projection - Only payload
         eprintln!(">> Test 6: SELECT payload FROM unnamed_table");
-        let df = ctx.sql("SELECT payload FROM unnamed_table").await?;
-        let results = df.collect().await?;
+        let results = ctx.sql("SELECT payload FROM unnamed_table").await?.collect().await?;
 
         for batch in &results {
             assert_eq!(batch.num_columns(), 1);
             assert_eq!(batch.schema().field(0).name(), "payload");
+            arrow::util::pretty::print_batches(std::slice::from_ref(batch)).unwrap();
+        }
+
+        // Test 7: LIMIT query to cover TableScan limit functionality
+        eprintln!(">> Test 7: SELECT * FROM unnamed_table LIMIT 2");
+        let results = ctx.sql("SELECT * FROM unnamed_table LIMIT 2").await?.collect().await?;
+
+        for batch in &results {
+            assert_eq!(batch.num_rows(), 2); // Should be limited to 2 rows
+            assert_eq!(batch.num_columns(), 3);
             arrow::util::pretty::print_batches(std::slice::from_ref(batch)).unwrap();
         }
 
@@ -388,6 +473,7 @@ mod tests {
         eprintln!("   - Vector field accessible via 'vector' name in SQL");
         eprintln!("   - Projection works for all field combinations: ✅");
         eprintln!("   - Schema projection optimizes Qdrant queries: ✅");
+        eprintln!("   - LIMIT queries work correctly: ✅");
 
         Ok(())
     }

@@ -25,13 +25,18 @@ test-integration test_name='':
 
 coverage:
     cargo llvm-cov clean --workspace
-    cargo llvm-cov --no-report --ignore-filename-regex "(examples).*" -F test-utils
-    cargo llvm-cov report -vv --html --output-dir coverage --open
+    cargo llvm-cov --no-report --ignore-filename-regex ".*/examples/.*\.rs$|.*/test_utils\.rs$|.*/error\.rs$" -F test-utils
+    cargo llvm-cov report -vv --html --output-dir coverage --ignore-filename-regex ".*/examples/.*\.rs$|.*/test_utils\.rs$|.*/error\.rs$" --open
 
 coverage-lcov:
     cargo llvm-cov clean --workspace
-    cargo llvm-cov --lcov --no-report --ignore-filename-regex "(examples).*" -F test-utils
-    cargo llvm-cov report --lcov --output-path lcov.info
+    cargo llvm-cov --lcov --no-report --ignore-filename-regex ".*/examples/.*\.rs$|.*/test_utils\.rs$|.*/error\.rs$" -F test-utils
+    cargo llvm-cov report --lcov --output-path lcov.info --ignore-filename-regex ".*/examples/.*\.rs$|.*/test_utils\.rs$|.*/error\.rs$"
+
+coverage-summary:
+    cargo llvm-cov clean --workspace
+    cargo llvm-cov --no-report --ignore-filename-regex ".*/examples/.*\.rs$|.*/test_utils\.rs$|.*/error\.rs$" -F test-utils
+    cargo llvm-cov report -vv --summary-only --ignore-filename-regex ".*/examples/.*\.rs$|.*/test_utils\.rs$|.*/error\.rs$"
 
 # --- EXAMPLES ---
 
