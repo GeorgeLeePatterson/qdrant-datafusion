@@ -206,3 +206,5 @@ We welcome contributions! Please see [CONTRIBUTING.md](https://github.com/George
 ## 📝 License
 
 Licensed under the Apache License, Version 2.0. See [LICENSE](https://github.com/GeorgeLeePatterson/qdrant-datafusion/blob/main/LICENSE) for details.
+
+Perfect, I love this idea. So, let's move the logic in `execute_qdrant_query` into a builder, leaving the QdrantRecordBatchBuilder stuff there since that's deserialization. It's essentially query_serialization->result_deserialization. That glue can remain in the function. I know you mentioned inlining the logic into the current function but I don't want to do that. I want to introduce a new file, `builder.rs`, that contains our builder. I'll let you decide how the logic in that function gets translated but we can keep it super simple for now. The high level process will be 1. Create builder (how?) 2. Modify builder (.with_filters(..) maybe?) 3. Build (which should return our QueryResponse which gets used in QdrantRecordBatchBuilder. What do you think?

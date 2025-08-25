@@ -1,7 +1,10 @@
 #![doc = include_str!("../README.md")]
 
 pub mod arrow;
+pub mod builder;
+pub mod constants;
 pub mod error;
+pub mod expr;
 pub mod prelude;
 pub mod stream;
 pub mod table;

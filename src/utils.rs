@@ -4,21 +4,10 @@ use std::collections::HashSet;
 
 use datafusion::arrow::datatypes::Schema;
 
-/// Specification for selecting which vectors to retrieve from `Qdrant`.
-///
-/// This enum determines what vector data will be requested from `Qdrant` during query execution.
-/// The selection is optimized based on the `DataFusion` schema projection.
-#[derive(Debug, Clone)]
-pub enum VectorSelectorSpec {
-    /// No vectors needed - only metadata fields (id, payload) requested
-    None,
-    /// All vectors needed - either unnamed collection or all named vectors requested
-    All,
-    /// Specific named vectors needed - only fetch these vector fields
-    Named(Vec<String>),
-}
+use crate::builder::VectorSelection;
+use crate::constants::RESERVED_FIELD_NAMES;
 
-/// Build an optimal vector selector based on the projected schema.
+/// Build a vector selector based on the projected schema.
 ///
 /// This function analyzes the `DataFusion` schema (after projection) to determine
 /// which vector fields are actually needed, enabling efficient queries that only
@@ -26,9 +15,10 @@ pub enum VectorSelectorSpec {
 ///
 /// # Arguments
 /// * `schema` - The Arrow schema (potentially projected) defining which fields are needed
+/// * `reserved` - List of field names that should not be considered vectors
 ///
 /// # Returns
-/// A `VectorSelectorSpec` that tells `Qdrant` exactly which vectors to include in the response.
+/// A `VectorSelector` that tells `Qdrant` exactly which vectors to include in the response.
 ///
 /// # Examples
 /// ```rust,ignore
@@ -50,11 +40,12 @@ pub enum VectorSelectorSpec {
 /// ]);
 /// assert!(matches!(build_vector_selector(&unnamed_schema), VectorSelectorSpec::All));
 /// ```
-pub fn build_vector_selector(schema: &Schema) -> VectorSelectorSpec {
+pub fn build_vector_selector(schema: &Schema, reserved: Option<&[&str]>) -> VectorSelection {
     let mut vector_names: HashSet<_> = schema
         .fields()
         .iter()
-        .filter(|f| !["id", "payload"].contains(&f.name().as_str()))
+        .filter(|f| !RESERVED_FIELD_NAMES.contains(&f.name().as_str()))
+        .filter(|f| !reserved.is_some_and(|r| r.contains(&f.name().as_str())))
         .map(|f| f.name())
         .map(|name| {
             if name.ends_with("_indices") || name.ends_with("_values") {
@@ -67,16 +58,16 @@ pub fn build_vector_selector(schema: &Schema) -> VectorSelectorSpec {
         .collect();
 
     if vector_names.is_empty() {
-        return VectorSelectorSpec::None;
+        return VectorSelection::None;
     }
 
     let has_unnamed_vector = vector_names.remove("vector");
     if has_unnamed_vector || vector_names.is_empty() {
         // Unnamed vector collection - use simple boolean selector
-        VectorSelectorSpec::All
+        VectorSelection::All
     } else {
         // Specific named vectors
-        VectorSelectorSpec::Named(
+        VectorSelection::Named(
             vector_names.into_iter().map(ToString::to_string).collect::<Vec<_>>(),
         )
     }

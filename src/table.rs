@@ -6,7 +6,7 @@ use datafusion::arrow::array::*;
 use datafusion::arrow::datatypes::*;
 use datafusion::catalog::{Session, TableProvider};
 use datafusion::datasource::TableType;
-use datafusion::error::{DataFusionError, Result as DataFusionResult};
+use datafusion::error::Result as DataFusionResult;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::logical_expr::dml::InsertOp;
 use datafusion::physical_plan::execution_plan::Boundedness;
@@ -14,10 +14,10 @@ use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, Pla
 use datafusion::prelude::Expr;
 use datafusion::sql::TableReference;
 use qdrant_client::Qdrant;
-use qdrant_client::qdrant::{QueryPointsBuilder, VectorsSelector};
 
 use crate::arrow::deserialize::QdrantRecordBatchBuilder;
 use crate::arrow::schema::collection_to_arrow_schema;
+use crate::builder::QdrantQueryBuilder;
 use crate::error::{Error, Result};
 use crate::stream::QdrantQueryStream;
 use crate::utils;
@@ -167,17 +167,11 @@ impl TableProvider for QdrantTableProvider {
             _ => Arc::clone(&self.schema),
         };
 
-        // Build selectors based on what fields are in the projected schema
-        let vector_selector = utils::build_vector_selector(&projected_schema);
-        let payload_selector = utils::build_payload_selector(&projected_schema);
-
         // For now, ignore filters - we'll handle them with UDFs later
         Ok(Arc::new(QdrantScanExec::new(
             Arc::clone(&self.client),
             self.table.table().to_string(),
             projected_schema,
-            vector_selector,
-            payload_selector,
             filters,
             limit,
         )))
@@ -209,14 +203,12 @@ impl TableProvider for QdrantTableProvider {
 /// `QdrantTableProvider` during SQL query execution.
 #[derive(Clone)]
 pub struct QdrantScanExec {
-    client:           Arc<Qdrant>,
-    collection:       String,
-    schema:           SchemaRef, // Already projected
-    vector_selector:  utils::VectorSelectorSpec,
-    payload_selector: bool,
-    filter:           Arc<[Expr]>,
-    limit:            Option<usize>,
-    properties:       PlanProperties,
+    client:     Arc<Qdrant>,
+    collection: String,
+    schema:     SchemaRef, // Already projected
+    filter:     Arc<[Expr]>,
+    limit:      Option<usize>,
+    properties: PlanProperties,
 }
 
 impl std::fmt::Debug for QdrantScanExec {
@@ -225,9 +217,9 @@ impl std::fmt::Debug for QdrantScanExec {
             .field("client", &"Qdrant")
             .field("collection", &self.collection)
             .field("schema", &self.schema)
-            .field("vector_selector", &self.vector_selector)
-            .field("payload_selector", &self.payload_selector)
+            .field("filter", &self.filter)
             .field("limit", &self.limit)
+            .field("properties", &self.properties)
             .finish_non_exhaustive()
     }
 }
@@ -237,8 +229,6 @@ impl QdrantScanExec {
         client: Arc<Qdrant>,
         collection: String,
         schema: SchemaRef,
-        vector_selector: utils::VectorSelectorSpec,
-        payload_selector: bool,
         filter: &[Expr],
         limit: Option<usize>,
     ) -> Self {
@@ -249,16 +239,7 @@ impl QdrantScanExec {
             Boundedness::Bounded,
         );
 
-        Self {
-            client,
-            collection,
-            schema,
-            vector_selector,
-            payload_selector,
-            filter: Arc::from(filter),
-            limit,
-            properties,
-        }
+        Self { client, collection, schema, filter: Arc::from(filter), limit, properties }
     }
 }
 
@@ -266,40 +247,26 @@ impl QdrantScanExec {
 ///
 /// # Errors
 /// - Returns an error if the query fails.
-pub(crate) async fn execute_qdrant_query(
+pub(crate) async fn execute_qdrant_table_scan(
     client: Arc<Qdrant>,
     collection: String,
     schema: SchemaRef,
-    vector_selector: utils::VectorSelectorSpec,
-    payload_selector: bool,
-    _filters: &[Expr],
+    filters: &[Expr],
     limit: Option<usize>,
 ) -> DataFusionResult<RecordBatch> {
-    // Build query using QueryPointsBuilder
-    let mut query_builder = QueryPointsBuilder::new(&collection);
+    // Build selectors based on what fields are in the projected schema
+    let vector_selection = utils::build_vector_selector(&schema, None);
+    let payload_selection = utils::build_payload_selector(&schema);
 
-    // Use the builder's API which accepts Into<SelectorOptions>
-    match vector_selector {
-        utils::VectorSelectorSpec::None => {
-            query_builder = query_builder.with_vectors(false);
-        }
-        utils::VectorSelectorSpec::All => {
-            query_builder = query_builder.with_vectors(true);
-        }
-        utils::VectorSelectorSpec::Named(names) => {
-            query_builder = query_builder.with_vectors(VectorsSelector { names });
-        }
-    }
-
-    query_builder = query_builder.with_payload(payload_selector);
-
-    if let Some(limit_val) = limit {
-        query_builder = query_builder.limit(limit_val as u64);
-    }
-
-    // Execute query
-    let response =
-        client.query(query_builder).await.map_err(|e| DataFusionError::External(Box::new(e)))?;
+    // Build and execute query using our QdrantQueryBuilder
+    let response = QdrantQueryBuilder::new(client, collection, Arc::clone(&schema))
+        .with_vectors(vector_selection)?
+        .with_payload(payload_selection)
+        .with_payload_filters(filters)
+        .with_limit(limit)
+        .with_payload_filters(filters)
+        .execute()
+        .await?;
 
     // Convert points to RecordBatch using incremental builder
     let points = response.result;
@@ -343,21 +310,10 @@ impl ExecutionPlan for QdrantScanExec {
         let client = Arc::clone(&self.client);
         let collection = self.collection.clone();
         let schema = Arc::clone(&self.schema);
-        let vector_selector = self.vector_selector.clone();
-        let payload_selector = self.payload_selector;
         let filter = Arc::clone(&self.filter);
         let limit = self.limit;
         let inner = Box::pin(futures_util::stream::once(async move {
-            execute_qdrant_query(
-                client,
-                collection,
-                schema,
-                vector_selector,
-                payload_selector,
-                &filter,
-                limit,
-            )
-            .await
+            execute_qdrant_table_scan(client, collection, schema, &filter, limit).await
         }));
         let stream = QdrantQueryStream::new(Arc::clone(&self.schema), inner);
         Ok(Box::pin(stream))
