@@ -40,7 +40,10 @@ use crate::constants::RESERVED_FIELD_NAMES;
 /// ]);
 /// assert!(matches!(build_vector_selector(&unnamed_schema), VectorSelectorSpec::All));
 /// ```
-pub fn build_vector_selector(schema: &Schema, reserved: Option<&[&str]>) -> VectorSelection {
+pub fn build_vector_selector_from_schema(
+    schema: &Schema,
+    reserved: Option<&[&str]>,
+) -> VectorSelection {
     let mut vector_names: HashSet<_> = schema
         .fields()
         .iter()
@@ -102,6 +105,6 @@ pub fn build_vector_selector(schema: &Schema, reserved: Option<&[&str]>) -> Vect
 /// ]);
 /// assert_eq!(build_payload_selector(&no_payload), false);
 /// ```
-pub fn build_payload_selector(schema: &Schema) -> bool {
+pub fn build_payload_selector_from_schema(schema: &Schema) -> bool {
     schema.fields().iter().any(|f| f.name() == "payload")
 }

@@ -9,6 +9,7 @@ use datafusion::datasource::TableType;
 use datafusion::error::Result as DataFusionResult;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::logical_expr::dml::InsertOp;
+use datafusion::logical_expr::TableProviderFilterPushDown;
 use datafusion::physical_plan::execution_plan::Boundedness;
 use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
 use datafusion::prelude::Expr;
@@ -154,6 +155,16 @@ impl TableProvider for QdrantTableProvider {
 
     fn table_type(&self) -> TableType { TableType::Base }
 
+    fn supports_filters_pushdown(&self, filters: &[&Expr]) -> DataFusionResult<Vec<TableProviderFilterPushDown>> {
+        filters.iter().map(|&filter| {
+            match crate::expr::analyze_filter_expr(filter) {
+                Ok(crate::expr::FilterResult::Condition(_)) => Ok(TableProviderFilterPushDown::Exact),
+                Ok(crate::expr::FilterResult::Unsupported(_)) => Ok(TableProviderFilterPushDown::Unsupported),
+                Err(_) => Ok(TableProviderFilterPushDown::Unsupported),
+            }
+        }).collect()
+    }
+
     async fn scan(
         &self,
         _state: &dyn Session,
@@ -167,7 +178,7 @@ impl TableProvider for QdrantTableProvider {
             _ => Arc::clone(&self.schema),
         };
 
-        // For now, ignore filters - we'll handle them with UDFs later
+        // Filters are handled by QdrantQueryBuilder.with_payload_filters()
         Ok(Arc::new(QdrantScanExec::new(
             Arc::clone(&self.client),
             self.table.table().to_string(),
@@ -255,8 +266,8 @@ pub(crate) async fn execute_qdrant_table_scan(
     limit: Option<usize>,
 ) -> DataFusionResult<RecordBatch> {
     // Build selectors based on what fields are in the projected schema
-    let vector_selection = utils::build_vector_selector(&schema, None);
-    let payload_selection = utils::build_payload_selector(&schema);
+    let vector_selection = utils::build_vector_selector_from_schema(&schema, None);
+    let payload_selection = utils::build_payload_selector_from_schema(&schema);
 
     // Build and execute query using our QdrantQueryBuilder
     let response = QdrantQueryBuilder::new(client, collection, Arc::clone(&schema))
