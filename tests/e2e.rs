@@ -19,7 +19,7 @@ e2e_test!(table_provider_unnamed, tests::test_table_provider_unnamed, TRACING_DI
 e2e_test!(table_provider, tests::test_table_provider, TRACING_DIRECTIVES, None);
 
 #[cfg(feature = "test-utils")]
-e2e_test!(filters_test, tests::test_filters_pushdown, TRACING_DIRECTIVES, None);
+e2e_test!(filters, tests::test_filters_pushdown, TRACING_DIRECTIVES, None);
 
 #[cfg(feature = "test-utils")]
 mod tests {
@@ -483,6 +483,8 @@ mod tests {
 
     /// Test filter pushdown functionality
     pub(super) async fn test_filters_pushdown(c: Arc<QdrantContainer>) -> Result<()> {
+        use datafusion::logical_expr::TableProviderFilterPushDown;
+
         eprintln!("> Testing filter pushdown functionality");
         let client = create_qdrant_client(&c)?;
 
@@ -497,8 +499,7 @@ mod tests {
 
         let _ = client
             .create_collection(
-                CreateCollectionBuilder::new(collection_name)
-                    .vectors_config(vectors_config),
+                CreateCollectionBuilder::new(collection_name).vectors_config(vectors_config),
             )
             .await?;
 
@@ -510,9 +511,10 @@ mod tests {
         payload1.insert("city", "London");
         payload1.insert("age", 25);
         payload1.insert("category", "premium");
-        
+
         let mut named_vectors1 = NamedVectors::default();
-        named_vectors1 = named_vectors1.add_vector("text_embedding", Vector::new_dense(vec![0.1, 0.2, 0.3]));
+        named_vectors1 =
+            named_vectors1.add_vector("text_embedding", Vector::new_dense(vec![0.1, 0.2, 0.3]));
         points.push(PointStruct::new(1, named_vectors1, payload1));
 
         // Point 2: Paris, age 30
@@ -520,9 +522,10 @@ mod tests {
         payload2.insert("city", "Paris");
         payload2.insert("age", 30);
         payload2.insert("category", "standard");
-        
+
         let mut named_vectors2 = NamedVectors::default();
-        named_vectors2 = named_vectors2.add_vector("text_embedding", Vector::new_dense(vec![0.4, 0.5, 0.6]));
+        named_vectors2 =
+            named_vectors2.add_vector("text_embedding", Vector::new_dense(vec![0.4, 0.5, 0.6]));
         points.push(PointStruct::new(2, named_vectors2, payload2));
 
         // Point 3: London, age 35
@@ -530,9 +533,10 @@ mod tests {
         payload3.insert("city", "London");
         payload3.insert("age", 35);
         payload3.insert("category", "premium");
-        
+
         let mut named_vectors3 = NamedVectors::default();
-        named_vectors3 = named_vectors3.add_vector("text_embedding", Vector::new_dense(vec![0.7, 0.8, 0.9]));
+        named_vectors3 =
+            named_vectors3.add_vector("text_embedding", Vector::new_dense(vec![0.7, 0.8, 0.9]));
         points.push(PointStruct::new(3, named_vectors3, payload3));
 
         drop(client.upsert_points(UpsertPointsBuilder::new(collection_name, points)).await?);
@@ -542,52 +546,52 @@ mod tests {
 
         // Create table provider
         let table_provider = QdrantTableProvider::try_new(client.clone(), collection_name).await?;
-        
+
         // Create DataFusion context and register table (following exact pattern)
         let mut ctx = SessionContext::new();
-        
+
         // Register JSON UDFs for payload->field syntax
         eprintln!("Registering JSON UDFs for payload->field support");
         qdrant_datafusion::udfs::register_json_udfs(&mut ctx)?;
-        
+
         drop(ctx.register_table("test_table", Arc::new(table_provider))?);
 
         // Test 1: Basic query (no filters)
         eprintln!("Test 1: Basic query - SELECT * FROM test_table");
-        let df = ctx.sql("SELECT id FROM test_table ORDER BY id").await?;
-        let results = df.collect().await?;
+        let results = ctx.sql("SELECT id FROM test_table ORDER BY id").await?.collect().await?;
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].num_rows(), 3); // Should have all 3 points
         eprintln!("✅ Basic query works - found 3 points");
 
-        // Test 2: ID filter 
+        // Test 2: ID filter
         eprintln!("Test 2: ID filter - SELECT * FROM test_table WHERE id = 1");
-        let df = ctx.sql("SELECT id FROM test_table WHERE id = 1").await?;
-        let results = df.collect().await?;
+        let results = ctx.sql("SELECT id FROM test_table WHERE id = 1").await?.collect().await?;
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].num_rows(), 1); // Should find point with ID 1
         eprintln!("✅ ID filter works - found 1 result");
 
         // Test 3: Payload equality filter
-        eprintln!("Test 3: Payload filter - SELECT * FROM test_table WHERE payload->city = 'London'");
-        let df = ctx.sql("SELECT id FROM test_table WHERE payload->city = 'London' ORDER BY id").await?;
-        let results = df.collect().await?;
+        eprintln!("Test 3: Payload filter - WHERE json_get_str(payload, 'city') = 'London'");
+        let sql =
+            "SELECT id FROM test_table WHERE json_get_str(payload, 'city') = 'London' ORDER BY id";
+        let results = ctx.sql(sql).await?.collect().await?;
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].num_rows(), 2); // Should find points 1 and 3 (both London)
         eprintln!("✅ Payload equality filter works - found 2 results");
 
         // Test 4: Payload range filter
-        eprintln!("Test 4: Payload range - SELECT * FROM test_table WHERE payload->age > 25");
-        let df = ctx.sql("SELECT id FROM test_table WHERE payload->age > 25 ORDER BY id").await?;
-        let results = df.collect().await?;
+        let sql = "SELECT id FROM test_table WHERE json_get_int(payload, 'age') > 25 ORDER BY id";
+        eprintln!("Test 4: Payload range - {sql}");
+        let results = ctx.sql(sql).await?.collect().await?;
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].num_rows(), 2); // Should find points 2 (age 30) and 3 (age 35)
         eprintln!("✅ Payload range filter works - found 2 results");
 
         // Test 5: Combined filters
-        eprintln!("Test 5: Combined filters - SELECT * FROM test_table WHERE payload->city = 'London' AND payload->age > 30");
-        let df = ctx.sql("SELECT id FROM test_table WHERE payload->city = 'London' AND payload->age > 30").await?;
-        let results = df.collect().await?;
+        let sql = "SELECT id FROM test_table WHERE json_get_str(payload, 'city') = 'London' AND \
+                   json_get_int(payload, 'age') > 30";
+        eprintln!("Test 5: Combined filters - {sql}");
+        let results = ctx.sql(sql).await?.collect().await?;
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].num_rows(), 1); // Should find only point 3 (London + age 35)
         eprintln!("✅ Combined filters work - found 1 result");
@@ -595,15 +599,14 @@ mod tests {
         // Test 6: Test supports_filters_pushdown method
         eprintln!("Test 6: Testing supports_filters_pushdown method");
         let table_provider_ref = QdrantTableProvider::try_new(client, collection_name).await?;
-        
+
         let filter1 = col("id").eq(lit(1));
         let filter2 = col("text_embedding").is_null();
         let test_filters = vec![&filter1, &filter2];
 
         let pushdown_support = table_provider_ref.supports_filters_pushdown(&test_filters)?;
-        eprintln!("Filter pushdown support: {:?}", pushdown_support);
-        
-        use datafusion::logical_expr::TableProviderFilterPushDown;
+        eprintln!("Filter pushdown support: {pushdown_support:?}");
+
         assert_eq!(pushdown_support[0], TableProviderFilterPushDown::Exact); // ID filter should be supported
         assert_eq!(pushdown_support[1], TableProviderFilterPushDown::Unsupported); // is_null should not be supported
         eprintln!("✅ supports_filters_pushdown correctly identifies filter support");

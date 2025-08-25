@@ -8,7 +8,7 @@ use datafusion::prelude::Expr;
 use qdrant_client::Qdrant;
 use qdrant_client::qdrant::{QueryPointsBuilder, QueryResponse, VectorsSelector};
 
-use crate::expr::translate_payload_filters;
+use crate::expr::filters::translate_payload_filters;
 
 /// Specification for selecting which vectors to retrieve from `Qdrant`.
 ///

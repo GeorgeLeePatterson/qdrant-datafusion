@@ -8,8 +8,8 @@ use datafusion::catalog::{Session, TableProvider};
 use datafusion::datasource::TableType;
 use datafusion::error::Result as DataFusionResult;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
-use datafusion::logical_expr::dml::InsertOp;
 use datafusion::logical_expr::TableProviderFilterPushDown;
+use datafusion::logical_expr::dml::InsertOp;
 use datafusion::physical_plan::execution_plan::Boundedness;
 use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
 use datafusion::prelude::Expr;
@@ -155,14 +155,22 @@ impl TableProvider for QdrantTableProvider {
 
     fn table_type(&self) -> TableType { TableType::Base }
 
-    fn supports_filters_pushdown(&self, filters: &[&Expr]) -> DataFusionResult<Vec<TableProviderFilterPushDown>> {
-        filters.iter().map(|&filter| {
-            match crate::expr::analyze_filter_expr(filter) {
-                Ok(crate::expr::FilterResult::Condition(_)) => Ok(TableProviderFilterPushDown::Exact),
-                Ok(crate::expr::FilterResult::Unsupported(_)) => Ok(TableProviderFilterPushDown::Unsupported),
+    fn supports_filters_pushdown(
+        &self,
+        filters: &[&Expr],
+    ) -> DataFusionResult<Vec<TableProviderFilterPushDown>> {
+        filters
+            .iter()
+            .map(|&filter| match crate::expr::filters::analyze_filter_expr(filter) {
+                Ok(crate::expr::filters::FilterResult::Condition(_)) => {
+                    Ok(TableProviderFilterPushDown::Exact)
+                }
+                Ok(crate::expr::filters::FilterResult::Unsupported(_)) => {
+                    Ok(TableProviderFilterPushDown::Unsupported)
+                }
                 Err(_) => Ok(TableProviderFilterPushDown::Unsupported),
-            }
-        }).collect()
+            })
+            .collect()
     }
 
     async fn scan(
