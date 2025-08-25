@@ -264,7 +264,6 @@ pub(crate) async fn execute_qdrant_table_scan(
         .with_payload(payload_selection)
         .with_payload_filters(filters)
         .with_limit(limit)
-        .with_payload_filters(filters)
         .execute()
         .await?;
 
