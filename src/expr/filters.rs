@@ -2,6 +2,7 @@
 
 use datafusion::common::{not_impl_err, plan_err};
 use datafusion::error::Result as DataFusionResult;
+use datafusion::logical_expr::expr::ScalarFunction;
 use datafusion::logical_expr::{BinaryExpr, Operator};
 use datafusion::prelude::Expr;
 use datafusion::scalar::ScalarValue;
@@ -78,6 +79,7 @@ pub(crate) fn translate_payload_filters(filters: &[Expr]) -> DataFusionResult<Fi
 pub(crate) fn analyze_filter_expr(expr: &Expr) -> DataFusionResult<FilterResult> {
     match expr {
         Expr::Alias(alias) => analyze_filter_expr(&alias.expr),
+
         // Handle binary comparison expressions
         Expr::BinaryExpr(binary) => analyze_binary_expr(binary),
 
@@ -86,6 +88,7 @@ pub(crate) fn analyze_filter_expr(expr: &Expr) -> DataFusionResult<FilterResult>
         // - InList for IN conditions
         // - IsNull/IsNotNull for null checks
         // - Like for pattern matching
+        // - Handle NOT
 
         // Everything else is unsupported for now
         _ => Ok(FilterResult::Unsupported(format!("{expr}"))),
@@ -99,24 +102,80 @@ pub(crate) fn analyze_filter_expr(expr: &Expr) -> DataFusionResult<FilterResult>
 /// - `payload->field > 10` → `Condition::range`
 /// - `id = 'point_id'` → Point ID condition
 fn analyze_binary_expr(binary: &BinaryExpr) -> DataFusionResult<FilterResult> {
+    fn analyze_binary_impl(
+        l: &Expr,
+        o: Operator,
+        r: &Expr,
+    ) -> DataFusionResult<Option<FilterResult>> {
+        match (extract_field_info(l), r.as_literal()) {
+            (Some(field), Some(value)) => {
+                match field.field_type {
+                    // Build an ID-based condition.
+                    FieldType::Id => build_id_condition(o, value).map(Some),
+                    FieldType::Payload => build_payload_condition(field.name, o, value).map(Some),
+                }
+            }
+            _ => Ok(None),
+        }
+    }
+
     let BinaryExpr { left, op, right } = binary;
 
     // Try to identify the pattern: <field_expr> <op> <literal>
-    match (extract_field_info(left), extract_literal_value(right)) {
-        (Some(field_info), Some(literal_value)) => {
-            build_condition_from_components(field_info, *op, literal_value)
-        }
-        // Try reversed pattern: <literal> <op> <field_expr>
-        (None, None) => match (extract_literal_value(left), extract_field_info(right)) {
-            (Some(literal_value), Some(field_info)) => {
-                // Reverse the operator for reversed operands
-                let reversed_op = utils::reverse_operator(*op);
-                build_condition_from_components(field_info, reversed_op, literal_value)
-            }
-            _ => Ok(FilterResult::Unsupported(format!("{binary}"))),
-        },
-        _ => Ok(FilterResult::Unsupported(format!("{binary}"))),
+    if let Some(result) = analyze_binary_impl(left, *op, right)? {
+        return Ok(result);
     }
+
+    // Try reversed pattern: <literal> <op> <field_expr>
+    // Reverse the operator for reversed operands
+    let reversed_op = utils::reverse_operator(*op);
+    if let Some(result) = analyze_binary_impl(right, reversed_op, left)? {
+        return Ok(result);
+    }
+
+    Ok(FilterResult::Unsupported(format!("{binary}")))
+}
+
+/// Build a id-based condition.
+fn build_id_condition(op: Operator, literal: &ScalarValue) -> DataFusionResult<FilterResult> {
+    match op {
+        Operator::Eq => {
+            Ok(FilterResult::condition(Condition::has_id(utils::scalar_to_point_ids(literal)?)))
+        }
+        _ => Ok(FilterResult::Unsupported(format!("Unsupported ID operator: {op}"))),
+    }
+}
+
+/// Build a payload-based condition.
+fn build_payload_condition(
+    field: impl Into<String>,
+    operator: Operator,
+    value: &ScalarValue,
+) -> DataFusionResult<FilterResult> {
+    use utils::{scalar_to_f64, scalar_to_string};
+
+    Ok(match operator {
+        Operator::Eq => {
+            FilterResult::condition(Condition::matches(field.into(), scalar_to_string(value)?))
+        }
+        Operator::Gt => FilterResult::condition(Condition::range(field.into(), Range {
+            gt: Some(scalar_to_f64(value)?),
+            ..Default::default()
+        })),
+        Operator::GtEq => FilterResult::condition(Condition::range(field.into(), Range {
+            gte: Some(scalar_to_f64(value)?),
+            ..Default::default()
+        })),
+        Operator::Lt => FilterResult::condition(Condition::range(field.into(), Range {
+            lt: Some(scalar_to_f64(value)?),
+            ..Default::default()
+        })),
+        Operator::LtEq => FilterResult::condition(Condition::range(field.into(), Range {
+            lte: Some(scalar_to_f64(value)?),
+            ..Default::default()
+        })),
+        _ => FilterResult::Unsupported(format!("Unsupported payload operator: {operator}")),
+    })
 }
 
 /// Information about a field reference in an expression.
@@ -141,42 +200,52 @@ enum FieldType {
 /// Returns Some(FieldInfo) for supported field patterns, None otherwise.
 fn extract_field_info(expr: &Expr) -> Option<FieldInfo> {
     match expr {
+        // Handle aliases that contain JSON functions (from payload->field SQL)
+        Expr::Alias(alias) => extract_field_info(&alias.expr),
+
         // Handle simple column references like "id"
         Expr::Column(column) => {
             if column.name == "id" {
                 Some(FieldInfo { field_type: FieldType::Id, name: "id".to_string() })
             } else {
-                None // Other column references not supported yet
+                // Assume payload field access
+                Some(FieldInfo { field_type: FieldType::Payload, name: column.name.clone() })
             }
         }
 
         // Handle JSON access functions (json_get, etc.) - may be wrapped in alias
-        Expr::ScalarFunction(_func) => extract_json_field_access(expr),
-
-        // Handle aliases that contain JSON functions (from payload->field SQL)
-        Expr::Alias(alias) => {
-            // The alias name will be something like "payload -> field"
-            // but we need to look at the inner expression to extract field info
-            extract_field_info(&alias.expr)
+        Expr::ScalarFunction(func) if is_json_function(func.func.name()) => {
+            extract_json_field_access(func)
         }
 
         _ => None,
     }
 }
 
+/// Simple helper to detect json functions
+fn is_json_function(func: &str) -> bool {
+    // Check if this is a JSON access function
+    matches!(
+        func,
+        "json_get"
+            | "json_get_bool"
+            | "json_get_float"
+            | "json_get_int"
+            | "json_get_json"
+            | "json_get_str"
+            | "json_get_array"
+            | "json_as_text"
+            | "json_contains"
+            | "json_length"
+    )
+}
+
 /// Extract field information from JSON access functions.
 ///
 /// Handles patterns like `json_get(payload, 'field_name')` which come from `payload->field_name`
 /// SQL.
-fn extract_json_field_access(expr: &Expr) -> Option<FieldInfo> {
-    let Expr::ScalarFunction(func) = expr else { return None };
-
-    // Check if this is a JSON access function
-    let func_name = func.func.name();
-    if !matches!(
-        func_name,
-        "json_get" | "json_get_str" | "json_get_int" | "json_get_float" | "json_get_bool"
-    ) {
+fn extract_json_field_access(func: &ScalarFunction) -> Option<FieldInfo> {
+    if !is_json_function(func.func.name()) {
         return None;
     }
 
@@ -186,13 +255,17 @@ fn extract_json_field_access(expr: &Expr) -> Option<FieldInfo> {
     }
 
     // First argument should be a column reference to "payload"
-    let Expr::Column(column_ref) = &func.args[0] else { return None };
+    let column_refs = func.args[0].column_refs();
+    if column_refs.is_empty() {
+        return None;
+    }
+    let column_ref = column_refs.iter().next().unwrap();
 
     if column_ref.name != "payload" {
         return None; // Only support payload field access for now
     }
 
-    // Second argument should be a string literal with the field name
+    // Second argument
     let field_name = match &func.args[1] {
         Expr::Literal(ScalarValue::Utf8(Some(name)) | ScalarValue::LargeUtf8(Some(name)), _) => {
             name.clone()
@@ -201,74 +274,6 @@ fn extract_json_field_access(expr: &Expr) -> Option<FieldInfo> {
     };
 
     Some(FieldInfo { field_type: FieldType::Payload, name: field_name })
-}
-
-/// Extract a literal value from an expression.
-///
-/// Returns Some(ScalarValue) if the expression is a literal, None otherwise.
-fn extract_literal_value(expr: &Expr) -> Option<ScalarValue> {
-    match expr {
-        Expr::Literal(value, _metadata) => Some(value.clone()),
-        _ => None,
-    }
-}
-
-/// Build a Qdrant condition from the extracted components.
-fn build_condition_from_components(
-    field_info: FieldInfo,
-    operator: Operator,
-    literal: ScalarValue,
-) -> DataFusionResult<FilterResult> {
-    match field_info.field_type {
-        FieldType::Id => build_id_condition(operator, literal),
-        FieldType::Payload => build_payload_condition(field_info.name, operator, literal),
-    }
-}
-
-/// Build an ID-based condition.
-fn build_id_condition(operator: Operator, literal: ScalarValue) -> DataFusionResult<FilterResult> {
-    match operator {
-        Operator::Eq => {
-            Ok(FilterResult::condition(Condition::has_id([utils::scalar_to_point_id(literal)?])))
-        }
-        _ => Ok(FilterResult::Unsupported(format!("Unsupported ID operator: {operator}"))),
-    }
-}
-
-/// Build a payload-based condition.
-fn build_payload_condition(
-    field_name: impl Into<String>,
-    operator: Operator,
-    literal: ScalarValue,
-) -> DataFusionResult<FilterResult> {
-    match operator {
-        Operator::Eq => Ok(FilterResult::condition(Condition::matches(
-            field_name.into(),
-            utils::scalar_to_string(literal)?,
-        ))),
-
-        Operator::Gt => Ok(FilterResult::condition(Condition::range(field_name.into(), Range {
-            gt: Some(utils::scalar_to_f64(&literal)?),
-            ..Default::default()
-        }))),
-
-        Operator::GtEq => Ok(FilterResult::condition(Condition::range(field_name.into(), Range {
-            gte: Some(utils::scalar_to_f64(&literal)?),
-            ..Default::default()
-        }))),
-
-        Operator::Lt => Ok(FilterResult::condition(Condition::range(field_name.into(), Range {
-            lt: Some(utils::scalar_to_f64(&literal)?),
-            ..Default::default()
-        }))),
-
-        Operator::LtEq => Ok(FilterResult::condition(Condition::range(field_name.into(), Range {
-            lte: Some(utils::scalar_to_f64(&literal)?),
-            ..Default::default()
-        }))),
-
-        _ => Ok(FilterResult::Unsupported(format!("Unsupported payload operator: {operator}"))),
-    }
 }
 
 #[cfg(test)]

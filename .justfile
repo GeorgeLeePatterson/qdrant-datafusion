@@ -8,12 +8,13 @@ default:
 
 # --- TESTS ---
 
-test-unit:
-    RUST_LOG={{ LOG }} cargo test --lib -F test-utils -- --nocapture --show-output
-
 # Runs unit tests first then integration
 test:
+    RUST_LOG={{ LOG }} cargo test --lib -F test-utils -- --nocapture --show-output
     RUST_LOG={{ LOG }} cargo test -F test-utils --test "e2e" -- --nocapture --show-output
+
+test-unit:
+    RUST_LOG={{ LOG }} cargo test --lib -F test-utils -- --nocapture --show-output
 
 test-one test_name:
     RUST_LOG={{ LOG }} cargo test -F test-utils "{{ test_name }}" -- --nocapture --show-output

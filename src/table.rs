@@ -15,6 +15,7 @@ use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, Pla
 use datafusion::prelude::Expr;
 use datafusion::sql::TableReference;
 use qdrant_client::Qdrant;
+use tracing::debug;
 
 use crate::arrow::deserialize::QdrantRecordBatchBuilder;
 use crate::arrow::schema::collection_to_arrow_schema;
@@ -273,6 +274,8 @@ pub(crate) async fn execute_qdrant_table_scan(
     filters: &[Expr],
     limit: Option<usize>,
 ) -> DataFusionResult<RecordBatch> {
+    debug!("Executing Qdrant table scan for collection {collection}");
+
     // Build selectors based on what fields are in the projected schema
     let vector_selection = utils::build_vector_selector_from_schema(&schema, None);
     let payload_selection = utils::build_payload_selector_from_schema(&schema);
