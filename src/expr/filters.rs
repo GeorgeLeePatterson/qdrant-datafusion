@@ -1,16 +1,320 @@
-//! `Expr` analysis for payload filters
+//! Systematic `DataFusion` expression to `Qdrant` filter translation
 
-use datafusion::common::{not_impl_err, plan_err};
+use std::sync::Arc;
+
+use datafusion::arrow::datatypes::{DataType, SchemaRef};
+use datafusion::common::not_impl_err;
 use datafusion::error::Result as DataFusionResult;
 use datafusion::logical_expr::expr::ScalarFunction;
-use datafusion::logical_expr::{BinaryExpr, Operator};
+use datafusion::logical_expr::{expr::{InList, Like}, BinaryExpr, Operator};
 use datafusion::prelude::Expr;
 use datafusion::scalar::ScalarValue;
 use qdrant_client::qdrant::{Condition, Filter, Range};
 
 use super::utils;
 
-/// Result of analyzing a single filter expression.
+/// Schema-aware `DataFusion` expression to `Qdrant` filter translator
+pub struct FilterBuilder {
+    schema: SchemaRef,
+}
+
+impl FilterBuilder {
+    /// Create a new `FilterBuilder` with the given schema
+    pub fn new(schema: SchemaRef) -> Self {
+        Self { schema }
+    }
+
+    /// Convert a `DataFusion` expression to a `Qdrant` filter using recursive descent
+    pub fn expr_to_filter(&self, expr: &Expr) -> DataFusionResult<Filter> {
+        // 🔍 DEBUG: Print expression being processed
+        eprintln!("🔍 Processing Expression: {expr:?}");
+        
+        match expr {
+            // Boolean operators - recursive with eager merging
+            Expr::BinaryExpr(BinaryExpr { left, op: Operator::And, right }) => {
+                let left_filter = self.expr_to_filter(left)?;
+                let right_filter = self.expr_to_filter(right)?;
+                Ok(merge_and_filters(left_filter, right_filter))
+            }
+
+            Expr::BinaryExpr(BinaryExpr { left, op: Operator::Or, right }) => {
+                let left_filter = self.expr_to_filter(left)?;
+                let right_filter = self.expr_to_filter(right)?;
+                Ok(merge_or_filters(left_filter, right_filter))
+            }
+
+            Expr::Not(inner) => {
+                let inner_filter = self.expr_to_filter(inner)?;
+                Ok(Filter::must_not([inner_filter.into()]))
+            }
+
+            // Leaf conditions
+            Expr::BinaryExpr(binary) => self.build_comparison_condition(binary),
+            Expr::InList(in_list) => self.build_in_list_condition(in_list),
+            Expr::IsNull(expr) => self.build_is_null_condition(expr),
+            Expr::Like(like) => self.build_like_condition(like),
+
+            // Handle aliases by unwrapping
+            Expr::Alias(alias) => self.expr_to_filter(&alias.expr),
+
+            _ => not_impl_err!("Unsupported filter expression: {expr}"),
+        }
+    }
+
+    /// Build comparison conditions (=, >, <, etc.)
+    fn build_comparison_condition(&self, binary: &BinaryExpr) -> DataFusionResult<Filter> {
+        let BinaryExpr { left, op, right } = binary;
+
+        // Try pattern: <field> <op> <literal>
+        if let (Some(field_info), Some(literal)) = (extract_field_info(left), right.as_literal()) {
+            return self.build_field_condition(&field_info, *op, literal);
+        }
+
+        // Try reversed pattern: <literal> <op> <field>
+        if let (Some(literal), Some(field_info)) = (left.as_literal(), extract_field_info(right)) {
+            let reversed_op = utils::reverse_operator(*op);
+            return self.build_field_condition(&field_info, reversed_op, literal);
+        }
+
+        not_impl_err!("Unsupported comparison: {binary}")
+    }
+
+    /// Build field-specific conditions based on field type
+    fn build_field_condition(&self, field_info: &FieldInfo, op: Operator, literal: &ScalarValue) -> DataFusionResult<Filter> {
+        let condition = match field_info.field_type {
+            FieldType::Id => self.build_id_condition(op, literal)?,
+            FieldType::Payload => self.build_payload_condition(&field_info.name, op, literal)?,
+        };
+        Ok(Filter::must([condition]))
+    }
+
+    /// Build ID-based conditions 
+    fn build_id_condition(&self, op: Operator, literal: &ScalarValue) -> DataFusionResult<Condition> {
+        match op {
+            Operator::Eq => Ok(Condition::has_id(utils::scalar_to_point_ids(literal)?)),
+            _ => not_impl_err!("Unsupported ID operator: {op}"),
+        }
+    }
+
+    /// Build payload field conditions
+    fn build_payload_condition(&self, field_name: &str, op: Operator, literal: &ScalarValue) -> DataFusionResult<Condition> {
+        match op {
+            Operator::Eq => Ok(Condition::matches(field_name, utils::scalar_to_string(literal)?)),
+            Operator::Gt => Ok(Condition::range(field_name, Range {
+                gt: Some(utils::scalar_to_f64(literal)?),
+                ..Default::default()
+            })),
+            Operator::GtEq => Ok(Condition::range(field_name, Range {
+                gte: Some(utils::scalar_to_f64(literal)?),
+                ..Default::default()
+            })),
+            Operator::Lt => Ok(Condition::range(field_name, Range {
+                lt: Some(utils::scalar_to_f64(literal)?),
+                ..Default::default()
+            })),
+            Operator::LtEq => Ok(Condition::range(field_name, Range {
+                lte: Some(utils::scalar_to_f64(literal)?),
+                ..Default::default()
+            })),
+            _ => not_impl_err!("Unsupported payload operator: {op}"),
+        }
+    }
+
+    /// Build IN list conditions
+    fn build_in_list_condition(&self, in_list: &InList) -> DataFusionResult<Filter> {
+        let field_info = extract_field_info(&in_list.expr)
+            .ok_or_else(|| datafusion::common::plan_datafusion_err!("Cannot extract field info from InList expression"))?;
+
+        // 🔍 DEBUG: Print field info for ID IN debugging
+        eprintln!("🔍 ID IN Debug - field_info: {:?}", field_info);
+
+        match field_info.field_type {
+            FieldType::Id => {
+                let mut point_ids = Vec::new();
+                for expr in &in_list.list {
+                    if let Some(literal) = expr.as_literal() {
+                        point_ids.extend(utils::scalar_to_point_ids(literal)?);
+                    } else {
+                        return not_impl_err!("Non-literal values in ID IN list");
+                    }
+                }
+                
+                let condition = Condition::has_id(point_ids);
+                let filter = if in_list.negated {
+                    Filter::must_not([condition])
+                } else {
+                    Filter::must([condition])
+                };
+                Ok(filter)
+            }
+            FieldType::Payload => {
+                // Build OR condition for payload IN list
+                let mut conditions = Vec::new();
+                for expr in &in_list.list {
+                    if let Some(literal) = expr.as_literal() {
+                        conditions.push(Condition::matches(&field_info.name, utils::scalar_to_string(literal)?));
+                    } else {
+                        return not_impl_err!("Non-literal values in payload IN list");
+                    }
+                }
+                
+                let filter = if in_list.negated {
+                    Filter::must_not([Filter::should(conditions).into()])
+                } else {
+                    Filter::should(conditions)
+                };
+                Ok(filter)
+            }
+        }
+    }
+
+    /// Build IS NULL conditions
+    fn build_is_null_condition(&self, expr: &Expr) -> DataFusionResult<Filter> {
+        let field_info = extract_field_info(expr)
+            .ok_or_else(|| datafusion::common::plan_datafusion_err!("Cannot extract field info from IS NULL expression"))?;
+
+        // 🔍 DEBUG: Print field info for IS NULL debugging
+        eprintln!("🔍 IS NULL Debug - field_info: {:?}", field_info);
+
+        match field_info.field_type {
+            FieldType::Id => not_impl_err!("IS NULL not supported on ID field"),
+            FieldType::Payload => Ok(Filter::must([Condition::is_null(&field_info.name)])),
+        }
+    }
+
+    /// Build LIKE conditions with text matching heuristics
+    fn build_like_condition(&self, like: &Like) -> DataFusionResult<Filter> {
+        let field_info = extract_field_info(&like.expr)
+            .ok_or_else(|| datafusion::common::plan_datafusion_err!("Cannot extract field info from LIKE expression"))?;
+
+        let pattern_literal = like.pattern.as_literal()
+            .ok_or_else(|| datafusion::common::plan_datafusion_err!("LIKE pattern must be a literal"))?;
+        
+        let pattern = utils::scalar_to_string(pattern_literal)?;
+
+        // Convert SQL LIKE pattern to `Qdrant` search query - inline conversion
+        let condition = if !pattern.contains('%') {
+            // No wildcards: exact phrase match
+            Condition::matches_phrase(&field_info.name, pattern)
+        } else {
+            // Extract search terms by removing % wildcards  
+            let terms: Vec<&str> = pattern.split('%').filter(|s| !s.is_empty()).collect();
+            
+            if terms.is_empty() {
+                return not_impl_err!("Empty LIKE pattern not supported");
+            }
+            
+            if terms.len() == 1 {
+                // Single term: "%premium%" → phrase search for "premium"
+                Condition::matches_phrase(&field_info.name, terms[0])
+            } else {
+                // Multiple terms: "%premium%london%" → full-text search for "premium london"
+                let search_query = terms.join(" ");
+                Condition::matches_text(&field_info.name, search_query)
+            }
+        };
+
+        let filter = if like.negated {
+            Filter::must_not([condition])
+        } else {
+            Filter::must([condition])
+        };
+        Ok(filter)
+    }
+
+    /// Schema lookup helper - get data type for a field path
+    fn field_data_type(&self, field_path: &str) -> Option<&DataType> {
+        self.schema.field_with_name(field_path).ok().map(|field| field.data_type())
+    }
+}
+
+/// Convert multiple `DataFusion` expressions to a single `Qdrant` filter (legacy API)
+///
+/// This function provides backward compatibility with the existing API.
+/// For new code, use `FilterBuilder::expr_to_filter()` directly.
+pub(crate) fn translate_payload_filters(filters: &[Expr]) -> DataFusionResult<Filter> {
+    if filters.is_empty() {
+        return Ok(Filter::default());
+    }
+
+    // Create a basic schema for legacy compatibility - in practice this should be passed in
+    let schema = Arc::new(datafusion::arrow::datatypes::Schema::empty());
+    let builder = FilterBuilder::new(schema);
+
+    // Combine all expressions with AND logic
+    let combined_expr = if filters.len() == 1 {
+        filters[0].clone()
+    } else {
+        filters.iter().cloned().reduce(|acc, expr| Expr::BinaryExpr(BinaryExpr::new(
+            Box::new(acc),
+            Operator::And,
+            Box::new(expr),
+        ))).unwrap()
+    };
+
+    let filter = builder.expr_to_filter(&combined_expr)?;
+    
+    // 🔍 DEBUG: Print final filter structure
+    eprintln!("🔍 Final Filter Debug: {filter:?}");
+    
+    Ok(filter)
+}
+
+/// Merge two filters with AND logic, consolidating ranges on the same field
+fn merge_and_filters(left: Filter, right: Filter) -> Filter {
+    // TODO: Implement range consolidation for same-field ranges
+    // For now, simple merge of must conditions
+    let mut must_conditions = left.must;
+    must_conditions.extend(right.must);
+    
+    let mut must_not_conditions = left.must_not;
+    must_not_conditions.extend(right.must_not);
+
+    Filter {
+        must: must_conditions,
+        must_not: must_not_conditions,
+        should: vec![], // AND filters don't have should conditions
+        min_should: None,
+    }
+}
+
+/// Merge two filters with OR logic
+fn merge_or_filters(left: Filter, right: Filter) -> Filter {
+    // Convert each filter to a condition and combine with should
+    let mut should_conditions = Vec::new();
+    
+    // Convert left filter to condition
+    if !left.must.is_empty() || !left.must_not.is_empty() || !left.should.is_empty() {
+        should_conditions.push(left.into());
+    }
+    
+    // Convert right filter to condition  
+    if !right.must.is_empty() || !right.must_not.is_empty() || !right.should.is_empty() {
+        should_conditions.push(right.into());
+    }
+    
+    Filter::should(should_conditions)
+}
+
+/// Legacy function for backward compatibility
+pub(crate) fn analyze_filter_expr(expr: &Expr) -> DataFusionResult<FilterResult> {
+    // Convert using FilterBuilder and wrap result
+    let schema = Arc::new(datafusion::arrow::datatypes::Schema::empty());
+    let builder = FilterBuilder::new(schema);
+    match builder.expr_to_filter(expr) {
+        Ok(filter) => {
+            // Convert Filter back to FilterResult format
+            if filter.must.len() == 1 && filter.should.is_empty() && filter.must_not.is_empty() {
+                Ok(FilterResult::Condition(Box::new(filter.must[0].clone())))
+            } else {
+                Ok(FilterResult::Condition(Box::new(filter.into())))
+            }
+        }
+        Err(e) => Ok(FilterResult::Unsupported(e.to_string())),
+    }
+}
+
+/// Result of analyzing a single filter expression (legacy)
 #[derive(Debug)]
 pub(crate) enum FilterResult {
     /// Successfully translated to a Qdrant condition
@@ -26,157 +330,7 @@ impl FilterResult {
     }
 }
 
-/// Translate `DataFusion` payload filter expressions to Qdrant filter conditions.
-///
-/// This function analyzes each `DataFusion` expression individually to identify
-/// patterns that can be translated into Qdrant query conditions.
-///
-/// # Supported Filter Patterns
-/// - `payload->field = 'value'` → `Condition::matches`
-/// - `payload->field > 10` → `Condition::range`
-/// - `id = 'point_id'` → Point ID filtering
-/// - Multiple filters are combined with `Filter::must` (AND logic)
-///
-/// # Arguments
-/// * `filters` - Array of `DataFusion` expressions to translate
-///
-/// # Returns
-/// A Qdrant `Filter` object containing the translated conditions.
-///
-/// # Errors
-/// Returns an error if any filter expressions cannot be translated.
-pub(crate) fn translate_payload_filters(filters: &[Expr]) -> DataFusionResult<Filter> {
-    let mut conditions = Vec::with_capacity(filters.len());
-    let mut unsupported = Vec::new();
-
-    // Analyze each filter expression individually
-    for filter in filters {
-        match analyze_filter_expr(filter)? {
-            FilterResult::Condition(condition) => conditions.push(*condition),
-            FilterResult::Unsupported(reason) => unsupported.push(reason),
-        }
-    }
-
-    if !unsupported.is_empty() {
-        return not_impl_err!("Unsupported filter expressions: {}", unsupported.join(", "));
-    }
-
-    if conditions.is_empty() {
-        return plan_err!("No valid payload filter conditions found");
-    }
-
-    Ok(Filter::must(conditions))
-}
-
-/// Analyze a single `DataFusion` expression and attempt to translate it to a Qdrant condition.
-///
-/// This function examines the structure of the expression to identify supported patterns
-/// like `payload->field = 'value'` or `id = 'point_id'` and builds the corresponding
-/// Qdrant condition.
-///
-/// # Errors
-/// - Returns an error if the expression cannot be translated to a Qdrant condition.
-pub(crate) fn analyze_filter_expr(expr: &Expr) -> DataFusionResult<FilterResult> {
-    match expr {
-        Expr::Alias(alias) => analyze_filter_expr(&alias.expr),
-
-        // Handle binary comparison expressions
-        Expr::BinaryExpr(binary) => analyze_binary_expr(binary),
-
-        // TODO: Handle compound expressions with AND/OR logic
-        // TODO: Handle other expression types:
-        // - InList for IN conditions
-        // - IsNull/IsNotNull for null checks
-        // - Like for pattern matching
-        // - Handle NOT
-
-        // Everything else is unsupported for now
-        _ => Ok(FilterResult::Unsupported(format!("{expr}"))),
-    }
-}
-
-/// Analyze a binary expression to extract filter components.
-///
-/// Supported patterns:
-/// - `payload->field = 'value'` → `Condition::matches`
-/// - `payload->field > 10` → `Condition::range`
-/// - `id = 'point_id'` → Point ID condition
-fn analyze_binary_expr(binary: &BinaryExpr) -> DataFusionResult<FilterResult> {
-    fn analyze_binary_impl(
-        l: &Expr,
-        o: Operator,
-        r: &Expr,
-    ) -> DataFusionResult<Option<FilterResult>> {
-        match (extract_field_info(l), r.as_literal()) {
-            (Some(field), Some(value)) => {
-                match field.field_type {
-                    // Build an ID-based condition.
-                    FieldType::Id => build_id_condition(o, value).map(Some),
-                    FieldType::Payload => build_payload_condition(field.name, o, value).map(Some),
-                }
-            }
-            _ => Ok(None),
-        }
-    }
-
-    let BinaryExpr { left, op, right } = binary;
-
-    // Try to identify the pattern: <field_expr> <op> <literal>
-    if let Some(result) = analyze_binary_impl(left, *op, right)? {
-        return Ok(result);
-    }
-
-    // Try reversed pattern: <literal> <op> <field_expr>
-    // Reverse the operator for reversed operands
-    let reversed_op = utils::reverse_operator(*op);
-    if let Some(result) = analyze_binary_impl(right, reversed_op, left)? {
-        return Ok(result);
-    }
-
-    Ok(FilterResult::Unsupported(format!("{binary}")))
-}
-
-/// Build a id-based condition.
-fn build_id_condition(op: Operator, literal: &ScalarValue) -> DataFusionResult<FilterResult> {
-    match op {
-        Operator::Eq => {
-            Ok(FilterResult::condition(Condition::has_id(utils::scalar_to_point_ids(literal)?)))
-        }
-        _ => Ok(FilterResult::Unsupported(format!("Unsupported ID operator: {op}"))),
-    }
-}
-
-/// Build a payload-based condition.
-fn build_payload_condition(
-    field: impl Into<String>,
-    operator: Operator,
-    value: &ScalarValue,
-) -> DataFusionResult<FilterResult> {
-    use utils::{scalar_to_f64, scalar_to_string};
-
-    Ok(match operator {
-        Operator::Eq => {
-            FilterResult::condition(Condition::matches(field.into(), scalar_to_string(value)?))
-        }
-        Operator::Gt => FilterResult::condition(Condition::range(field.into(), Range {
-            gt: Some(scalar_to_f64(value)?),
-            ..Default::default()
-        })),
-        Operator::GtEq => FilterResult::condition(Condition::range(field.into(), Range {
-            gte: Some(scalar_to_f64(value)?),
-            ..Default::default()
-        })),
-        Operator::Lt => FilterResult::condition(Condition::range(field.into(), Range {
-            lt: Some(scalar_to_f64(value)?),
-            ..Default::default()
-        })),
-        Operator::LtEq => FilterResult::condition(Condition::range(field.into(), Range {
-            lte: Some(scalar_to_f64(value)?),
-            ..Default::default()
-        })),
-        _ => FilterResult::Unsupported(format!("Unsupported payload operator: {operator}")),
-    })
-}
+// === Shared helper functions ===
 
 /// Information about a field reference in an expression.
 #[derive(Debug, Clone)]
@@ -316,8 +470,12 @@ mod tests {
 
     #[test]
     fn test_unsupported_expression() {
-        // Test unsupported expression
-        let expr = Expr::IsNull(Box::new(col("some_field")));
+        // Test truly unsupported expression (Case expression)
+        let expr = Expr::Case(datafusion::logical_expr::expr::Case {
+            expr: None,
+            when_then_expr: vec![],
+            else_expr: None,
+        });
 
         let result = translate_payload_filters(&[expr]);
         assert!(result.is_err());
