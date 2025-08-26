@@ -143,7 +143,7 @@ impl QdrantQueryBuilder {
 
         // Apply payload filters
         if !self.payload_filters.is_empty() {
-            let qdrant_filter = translate_payload_filters(&self.payload_filters)?;
+            let qdrant_filter = translate_payload_filters(&self.payload_filters, &self.schema)?;
             query_builder = query_builder.filter(qdrant_filter);
         }
 
