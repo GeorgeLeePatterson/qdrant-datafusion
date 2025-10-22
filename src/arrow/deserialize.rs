@@ -42,7 +42,7 @@ pub fn convert_to_multi_vector(
     data: &[f32],
     vectors_count: u32,
 ) -> DataFusionResult<Vec<Vec<f32>>> {
-    if data.len() % vectors_count as usize != 0 {
+    if !data.len().is_multiple_of(vectors_count as usize) {
         return Err(DataFusionError::External(Box::new(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             format!(
