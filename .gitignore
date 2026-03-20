@@ -65,3 +65,4 @@ venv.bak/
 
 # AI
 CLAUDE_*.md
+.claude/
