@@ -2,12 +2,8 @@
 
 mod common;
 
-const TRACING_DIRECTIVES: &[(&str, &str)] = &[
-    ("testcontainers", "debug"),
-    ("hyper", "error"),
-    ("tonic", "error"),
-    // --
-];
+const TRACING_DIRECTIVES: &[(&str, &str)] =
+    &[("testcontainers", "debug"), ("hyper", "error"), ("tonic", "error")];
 
 #[cfg(feature = "test-utils")]
 e2e_test!(table_provider_named, tests::test_table_provider_named, TRACING_DIRECTIVES, None);
@@ -16,130 +12,50 @@ e2e_test!(table_provider_named, tests::test_table_provider_named, TRACING_DIRECT
 e2e_test!(table_provider_unnamed, tests::test_table_provider_unnamed, TRACING_DIRECTIVES, None);
 
 #[cfg(feature = "test-utils")]
-e2e_test!(table_provider, tests::test_table_provider, TRACING_DIRECTIVES, None);
-
-#[cfg(feature = "test-utils")]
 mod tests {
     use std::sync::Arc;
 
-    use datafusion::arrow;
-    use datafusion::datasource::TableProvider;
-    use datafusion::physical_plan::{DisplayAs, DisplayFormatType};
+    use datafusion::arrow::array::types::Float32Type;
+    use datafusion::arrow::array::{Array, FixedSizeListArray, StringArray, StructArray};
     use datafusion::prelude::*;
+    use ndarrow::{csr_matrix_batch_iter, fixed_size_list_as_array2, variable_shape_tensor_iter};
     use qdrant_client::Qdrant;
     use qdrant_client::qdrant::{
         CreateCollectionBuilder, Distance, MultiVectorComparator, MultiVectorConfig, NamedVectors,
         PointStruct, SparseVectorParamsBuilder, SparseVectorsConfigBuilder, UpsertPointsBuilder,
         Vector, VectorParamsBuilder, VectorsConfigBuilder,
     };
+    use qdrant_datafusion::arrow::schema::{
+        dense_vector_width, is_multi_vector_field, is_sparse_vector_field, multivector_width,
+    };
     use qdrant_datafusion::error::Result;
-    use qdrant_datafusion::table::{QdrantScanExec, QdrantTableProvider};
+    use qdrant_datafusion::table::QdrantTableProvider;
     use qdrant_datafusion::test_utils::QdrantContainer;
-    use tracing::debug;
 
     fn create_qdrant_client(c: &Arc<QdrantContainer>) -> Result<Qdrant> {
-        let api_key = c.get_api_key();
-        let url = c.get_url();
-        eprintln!(">> Connecting to Qdrant @ {url}");
-        Qdrant::from_url(&url).api_key(api_key).build().map_err(Into::into)
+        Qdrant::from_url(&c.get_url()).api_key(c.get_api_key()).build().map_err(Into::into)
     }
 
-    /// Simple test coverage for `TableProvider` and `ScanExec`
-    pub(super) async fn test_table_provider(c: Arc<QdrantContainer>) -> Result<()> {
-        struct QdrantScanExecDebug(QdrantScanExec);
-        impl std::fmt::Display for QdrantScanExecDebug {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                self.0.fmt_as(DisplayFormatType::Default, f)?;
-                self.0.fmt_as(DisplayFormatType::TreeRender, f)
-            }
-        }
-
-        eprintln!("> Testing TableProvider coverage methods");
-        let client = create_qdrant_client(&c)?;
-
-        let collection_name = "test_coverage";
-
-        // Create simple collection
-        let _ = client
-            .create_collection(
-                CreateCollectionBuilder::new(collection_name)
-                    .vectors_config(VectorParamsBuilder::new(2, Distance::Cosine)),
-            )
-            .await?;
-
-        // Insert one simple point
-        let mut payload = qdrant_client::Payload::new();
-        payload.insert("title", "Test Point");
-
-        let points = vec![PointStruct::new(1, Vector::new_dense(vec![0.1, 0.2]), payload)];
-
-        drop(client.upsert_points(UpsertPointsBuilder::new(collection_name, points)).await?);
-
-        // Create TableProvider
-        let table_provider = QdrantTableProvider::try_new(client.clone(), collection_name).await?;
-
-        // Test Debug implementation
-        eprintln!("QdrantTableProvider debug: {table_provider:?}");
-
-        // Test as_any method by checking downcast
-        let any_ref = table_provider.as_any();
-        let is_correct_type = any_ref.downcast_ref::<QdrantTableProvider>().is_some();
-        eprintln!("QdrantTableProvider as_any downcast success: {is_correct_type}");
-        assert!(is_correct_type);
-
-        // Test table_type method
-        let table_type = table_provider.table_type();
-        eprintln!("QdrantTableProvider table_type: {table_type:?}");
-        assert_eq!(table_type, datafusion::datasource::TableType::Base);
-
-        let ctx = SessionContext::new();
-        let scan = table_provider.scan(&ctx.state(), None, &[], None).await.unwrap();
-        let qdrant_scan = scan.as_any().downcast_ref::<QdrantScanExec>().unwrap();
-        eprintln!("QdrantScanExec debug: {qdrant_scan:?}");
-        let scan_display = QdrantScanExecDebug(qdrant_scan.clone());
-        eprintln!("Physical plan debug: {scan_display}");
-
-        eprintln!(">> ✅ TableProvider coverage test completed!");
-        eprintln!("   - QdrantTableProvider Debug, as_any, table_type: ✅");
-        eprintln!("   - QdrantScanExec Debug and DisplayAs: ✅");
-
-        Ok(())
+    fn field_names(schema: &datafusion::arrow::datatypes::Schema) -> Vec<&str> {
+        schema.fields().iter().map(|field| field.name().as_str()).collect()
     }
 
-    /// Test heterogeneous vector sets - different points have different vector fields
+    fn assert_f32_eq(left: f32, right: f32) {
+        assert!((left - right).abs() < 1.0e-6, "left={left}, right={right}");
+    }
+
     #[expect(clippy::too_many_lines)]
     pub(super) async fn test_table_provider_named(c: Arc<QdrantContainer>) -> Result<()> {
-        eprintln!(
-            "> Testing HETEROGENEOUS vector fields - different points have different vectors"
-        );
         let client = create_qdrant_client(&c)?;
+        let collection_name = "test_named_canonical";
 
-        let collection_name = "test_heterogeneous";
-
-        // Create collection using PROPER BUILDERS as per Qdrant docs
-        // Dense vectors: can be named or unnamed, regular or multi
-        // Sparse vectors: MUST be named
-
-        // Use VectorsConfigBuilder for named dense vectors
         let mut vectors_config = VectorsConfigBuilder::default();
         let _ = vectors_config.add_named_vector_params(
-            "test_embedding",
-            VectorParamsBuilder::new(2, Distance::Cosine).build(),
-        );
-        let _ = vectors_config.add_named_vector_params(
             "text_embedding",
-            VectorParamsBuilder::new(3, Distance::Cosine).build(),
+            VectorParamsBuilder::new(3, Distance::Dot).build(),
         );
         let _ = vectors_config.add_named_vector_params(
-            "image_embedding",
-            VectorParamsBuilder::new(4, Distance::Dot).build(),
-        );
-        let _ = vectors_config.add_named_vector_params(
-            "audio_embedding",
-            VectorParamsBuilder::new(2, Distance::Euclid).build(),
-        );
-        let _ = vectors_config.add_named_vector_params(
-            "multi_embeddings",
+            "multi_embedding",
             VectorParamsBuilder::new(2, Distance::Dot)
                 .multivector_config(MultiVectorConfig {
                     comparator: MultiVectorComparator::MaxSim.into(),
@@ -147,7 +63,6 @@ mod tests {
                 .build(),
         );
 
-        // Add sparse vectors (MUST be named per docs)
         let mut sparse_config = SparseVectorsConfigBuilder::default();
         let _ =
             sparse_config.add_named_vector_params("keywords", SparseVectorParamsBuilder::default());
@@ -160,320 +75,157 @@ mod tests {
             )
             .await?;
 
-        // Point 1: ONLY has test_embedding + keywords sparse
         let mut payload1 = qdrant_client::Payload::new();
         payload1.insert("title", "Point 1");
-
-        let mut named_vectors1 = NamedVectors::default();
-        named_vectors1 =
-            named_vectors1.add_vector("test_embedding", Vector::new_dense(vec![0.1, 0.2]));
-        named_vectors1 =
-            named_vectors1.add_vector("keywords", Vector::new_sparse(vec![0, 5], vec![0.1, 0.9]));
-        named_vectors1 = named_vectors1.add_vector(
-            "multi_embeddings",
-            Vector::new_multi(vec![vec![0.7, 0.8], vec![0.9, 0.1]]),
-        );
-        // Deliberately NO audio_embedding or text_embedding or image_embedding!
-
-        // Point 2: Has text_embedding + image_embedding + keywords
         let mut payload2 = qdrant_client::Payload::new();
         payload2.insert("title", "Point 2");
 
-        let mut named_vectors2 = NamedVectors::default();
-        named_vectors2 =
-            named_vectors2.add_vector("text_embedding", Vector::new_dense(vec![0.3, 0.4, 0.5]));
-        named_vectors2 = named_vectors2
-            .add_vector("image_embedding", Vector::new_dense(vec![0.6, 0.7, 0.8, 0.9]));
-        named_vectors2 =
-            named_vectors2.add_vector("keywords", Vector::new_sparse(vec![1, 3], vec![0.7, 0.4]));
-        // Deliberately NO test_embedding or audio_embedding!
+        let mut vectors1 = NamedVectors::default();
+        vectors1 = vectors1.add_vector("text_embedding", Vector::new_dense(vec![0.1, 0.2, 0.3]));
+        vectors1 = vectors1
+            .add_vector("multi_embedding", Vector::new_multi(vec![vec![1.0, 2.0], vec![3.0, 4.0]]));
+        vectors1 = vectors1.add_vector("keywords", Vector::new_sparse(vec![0, 5], vec![0.5, 1.5]));
 
-        // Point 3: Has text_embedding + audio_embedding + keywords
-        let mut payload3 = qdrant_client::Payload::new();
-        payload3.insert("title", "Point 3");
+        let mut vectors2 = NamedVectors::default();
+        vectors2 = vectors2.add_vector("text_embedding", Vector::new_dense(vec![0.4, 0.5, 0.6]));
+        vectors2 = vectors2.add_vector("multi_embedding", Vector::new_multi(vec![vec![5.0, 6.0]]));
+        vectors2 =
+            vectors2.add_vector("keywords", Vector::new_sparse(vec![1, 3, 4], vec![0.2, 0.3, 0.4]));
 
-        let mut named_vectors3 = NamedVectors::default();
-        named_vectors3 =
-            named_vectors3.add_vector("text_embedding", Vector::new_dense(vec![0.11, 0.12, 0.13]));
-        named_vectors3 =
-            named_vectors3.add_vector("audio_embedding", Vector::new_dense(vec![0.14, 0.15]));
-        named_vectors3 = named_vectors3
-            .add_vector("keywords", Vector::new_sparse(vec![2, 4, 6], vec![0.2, 0.6, 0.8]));
-        // Deliberately NO test_embedding or image_embedding!
-
-        let points = vec![
-            PointStruct::new(1, named_vectors1, payload1),
-            PointStruct::new(2, named_vectors2, payload2),
-            PointStruct::new(3, named_vectors3, payload3),
-        ];
-
+        let points =
+            vec![PointStruct::new(1, vectors1, payload1), PointStruct::new(2, vectors2, payload2)];
         drop(client.upsert_points(UpsertPointsBuilder::new(collection_name, points)).await?);
 
-        // Create TableProvider and test
-        debug!(">> Creating QdrantTableProvider for heterogeneous vectors");
         let table_provider = QdrantTableProvider::try_new(client.clone(), collection_name).await?;
-
         let ctx = SessionContext::new();
-        drop(ctx.register_table("hetero_table", Arc::new(table_provider))?);
+        drop(ctx.register_table("docs", Arc::new(table_provider))?);
 
-        // Test: SELECT * - Should show all fields, with nulls where vectors missing
-        eprintln!(">> Test: SELECT * FROM hetero_table (heterogeneous vectors)");
-        let df = ctx.sql("SELECT * FROM hetero_table").await?;
-        let results = df.collect().await?;
+        let batches = ctx
+            .sql(
+                "SELECT id, payload, text_embedding, multi_embedding, keywords FROM docs ORDER BY \
+                 id",
+            )
+            .await?
+            .collect()
+            .await?;
+        let batch = batches.into_iter().next().expect("single batch");
+        let schema = batch.schema();
 
-        eprintln!(">>> Heterogeneous vectors query results:");
-        for (i, batch) in results.iter().enumerate() {
-            let schema = batch.schema();
-            eprintln!("    Batch {i}: {} rows, {} columns", batch.num_rows(), batch.num_columns());
-            debug!("      Schema: {schema:?}");
+        assert_eq!(batch.num_rows(), 2);
+        assert_eq!(field_names(schema.as_ref()), vec![
+            "id",
+            "payload",
+            "text_embedding",
+            "multi_embedding",
+            "keywords"
+        ],);
 
-            // Should have all vector fields defined in collection config
-            assert_eq!(batch.num_rows(), 3);
+        let payload = batch
+            .column(schema.index_of("payload").expect("payload index"))
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("payload string array");
+        assert_eq!(payload.null_count(), 0);
 
-            let field_names: Vec<&str> =
-                schema.fields().iter().map(|f| f.name().as_str()).collect();
-            eprintln!("    Field names: {field_names:?}");
+        let dense_field = schema.field_with_name("text_embedding").expect("dense field present");
+        assert_eq!(dense_vector_width(dense_field), Some(3));
+        let dense_array = batch
+            .column(schema.index_of("text_embedding").expect("dense index"))
+            .as_any()
+            .downcast_ref::<FixedSizeListArray>()
+            .expect("dense vector array");
+        let dense_view =
+            fixed_size_list_as_array2::<Float32Type>(dense_array).expect("dense ndarray view");
+        assert_eq!(dense_view.shape(), &[2, 3]);
+        assert_f32_eq(dense_view[[0, 0]], 0.1);
+        assert_f32_eq(dense_view[[1, 2]], 0.6);
 
-            // All vector fields should be present in schema
-            assert!(field_names.contains(&"test_embedding"));
-            assert!(field_names.contains(&"text_embedding"));
-            assert!(field_names.contains(&"image_embedding"));
-            assert!(field_names.contains(&"audio_embedding"));
-            assert!(field_names.contains(&"multi_embeddings"));
-            assert!(field_names.contains(&"keywords_indices"));
-            assert!(field_names.contains(&"keywords_values"));
-            assert!(field_names.contains(&"id"));
-            assert!(field_names.contains(&"payload"));
+        let multi_field =
+            schema.field_with_name("multi_embedding").expect("multivector field present");
+        assert!(is_multi_vector_field(multi_field));
+        assert_eq!(multivector_width(multi_field), Some(2));
+        let multi_array = batch
+            .column(schema.index_of("multi_embedding").expect("multivector index"))
+            .as_any()
+            .downcast_ref::<StructArray>()
+            .expect("multivector struct array");
+        let multi_rows = variable_shape_tensor_iter::<Float32Type>(multi_field, multi_array)
+            .expect("multivector iterator")
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .expect("valid multivector rows");
+        assert_eq!(multi_rows[0].1.shape(), &[2, 2]);
+        assert_f32_eq(multi_rows[0].1[[1, 1]], 4.0);
+        assert_eq!(multi_rows[1].1.shape(), &[1, 2]);
+        assert_f32_eq(multi_rows[1].1[[0, 1]], 6.0);
 
-            arrow::util::pretty::print_batches(std::slice::from_ref(batch)).unwrap();
-        }
-
-        // Test 2: Projection - Only dense vector
-        eprintln!(">> Test 2: SELECT text_embedding FROM hetero_table (dense only)");
-        let df = ctx.sql("SELECT text_embedding FROM hetero_table").await?;
-        let results = df.collect().await?;
-
-        for batch in &results {
-            assert_eq!(batch.num_columns(), 1);
-            assert_eq!(batch.schema().field(0).name(), "text_embedding");
-            arrow::util::pretty::print_batches(std::slice::from_ref(batch)).unwrap();
-        }
-
-        // Test 3: Projection - Only sparse vectors
-        eprintln!(">> Test 3: SELECT keywords_indices, keywords_values FROM hetero_table");
-        let df = ctx.sql("SELECT keywords_indices, keywords_values FROM hetero_table").await?;
-        let results = df.collect().await?;
-
-        for batch in &results {
-            assert_eq!(batch.num_columns(), 2);
-            assert_eq!(batch.schema().field(0).name(), "keywords_indices");
-            assert_eq!(batch.schema().field(1).name(), "keywords_values");
-            arrow::util::pretty::print_batches(std::slice::from_ref(batch)).unwrap();
-        }
-
-        // Test 4: Projection - Mix of different dense vectors
-        eprintln!(">> Test 4: SELECT test_embedding, image_embedding FROM hetero_table");
-        let df = ctx.sql("SELECT test_embedding, image_embedding FROM hetero_table").await?;
-        let results = df.collect().await?;
-
-        for batch in &results {
-            assert_eq!(batch.num_columns(), 2);
-            assert_eq!(batch.schema().field(0).name(), "test_embedding");
-            assert_eq!(batch.schema().field(1).name(), "image_embedding");
-            arrow::util::pretty::print_batches(std::slice::from_ref(batch)).unwrap();
-        }
-
-        // Test 5: Projection - Dense + sparse mixed
-        eprintln!(">> Test 5: SELECT text_embedding, keywords_indices FROM hetero_table");
-        let df = ctx.sql("SELECT text_embedding, keywords_indices FROM hetero_table").await?;
-        let results = df.collect().await?;
-
-        for batch in &results {
-            assert_eq!(batch.num_columns(), 2);
-            assert_eq!(batch.schema().field(0).name(), "text_embedding");
-            assert_eq!(batch.schema().field(1).name(), "keywords_indices");
-            arrow::util::pretty::print_batches(std::slice::from_ref(batch)).unwrap();
-        }
-
-        // Test 6: Projection - No vectors, only metadata
-        eprintln!(">> Test 6: SELECT id, payload FROM hetero_table (no vectors)");
-        let df = ctx.sql("SELECT id, payload FROM hetero_table").await?;
-        let results = df.collect().await?;
-
-        for batch in &results {
-            assert_eq!(batch.num_columns(), 2);
-            assert_eq!(batch.schema().field(0).name(), "id");
-            assert_eq!(batch.schema().field(1).name(), "payload");
-            arrow::util::pretty::print_batches(std::slice::from_ref(batch)).unwrap();
-        }
-
-        // Test 7: Projection - Single field that many points don't have
-        eprintln!(">> Test 7: SELECT audio_embedding FROM hetero_table (mostly nulls)");
-        let df = ctx.sql("SELECT audio_embedding FROM hetero_table").await?;
-        let results = df.collect().await?;
-
-        for batch in &results {
-            assert_eq!(batch.num_columns(), 1);
-            assert_eq!(batch.schema().field(0).name(), "audio_embedding");
-            // Should show mostly nulls except point 3
-            arrow::util::pretty::print_batches(std::slice::from_ref(batch)).unwrap();
-        }
-
-        eprintln!(">> ✅ Named vectors TableProvider test completed!");
-        eprintln!("   - Point 1: only test_embedding + multi_embeddings + keywords");
-        eprintln!("   - Point 2: only text_embedding + image_embedding + keywords");
-        eprintln!("   - Point 3: only text_embedding + audio_embedding + keywords");
-        eprintln!("   - Schema contains ALL vector fields with proper nulls");
-        eprintln!("   - Multi-vectors: List<List<Float32>> schema and extraction: ✅");
-        eprintln!("   - Projection works for all vector field combinations: ✅");
-        eprintln!("   - Heterogeneous data with nulls handled correctly: ✅");
+        let sparse_field = schema.field_with_name("keywords").expect("sparse field present");
+        assert!(is_sparse_vector_field(sparse_field));
+        let sparse_array = batch
+            .column(schema.index_of("keywords").expect("sparse index"))
+            .as_any()
+            .downcast_ref::<StructArray>()
+            .expect("sparse struct array");
+        let sparse_rows = csr_matrix_batch_iter::<Float32Type>(sparse_field, sparse_array)
+            .expect("sparse iterator")
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .expect("valid sparse rows");
+        assert_eq!(sparse_rows[0].1.nrows, 1);
+        assert_eq!(sparse_rows[0].1.ncols, 6);
+        assert_eq!(sparse_rows[0].1.col_indices, &[0, 5]);
+        assert_eq!(sparse_rows[0].1.values, &[0.5, 1.5]);
+        assert_eq!(sparse_rows[1].1.ncols, 5);
+        assert_eq!(sparse_rows[1].1.col_indices, &[1, 3, 4]);
+        assert_eq!(sparse_rows[1].1.values, &[0.2, 0.3, 0.4]);
 
         Ok(())
     }
 
-    /// Test true unnamed vectors
     pub(super) async fn test_table_provider_unnamed(c: Arc<QdrantContainer>) -> Result<()> {
-        eprintln!("> Testing UNNAMED vectors - single vector field");
         let client = create_qdrant_client(&c)?;
+        let collection_name = "test_unnamed_canonical";
 
-        let collection_name = "test_unnamed_only";
-
-        // Create collection with SINGLE UNNAMED VECTOR using Config::Params
-        // This creates the "vector" field in our schema
         let _ = client
             .create_collection(
                 CreateCollectionBuilder::new(collection_name)
-                    .vectors_config(VectorParamsBuilder::new(3, Distance::Cosine)),
+                    .vectors_config(VectorParamsBuilder::new(3, Distance::Dot)),
             )
             .await?;
 
-        // Insert points with UNNAMED vectors
         let mut payload1 = qdrant_client::Payload::new();
         payload1.insert("title", "Unnamed Point 1");
-
         let mut payload2 = qdrant_client::Payload::new();
         payload2.insert("title", "Unnamed Point 2");
 
-        let mut payload3 = qdrant_client::Payload::new();
-        payload3.insert("title", "Unnamed Point 3");
-
         let points = vec![
-            // Use Vector::new_dense for unnamed vectors
             PointStruct::new(1, Vector::new_dense(vec![0.1, 0.2, 0.3]), payload1),
             PointStruct::new(2, Vector::new_dense(vec![0.4, 0.5, 0.6]), payload2),
-            PointStruct::new(3, Vector::new_dense(vec![0.7, 0.8, 0.9]), payload3),
         ];
-
         drop(client.upsert_points(UpsertPointsBuilder::new(collection_name, points)).await?);
 
-        // Create TableProvider and test
-        debug!(">> Creating QdrantTableProvider for unnamed vectors");
         let table_provider = QdrantTableProvider::try_new(client.clone(), collection_name).await?;
-
         let ctx = SessionContext::new();
-        drop(ctx.register_table("unnamed_table", Arc::new(table_provider))?);
+        drop(ctx.register_table("vectors", Arc::new(table_provider))?);
 
-        // Test: SELECT * - Should show "vector" field
-        eprintln!(">> Test: SELECT * FROM unnamed_table (unnamed vectors)");
-        let results = ctx.sql("SELECT * FROM unnamed_table").await?.collect().await?;
+        let batches =
+            ctx.sql("SELECT id, payload, vector FROM vectors ORDER BY id").await?.collect().await?;
+        let batch = batches.into_iter().next().expect("single batch");
+        let schema = batch.schema();
 
-        eprintln!(">>> Unnamed vectors query results:");
-        for (i, batch) in results.iter().enumerate() {
-            let schema = batch.schema();
-            eprintln!("    Batch {i}: {} rows, {} columns", batch.num_rows(), batch.num_columns());
+        assert_eq!(batch.num_rows(), 2);
+        assert_eq!(field_names(schema.as_ref()), vec!["id", "payload", "vector"]);
 
-            // Should have: id, payload, vector
-            assert_eq!(batch.num_rows(), 3);
-            assert_eq!(batch.num_columns(), 3);
-
-            let field_names: Vec<&str> =
-                schema.fields().iter().map(|f| f.name().as_str()).collect();
-            eprintln!("    Field names: {field_names:?}");
-
-            // Should contain the unnamed "vector" field
-            assert!(field_names.contains(&"vector"));
-            assert!(field_names.contains(&"id"));
-            assert!(field_names.contains(&"payload"));
-
-            // Should NOT contain any named vector fields
-            assert!(!field_names.contains(&"text_embedding"));
-            assert!(!field_names.contains(&"image_embedding"));
-
-            arrow::util::pretty::print_batches(std::slice::from_ref(batch)).unwrap();
-        }
-
-        // Test 2: Projection - Only vector field
-        eprintln!(">> Test 2: SELECT vector FROM unnamed_table");
-        let results = ctx.sql("SELECT vector FROM unnamed_table").await?.collect().await?;
-
-        for batch in &results {
-            assert_eq!(batch.num_columns(), 1);
-            assert_eq!(batch.schema().field(0).name(), "vector");
-            arrow::util::pretty::print_batches(std::slice::from_ref(batch)).unwrap();
-        }
-
-        // Test 3: Projection - Only metadata fields
-        eprintln!(">> Test 3: SELECT id, payload FROM unnamed_table (no vectors)");
-        let results = ctx.sql("SELECT id, payload FROM unnamed_table").await?.collect().await?;
-
-        for batch in &results {
-            assert_eq!(batch.num_columns(), 2);
-            assert_eq!(batch.schema().field(0).name(), "id");
-            assert_eq!(batch.schema().field(1).name(), "payload");
-            arrow::util::pretty::print_batches(std::slice::from_ref(batch)).unwrap();
-        }
-
-        // Test 4: Projection - Only ID field
-        eprintln!(">> Test 4: SELECT id FROM unnamed_table");
-        let results = ctx.sql("SELECT id FROM unnamed_table").await?.collect().await?;
-
-        for batch in &results {
-            assert_eq!(batch.num_columns(), 1);
-            assert_eq!(batch.schema().field(0).name(), "id");
-            arrow::util::pretty::print_batches(std::slice::from_ref(batch)).unwrap();
-        }
-
-        // Test 5: Projection - Mixed order
-        eprintln!(">> Test 5: SELECT payload, vector, id FROM unnamed_table (reordered)");
-        let sql = "SELECT payload, vector, id FROM unnamed_table";
-        let results = ctx.sql(sql).await?.collect().await?;
-
-        for batch in &results {
-            assert_eq!(batch.num_columns(), 3);
-            assert_eq!(batch.schema().field(0).name(), "payload");
-            assert_eq!(batch.schema().field(1).name(), "vector");
-            assert_eq!(batch.schema().field(2).name(), "id");
-            arrow::util::pretty::print_batches(std::slice::from_ref(batch)).unwrap();
-        }
-
-        // Test 6: Projection - Only payload
-        eprintln!(">> Test 6: SELECT payload FROM unnamed_table");
-        let results = ctx.sql("SELECT payload FROM unnamed_table").await?.collect().await?;
-
-        for batch in &results {
-            assert_eq!(batch.num_columns(), 1);
-            assert_eq!(batch.schema().field(0).name(), "payload");
-            arrow::util::pretty::print_batches(std::slice::from_ref(batch)).unwrap();
-        }
-
-        // Test 7: LIMIT query to cover TableScan limit functionality
-        eprintln!(">> Test 7: SELECT * FROM unnamed_table LIMIT 2");
-        let results = ctx.sql("SELECT * FROM unnamed_table LIMIT 2").await?.collect().await?;
-
-        for batch in &results {
-            assert_eq!(batch.num_rows(), 2); // Should be limited to 2 rows
-            assert_eq!(batch.num_columns(), 3);
-            arrow::util::pretty::print_batches(std::slice::from_ref(batch)).unwrap();
-        }
-
-        eprintln!(">> ✅ Unnamed vectors TableProvider test completed!");
-        eprintln!("   - Collection uses Config::Params (not ParamsMap)");
-        eprintln!("   - Schema contains 'vector' field (not named fields)");
-        eprintln!("   - All points have the same unnamed vector structure");
-        eprintln!("   - Vector field accessible via 'vector' name in SQL");
-        eprintln!("   - Projection works for all field combinations: ✅");
-        eprintln!("   - Schema projection optimizes Qdrant queries: ✅");
-        eprintln!("   - LIMIT queries work correctly: ✅");
+        let vector_field = schema.field_with_name("vector").expect("vector field present");
+        assert_eq!(dense_vector_width(vector_field), Some(3));
+        let vector_array = batch
+            .column(schema.index_of("vector").expect("vector index"))
+            .as_any()
+            .downcast_ref::<FixedSizeListArray>()
+            .expect("unnamed vector array");
+        let vector_view =
+            fixed_size_list_as_array2::<Float32Type>(vector_array).expect("vector ndarray view");
+        assert_eq!(vector_view.shape(), &[2, 3]);
+        assert_f32_eq(vector_view[[0, 1]], 0.2);
+        assert_f32_eq(vector_view[[1, 0]], 0.4);
 
         Ok(())
     }

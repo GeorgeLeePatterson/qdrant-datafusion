@@ -1,16 +1,17 @@
-//! `datafusion-functions-json` and other functions relevant for Qdrant.
+//! UDF registration hooks for `qdrant-datafusion`.
+//!
+//! The crate is intentionally starting from a minimal baseline on the same `DataFusion`
+//! revision as `ndatafusion`. Additional UDFs can be introduced later once they are
+//! justified and implemented on that aligned dependency line.
 
 use datafusion::execution::FunctionRegistry;
-// Re-export
-pub use datafusion_functions_json;
 
 use crate::error::Result;
 
-/// Register JSON-related UDFs with the given function registry.
+/// Register `qdrant-datafusion` UDFs with the given function registry.
+///
+/// No crate-specific UDFs are registered yet.
 ///
 /// # Errors
-/// - Returns an error if any of the JSON-related UDFs fail to register.
-pub fn register_json_udfs(ctx: &mut dyn FunctionRegistry) -> Result<()> {
-    datafusion_functions_json::register_all(ctx)?;
-    Ok(())
-}
+/// Returns an error if future UDF registration fails. The current baseline always succeeds.
+pub fn register_json_udfs(_ctx: &mut dyn FunctionRegistry) -> Result<()> { Ok(()) }

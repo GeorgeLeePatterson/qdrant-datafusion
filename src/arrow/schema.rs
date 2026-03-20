@@ -1,55 +1,165 @@
 //! Schema utilities for `Qdrant` `DataFusion` integration.
-use std::sync::Arc;
+use std::collections::HashSet;
 
+use arrow_schema::extension::{
+    EXTENSION_TYPE_METADATA_KEY, EXTENSION_TYPE_NAME_KEY, ExtensionType, VariableShapeTensor,
+};
 use datafusion::arrow::datatypes::*;
+use ndarrow::CsrMatrixBatchExtension;
 use qdrant_client::qdrant::{CollectionConfig, Datatype, VectorParams, vectors_config};
 
 use crate::error::{Error, Result};
 
-/// Simple helper function to determine if a field is a multi-vector
+/// Determine whether a field stores a canonical multivector carrier.
 pub fn is_multi_vector_field(field: &Field) -> bool {
-    matches!(
-        field.data_type(),
-        DataType::List(inner) if matches!(inner.data_type(), DataType::List(_))
-    )
+    field
+        .try_extension_type::<VariableShapeTensor>()
+        .is_ok_and(|extension| extension.dimensions() == 2)
 }
 
-/// Simple helper function to convert a Qdrant datatype to an Arrow datatype.
-pub fn datatype_to_arrow(_dt: Datatype) -> DataType {
-    // TODO: Decide whether to support other vector data types, since Qdrant currently only ever
-    // sends f32
-    DataType::Float32
-    // match dt {
-    //     Datatype::Default | Datatype::Float32 => DataType::Float32,
-    //     Datatype::Float16 => DataType::Float16,
-    //     Datatype::Uint8 => DataType::UInt8,
-    // }
-}
-
-/// Simple helper function to create a vector field
-pub fn create_vector_field(name: &str, dt: Datatype, nullable: bool) -> FieldRef {
-    Field::new(name, datatype_to_arrow(dt), nullable).into()
-}
-
-/// Simple helper function to create a list field for vector parameters
-pub fn create_vector_param_field(name: &str, vector_params: &VectorParams) -> Field {
-    if vector_params.multivector_config.is_some() {
-        Field::new(
-            name,
-            DataType::List(Arc::new(Field::new(
-                "item",
-                DataType::List(create_vector_field("item", vector_params.datatype(), true)),
-                true,
-            ))),
-            true, // Allow nulls - points may not have all vectors
-        )
-    } else {
-        Field::new(
-            name,
-            DataType::List(create_vector_field("item", vector_params.datatype(), true)),
-            true, // Allow nulls - points may not have all vectors
-        )
+/// Return the fixed inner width for a multivector field.
+pub fn multivector_width(field: &Field) -> Option<usize> {
+    let extension = field.try_extension_type::<VariableShapeTensor>().ok()?;
+    if extension.dimensions() != 2 {
+        return None;
     }
+    let uniform_shape = extension.uniform_shapes()?;
+    if uniform_shape.len() != 2 {
+        return None;
+    }
+    uniform_shape[1].and_then(|width| usize::try_from(width).ok())
+}
+
+/// Determine whether a field stores a canonical sparse CSR carrier.
+pub fn is_sparse_vector_field(field: &Field) -> bool {
+    field.try_extension_type::<CsrMatrixBatchExtension>().is_ok()
+}
+
+/// Return the width of a dense fixed-size vector field.
+pub fn dense_vector_width(field: &Field) -> Option<usize> {
+    match field.data_type() {
+        DataType::FixedSizeList(_, len) => usize::try_from(*len).ok(),
+        _ => None,
+    }
+}
+
+/// Convert a Qdrant datatype to the Arrow value type used by the canonical carriers.
+pub fn datatype_to_arrow(_datatype: Datatype) -> DataType {
+    // Qdrant currently returns f32 payloads for vector outputs. Keep the contract explicit here
+    // until broader datatype support is admitted deliberately.
+    DataType::Float32
+}
+
+fn fixed_size_vector_field(name: &str, vector_datatype: Datatype, len: u64) -> Result<Field> {
+    let len = i32::try_from(len).map_err(|_| {
+        Error::InvalidCollectionSchema(format!(
+            "vector field '{name}' width exceeds Arrow i32 limits"
+        ))
+    })?;
+    Ok(Field::new(
+        name,
+        DataType::new_fixed_size_list(datatype_to_arrow(vector_datatype), len, false),
+        false,
+    ))
+}
+
+fn field_with_extension_metadata(
+    mut field: Field,
+    extension_name: &'static str,
+    metadata_json: String,
+) -> Field {
+    drop(
+        field.metadata_mut().insert(EXTENSION_TYPE_NAME_KEY.to_owned(), extension_name.to_owned()),
+    );
+    drop(field.metadata_mut().insert(EXTENSION_TYPE_METADATA_KEY.to_owned(), metadata_json));
+    field
+}
+
+fn variable_shape_tensor_field(name: &str, vector_datatype: Datatype, len: u64) -> Result<Field> {
+    let len = i32::try_from(len).map_err(|_| {
+        Error::InvalidCollectionSchema(format!(
+            "multivector field '{name}' width exceeds Arrow i32 limits"
+        ))
+    })?;
+    let value_type = datatype_to_arrow(vector_datatype);
+    let tensor_storage_type = DataType::Struct(
+        vec![
+            Field::new("data", DataType::new_list(value_type.clone(), false), false),
+            Field::new("shape", DataType::new_fixed_size_list(DataType::Int32, 2, false), false),
+        ]
+        .into(),
+    );
+    let extension =
+        VariableShapeTensor::try_new(value_type, 2, None, None, Some(vec![None, Some(len)]))
+            .map_err(|error| {
+                Error::InvalidCollectionSchema(format!(
+                    "failed to create multivector field '{name}': {error}"
+                ))
+            })?;
+    extension.supports_data_type(&tensor_storage_type).map_err(|error| {
+        Error::InvalidCollectionSchema(format!(
+            "multivector field '{name}' has incompatible storage type: {error}"
+        ))
+    })?;
+
+    let metadata_json = serde_json::json!({
+        "uniform_shape": [serde_json::Value::Null, len],
+    })
+    .to_string();
+
+    Ok(field_with_extension_metadata(
+        Field::new(name, tensor_storage_type, false),
+        VariableShapeTensor::NAME,
+        metadata_json,
+    ))
+}
+
+fn sparse_vector_field(name: &str) -> Result<Field> {
+    let data_type = DataType::Struct(
+        vec![
+            Field::new("shape", DataType::new_fixed_size_list(DataType::Int32, 2, false), false),
+            Field::new("row_ptrs", DataType::new_list(DataType::Int32, false), false),
+            Field::new("col_indices", DataType::new_list(DataType::UInt32, false), false),
+            Field::new("values", DataType::new_list(DataType::Float32, false), false),
+        ]
+        .into(),
+    );
+    let extension = CsrMatrixBatchExtension::try_new(&data_type, ()).map_err(|error| {
+        Error::InvalidCollectionSchema(format!(
+            "failed to create sparse vector field '{name}': {error}"
+        ))
+    })?;
+
+    let mut field = Field::new(name, data_type, false);
+    field.try_with_extension_type(extension).map_err(|error| {
+        Error::InvalidCollectionSchema(format!(
+            "failed to attach sparse vector extension for field '{name}': {error}"
+        ))
+    })?;
+    Ok(field)
+}
+
+fn vector_param_field(name: &str, params: &VectorParams) -> Result<Field> {
+    if params.multivector_config.is_some() {
+        variable_shape_tensor_field(name, params.datatype(), params.size)
+    } else {
+        fixed_size_vector_field(name, params.datatype(), params.size)
+    }
+}
+
+fn push_unique_field(
+    fields: &mut Vec<Field>,
+    seen: &mut HashSet<String>,
+    field: Field,
+) -> Result<()> {
+    let name = field.name().clone();
+    if !seen.insert(name.clone()) {
+        return Err(Error::InvalidCollectionSchema(format!(
+            "collection schema yields duplicate field name '{name}'"
+        )));
+    }
+    fields.push(field);
+    Ok(())
 }
 
 /// Convert a collection's configuration info into an Arrow schema.
@@ -57,54 +167,83 @@ pub fn create_vector_param_field(name: &str, vector_params: &VectorParams) -> Fi
 /// # Errors
 /// - Returns an error if the collection info or the vector params is missing.
 pub fn collection_to_arrow_schema(collection: &str, config: &CollectionConfig) -> Result<Schema> {
-    let mut fields = vec![
-        // The point ID (can be numeric or UUID string)
-        Field::new("id", DataType::Utf8, false),
-        // Payload as JSON string
-        Field::new("payload", DataType::Utf8, true),
-    ];
+    let mut fields =
+        vec![Field::new("id", DataType::Utf8, false), Field::new("payload", DataType::Utf8, false)];
+    let mut seen = fields.iter().map(|field| field.name().clone()).collect::<HashSet<_>>();
 
-    // Get the params from config
     let params =
         config.params.as_ref().ok_or(Error::MissingCollectionInfoParams(collection.into()))?;
 
-    // Parse vectors_config if present
-    if let Some(config) = params.vectors_config.as_ref().and_then(|c| c.config.as_ref()) {
+    if let Some(config) = params.vectors_config.as_ref().and_then(|config| config.config.as_ref()) {
         match config {
             vectors_config::Config::Params(vector_params) => {
-                // Single unnamed vector
-                fields.push(create_vector_param_field("vector", vector_params));
+                push_unique_field(
+                    &mut fields,
+                    &mut seen,
+                    vector_param_field("vector", vector_params)?,
+                )?;
             }
             vectors_config::Config::ParamsMap(params_map) => {
-                // Multiple named vectors
-                fields.extend(
-                    params_map
-                        .map
-                        .iter()
-                        .map(|(name, params)| create_vector_param_field(name, params)),
-                );
+                for (name, params) in &params_map.map {
+                    push_unique_field(&mut fields, &mut seen, vector_param_field(name, params)?)?;
+                }
             }
         }
     }
 
-    // Parse sparse_vectors_config if present
     if let Some(sparse_config) = &params.sparse_vectors_config {
-        // SparseVectorConfig has a map field
         for name in sparse_config.map.keys() {
-            // Sparse indices are always u32, regardless of index config datatype
-            fields.push(Field::new(
-                format!("{name}_indices"),
-                DataType::List(Field::new("item", DataType::UInt32, true).into()),
-                true, // Allow nulls - points may not have all sparse vectors
-            ));
-            // Sparse values are always f32
-            fields.push(Field::new(
-                format!("{name}_values"),
-                DataType::List(create_vector_field("item", Datatype::Float32, true)),
-                true, // Allow nulls - points may not have all sparse vectors
-            ));
+            push_unique_field(&mut fields, &mut seen, sparse_vector_field(name)?)?;
         }
     }
 
     Ok(Schema::new(fields))
+}
+
+#[cfg(test)]
+mod tests {
+    use qdrant_client::qdrant::{
+        Distance, MultiVectorComparator, MultiVectorConfig, VectorParamsBuilder,
+    };
+
+    use super::*;
+
+    #[test]
+    fn dense_vector_fields_use_fixed_size_lists() {
+        let params = VectorParamsBuilder::new(3, Distance::Cosine).build();
+        let field = vector_param_field("embedding", &params).expect("dense field");
+
+        let DataType::FixedSizeList(item, len) = field.data_type() else {
+            panic!("expected FixedSizeList carrier");
+        };
+        assert_eq!(*len, 3);
+        assert_eq!(item.data_type(), &DataType::Float32);
+        assert!(!item.is_nullable());
+        assert!(!field.is_nullable());
+    }
+
+    #[test]
+    fn multivector_fields_use_variable_shape_tensor_extension() {
+        let params = VectorParamsBuilder::new(3, Distance::Dot)
+            .multivector_config(MultiVectorConfig {
+                comparator: MultiVectorComparator::MaxSim.into(),
+            })
+            .build();
+        let field = vector_param_field("multi", &params).expect("multivector field");
+        let extension =
+            field.try_extension_type::<VariableShapeTensor>().expect("variable tensor extension");
+
+        assert_eq!(extension.dimensions(), 2);
+        assert_eq!(extension.uniform_shapes(), Some(&[None, Some(3)][..]));
+        assert_eq!(field.extension_type_name(), Some(VariableShapeTensor::NAME));
+        assert!(!field.is_nullable());
+    }
+
+    #[test]
+    fn sparse_vector_fields_use_csr_extension() {
+        let field = sparse_vector_field("keywords").expect("sparse field");
+        assert!(field.try_extension_type::<CsrMatrixBatchExtension>().is_ok());
+        assert_eq!(field.name(), "keywords");
+        assert!(!field.is_nullable());
+    }
 }
