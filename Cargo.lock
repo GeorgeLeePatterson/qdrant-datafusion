@@ -2526,9 +2526,9 @@ dependencies = [
 
 [[package]]
 name = "ndarrow"
-version = "0.0.3"
+version = "0.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0f52095e64579998038ba711fe8e3f2a0f0089838960ca59387f602f5d144792"
+checksum = "dc8000771a27dffd8aa4d232ae30bcf3e4fd94b209e8f1cc05ebcf55e5125c9a"
 dependencies = [
  "arrow",
  "arrow-array",

@@ -6,9 +6,13 @@ use arrow_schema::extension::{
 };
 use datafusion::arrow::datatypes::*;
 use ndarrow::CsrMatrixBatchExtension;
-use qdrant_client::qdrant::{CollectionConfig, Datatype, VectorParams, vectors_config};
+use qdrant_client::qdrant::{CollectionConfig, Datatype, vectors_config};
 
 use crate::error::{Error, Result};
+
+pub const ID_FIELD_NAME: &str = "id";
+pub const PAYLOAD_FIELD_NAME: &str = "payload";
+pub const UNNAMED_VECTOR_FIELD_NAME: &str = "vector";
 
 /// Determine whether a field stores a canonical multivector carrier.
 pub fn is_multi_vector_field(field: &Field) -> bool {
@@ -59,20 +63,8 @@ fn fixed_size_vector_field(name: &str, vector_datatype: Datatype, len: u64) -> R
     Ok(Field::new(
         name,
         DataType::new_fixed_size_list(datatype_to_arrow(vector_datatype), len, false),
-        false,
+        true,
     ))
-}
-
-fn field_with_extension_metadata(
-    mut field: Field,
-    extension_name: &'static str,
-    metadata_json: String,
-) -> Field {
-    drop(
-        field.metadata_mut().insert(EXTENSION_TYPE_NAME_KEY.to_owned(), extension_name.to_owned()),
-    );
-    drop(field.metadata_mut().insert(EXTENSION_TYPE_METADATA_KEY.to_owned(), metadata_json));
-    field
 }
 
 fn variable_shape_tensor_field(name: &str, vector_datatype: Datatype, len: u64) -> Result<Field> {
@@ -107,11 +99,14 @@ fn variable_shape_tensor_field(name: &str, vector_datatype: Datatype, len: u64) 
     })
     .to_string();
 
-    Ok(field_with_extension_metadata(
-        Field::new(name, tensor_storage_type, false),
-        VariableShapeTensor::NAME,
-        metadata_json,
-    ))
+    let mut field = Field::new(name, tensor_storage_type, true);
+    drop(
+        field
+            .metadata_mut()
+            .insert(EXTENSION_TYPE_NAME_KEY.to_owned(), VariableShapeTensor::NAME.to_owned()),
+    );
+    drop(field.metadata_mut().insert(EXTENSION_TYPE_METADATA_KEY.to_owned(), metadata_json));
+    Ok(field)
 }
 
 fn sparse_vector_field(name: &str) -> Result<Field> {
@@ -130,21 +125,13 @@ fn sparse_vector_field(name: &str) -> Result<Field> {
         ))
     })?;
 
-    let mut field = Field::new(name, data_type, false);
+    let mut field = Field::new(name, data_type, true);
     field.try_with_extension_type(extension).map_err(|error| {
         Error::InvalidCollectionSchema(format!(
             "failed to attach sparse vector extension for field '{name}': {error}"
         ))
     })?;
     Ok(field)
-}
-
-fn vector_param_field(name: &str, params: &VectorParams) -> Result<Field> {
-    if params.multivector_config.is_some() {
-        variable_shape_tensor_field(name, params.datatype(), params.size)
-    } else {
-        fixed_size_vector_field(name, params.datatype(), params.size)
-    }
 }
 
 fn push_unique_field(
@@ -167,8 +154,10 @@ fn push_unique_field(
 /// # Errors
 /// - Returns an error if the collection info or the vector params is missing.
 pub fn collection_to_arrow_schema(collection: &str, config: &CollectionConfig) -> Result<Schema> {
-    let mut fields =
-        vec![Field::new("id", DataType::Utf8, false), Field::new("payload", DataType::Utf8, false)];
+    let mut fields = vec![
+        Field::new(ID_FIELD_NAME, DataType::Utf8, false),
+        Field::new(PAYLOAD_FIELD_NAME, DataType::Utf8, false),
+    ];
     let mut seen = fields.iter().map(|field| field.name().clone()).collect::<HashSet<_>>();
 
     let params =
@@ -177,15 +166,29 @@ pub fn collection_to_arrow_schema(collection: &str, config: &CollectionConfig) -
     if let Some(config) = params.vectors_config.as_ref().and_then(|config| config.config.as_ref()) {
         match config {
             vectors_config::Config::Params(vector_params) => {
-                push_unique_field(
-                    &mut fields,
-                    &mut seen,
-                    vector_param_field("vector", vector_params)?,
-                )?;
+                let field = if vector_params.multivector_config.is_some() {
+                    variable_shape_tensor_field(
+                        UNNAMED_VECTOR_FIELD_NAME,
+                        vector_params.datatype(),
+                        vector_params.size,
+                    )?
+                } else {
+                    fixed_size_vector_field(
+                        UNNAMED_VECTOR_FIELD_NAME,
+                        vector_params.datatype(),
+                        vector_params.size,
+                    )?
+                };
+                push_unique_field(&mut fields, &mut seen, field)?;
             }
             vectors_config::Config::ParamsMap(params_map) => {
                 for (name, params) in &params_map.map {
-                    push_unique_field(&mut fields, &mut seen, vector_param_field(name, params)?)?;
+                    let field = if params.multivector_config.is_some() {
+                        variable_shape_tensor_field(name, params.datatype(), params.size)?
+                    } else {
+                        fixed_size_vector_field(name, params.datatype(), params.size)?
+                    };
+                    push_unique_field(&mut fields, &mut seen, field)?;
                 }
             }
         }
@@ -211,7 +214,8 @@ mod tests {
     #[test]
     fn dense_vector_fields_use_fixed_size_lists() {
         let params = VectorParamsBuilder::new(3, Distance::Cosine).build();
-        let field = vector_param_field("embedding", &params).expect("dense field");
+        let field = fixed_size_vector_field("embedding", params.datatype(), params.size)
+            .expect("dense field");
 
         let DataType::FixedSizeList(item, len) = field.data_type() else {
             panic!("expected FixedSizeList carrier");
@@ -219,7 +223,7 @@ mod tests {
         assert_eq!(*len, 3);
         assert_eq!(item.data_type(), &DataType::Float32);
         assert!(!item.is_nullable());
-        assert!(!field.is_nullable());
+        assert!(field.is_nullable());
     }
 
     #[test]
@@ -229,14 +233,15 @@ mod tests {
                 comparator: MultiVectorComparator::MaxSim.into(),
             })
             .build();
-        let field = vector_param_field("multi", &params).expect("multivector field");
+        let field = variable_shape_tensor_field("multi", params.datatype(), params.size)
+            .expect("multivector field");
         let extension =
             field.try_extension_type::<VariableShapeTensor>().expect("variable tensor extension");
 
         assert_eq!(extension.dimensions(), 2);
         assert_eq!(extension.uniform_shapes(), Some(&[None, Some(3)][..]));
         assert_eq!(field.extension_type_name(), Some(VariableShapeTensor::NAME));
-        assert!(!field.is_nullable());
+        assert!(field.is_nullable());
     }
 
     #[test]
@@ -244,6 +249,6 @@ mod tests {
         let field = sparse_vector_field("keywords").expect("sparse field");
         assert!(field.try_extension_type::<CsrMatrixBatchExtension>().is_ok());
         assert_eq!(field.name(), "keywords");
-        assert!(!field.is_nullable());
+        assert!(field.is_nullable());
     }
 }

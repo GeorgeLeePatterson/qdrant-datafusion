@@ -1,208 +1,88 @@
-# 🛸 `Qdrant` `DataFusion` Integration
+# `qdrant-datafusion`
 
-A high-performance Rust library that provides seamless integration between [Qdrant](https://qdrant.tech) vector database and [Apache DataFusion](https://datafusion.apache.org), enabling SQL queries over vector data with full support for heterogeneous collections, complex projections, and mixed vector types.
+`qdrant-datafusion` exposes `Qdrant` collections as `DataFusion` tables.
 
-[![Crates.io](https://img.shields.io/crates/v/qdrant-datafusion.svg)](https://crates.io/crates/qdrant-datafusion)
-[![Documentation](https://docs.rs/qdrant-datafusion/badge.svg)](https://docs.rs/qdrant-datafusion)
-[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![Build Status](https://img.shields.io/github/actions/workflow/status/GeorgeLeePatterson/qdrant-datafusion/ci.yml?branch=main)](https://github.com/GeorgeLeePatterson/qdrant-datafusion/actions)
-[![Coverage](https://codecov.io/gh/GeorgeLeePatterson/qdrant-datafusion/branch/main/graph/badge.svg)](https://codecov.io/gh/GeorgeLeePatterson/qdrant-datafusion)
+The current crate scope is intentionally narrow: correct, paginated collection scans over the
+canonical Arrow carriers used by `ndarrow` and `nabled::arrow`. It is not yet the broad SQL
+surface for `Qdrant` search, recommend, discover, fusion, or planner rewrites.
 
-## 🎯 Features
+## Current Scan Contract
 
-### **Complete Vector Support**
-- **Dense Vectors**: Single embeddings as `List<Float32>`
-- **Multi-Vectors**: Multiple embeddings per point as `List<List<Float32>>`
-- **Sparse Vectors**: Efficient sparse representations with separate indices and values
-- **Mixed Collections**: Supports collections with different vector types
+Collection scans currently expose:
 
-### **Advanced Query Capabilities**
-- **SQL Interface**: Query Qdrant collections using standard SQL syntax
-- **Schema Projection**: Optimized queries that only fetch requested fields
-- **Heterogeneous Data**: Handle points with different vector field subsets
-- **Nullable Fields**: Proper null handling for missing vector data
-- **LIMIT Support**: Efficient query limiting pushed to Qdrant
+- `id`: `Utf8`
+- `payload`: JSON encoded as `Utf8`
+- dense vector fields: nullable `FixedSizeList<Float32>(D)`
+- multivector fields: nullable `arrow.variable_shape_tensor<Float32>` with rank 2
+- sparse vector fields: nullable `ndarrow.csr_matrix_batch<Float32>`
 
-### **High Performance Architecture**
-- **Schema-Driven**: Clean, efficient deserialization with O(F) performance
-- **Single-Pass Processing**: Minimized memory allocations and data copying
-- **Async Streaming**: Non-blocking query execution with proper backpressure
-- **Connection Pooling**: Reusable client connections for optimal throughput
+For named-vector collections, a vector configured at the collection level may be missing on an
+individual point. In that case the column value is `NULL` for that row. Present values stay in the
+canonical carrier; missing values are not imputed during scan.
 
-### **Production Ready**
-- **> 90% Test Coverage**: Comprehensive testing with real Qdrant instances
-- **Memory Safe**: Full Rust safety guarantees with zero unsafe code
-- **Error Handling**: Detailed error types with context for debugging
-- **Extensible**: Ready for custom UDFs and advanced query planning
+## Current Capabilities
 
-## 🚀 Quick Start
+- collection config introspection into the scan schema
+- true table scans via paginated `Qdrant::scroll`
+- schema/projection-driven vector selection
+- SQL `LIMIT` pushdown to the scan stream
+- exact physical sort pushdown for `ORDER BY id ASC`
+- validated internal payload-key ordered-scroll continuation groundwork
+- heterogeneous named-vector scans with top-level nullable vector columns
 
-Add this to your `Cargo.toml`:
+## Not Yet Admitted
 
-```toml
-[dependencies]
-qdrant-datafusion = "0.1"
-```
+- write support or `INSERT INTO`
+- filter pushdown
+- payload-key SQL `ORDER BY` pushdown beyond `ORDER BY id ASC`
+- `Qdrant`-specific UDFs, UDAFs, or UDTFs
+- SQL-native search / recommend / discover / fusion semantics
+- custom planning or rewrite passes
 
-### Basic Usage
+## Basic Usage
 
 ```rust,ignore
-use qdrant_datafusion::prelude::*;
-use qdrant_client::Qdrant;
+use std::sync::Arc;
+
 use datafusion::prelude::*;
+use qdrant_client::Qdrant;
+use qdrant_datafusion::prelude::*;
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    // Connect to Qdrant
-    let client = Qdrant::from_url("http://localhost:6334").build()?;
+# async fn example() -> Result<()> {
+let client = Qdrant::from_url("http://localhost:6334").build()?;
+let table_provider = QdrantTableProvider::try_new(client, "my_collection").await?;
 
-    // Create DataFusion table provider
-    let table_provider = QdrantTableProvider::try_new(client, "my_collection").await?;
+let ctx = SessionContext::new();
+ctx.register_table("vectors", Arc::new(table_provider))?;
 
-    // Register with DataFusion context
-    let ctx = SessionContext::new();
-    ctx.register_table("vectors", Arc::new(table_provider))?;
-
-    // Query with SQL!
-    let df = ctx.sql("
-        SELECT id, payload, embedding
-        FROM vectors
-        WHERE id IN ('doc1', 'doc2')
-        LIMIT 10
-    ").await?;
-
-    let results = df.collect().await?;
-    println!("{:?}", results);
-
-    Ok(())
-}
+let batches = ctx
+    .sql("SELECT id, payload, vector FROM vectors ORDER BY id LIMIT 10")
+    .await?
+    .collect()
+    .await?;
+# Ok(())
+# }
 ```
 
-### Advanced Queries
-
-```rust,ignore
-// Complex projections with mixed vector types
-let df = ctx.sql("
-    SELECT
-        id,
-        text_embedding,
-        image_embedding,
-        multi_embeddings,
-        keywords_indices,
-        keywords_values
-    FROM mixed_vectors
-    WHERE payload IS NOT NULL
-").await?;
-
-// Efficient schema projection - only fetches requested vector fields
-let df = ctx.sql("SELECT text_embedding FROM vectors").await?;
-```
-
-## 📊 Vector Type Support
-
-| Vector Type | Schema | Description | Example Query |
-|------------|--------|-------------|---------------|
-| **Dense** | `List<Float32>` | Single embedding per field | `SELECT text_embedding FROM docs` |
-| **Multi** | `List<List<Float32>>` | Multiple embeddings per field | `SELECT multi_embeddings FROM docs` |
-| **Sparse** | `List<UInt32>` + `List<Float32>` | Efficient sparse vectors | `SELECT keywords_indices, keywords_values FROM docs` |
-
-## 🔧 Collection Types
-
-### Named Collections (Heterogeneous)
-Collections with multiple named vector fields where different points can have different subsets:
+## Example SQL
 
 ```sql
--- Schema automatically includes all possible vector fields
-SELECT
-    id,
-    text_embedding,      -- Some points have this
-    image_embedding,     -- Some points have this
-    audio_embedding      -- Some points have this
-FROM heterogeneous_collection;
+SELECT id, payload
+FROM docs
+LIMIT 10;
+
+SELECT text_embedding
+FROM docs
+WHERE text_embedding IS NOT NULL
+ORDER BY id;
+
+SELECT multi_embedding, keywords
+FROM docs
+WHERE multi_embedding IS NOT NULL OR keywords IS NOT NULL;
 ```
 
-### Unnamed Collections (Homogeneous)
-Collections with a single unnamed vector field:
-
-```sql
--- Schema contains single 'vector' field
-SELECT id, payload, vector
-FROM homogeneous_collection;
-```
-
-## 🎯 Current Capabilities
-
-✅ **Complete `TableProvider` Implementation**
-- Full SQL querying via `DataFusion`
-- All Qdrant vector types supported
-- Schema projection optimization
-- Proper null handling for missing fields
-
-✅ **Production Ready**
-- 90% test coverage with real Qdrant instances
-- Comprehensive error handling
-- Memory-safe Rust implementation
-- Async streaming execution
-
-## 🔮 Future Roadmap
-
-🔄 **In Development**
-- **Custom UDFs**: Distance functions, similarity search, recommendations, and more
-- **Query Planning**: Qdrant-specific optimizations and filter pushdown
-- **Advanced Filters**: Native Qdrant filter integration with SQL WHERE clauses
-
-🎯 **Planned**
-- **Multi-Database Joins**: Join Qdrant data with other `DataFusion` sources
-- **Vector Search UDFs**: `similarity()`, `recommend()`, `discover()` like functions
-- **Extension Nodes**: Custom physical plan nodes for complex vector operations
-
-## 🧪 Testing
-
-Run the test suite with a real Qdrant instance:
+## Verification
 
 ```bash
-# Start Qdrant
-docker run -p 6333:6333 -p 6334:6334 qdrant/qdrant
-
-# Run tests
-cargo test --features test-utils
-
-# Check coverage
-just coverage
+just checks
 ```
-
-
-## 🏗️ Architecture
-
-### Schema-Driven Design
-Built around a schema-driven architecture that reduces complex matching logic and leaves room for future expansion:
-
-```rust
-// Schema defines extractors upfront
-enum FieldExtractor {
-    Id(StringBuilder),
-    Payload(StringBuilder),
-    DenseVector { name: String, builder: ListBuilder<Float32Builder> },
-    MultiVector { name: String, builder: ListBuilder<ListBuilder<Float32Builder>> },
-    SparseIndices { name: String, builder: ListBuilder<UInt32Builder> },
-    SparseValues { name: String, builder: ListBuilder<Float32Builder> },
-}
-
-// Single pass processing with owned iteration
-pub fn append_point(&mut self, point: ScoredPoint) {
-    let ScoredPoint { id, payload, vectors, .. } = point;
-    let vector_lookup = build_vector_lookup(vectors);
-
-    for extractor in &mut self.field_extractors {
-        // All logic inline - no hidden abstractions
-    }
-}
-```
-
-## 🤝 Contributing
-
-We welcome contributions! Please see [CONTRIBUTING.md](https://github.com/GeorgeLeePatterson/qdrant-datafusion/blob/main/CONTRIBUTING.md) for guidelines.
-
-## 📝 License
-
-Licensed under the Apache License, Version 2.0. See [LICENSE](https://github.com/GeorgeLeePatterson/qdrant-datafusion/blob/main/LICENSE) for details.

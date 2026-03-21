@@ -1,6 +1,6 @@
 # Execution Tracker
 
-Last updated: 2026-03-19
+Last updated: 2026-03-21
 
 ## Purpose
 
@@ -10,18 +10,15 @@ Use it to resume work without replaying the full repository history.
 
 ## Current State
 
-1. `qdrant-datafusion` is now being treated as a clean rewrite from first principles, not as a migration of the earlier spike implementation.
-2. The active baseline is:
-   - `main` source tree
-   - dependency line immediately aligned to `ndatafusion`'s `DataFusion` git revision
-   - `qdrant-client` moved to the current line
-   - no obligation to preserve any earlier schema choices, tests, naming, or edge-case behavior
-3. Baseline compile health has been restored on that upgraded dependency line.
-   - `cargo check` is green on the default feature set
-   - `cargo check --features test-utils` is green
-4. The collection-scan Arrow contracts are being rewritten to the canonical `nabled::arrow` / `ndarrow` carriers only.
-5. Deprecated `qdrant-client` vector-output fields are considered dead code and should be deleted rather than preserved as fallback paths.
-6. Fast-path correctness and performance are the priority; speculative null-tolerant or heterogeneous slow-path handling is out of scope unless the canonical design truly requires it.
+1. `qdrant-datafusion` is being treated as a clean rewrite from first principles, not as a migration of the earlier spike implementation.
+2. The dependency line is aligned to the current `ndatafusion` baseline and `ndarrow 0.0.4`.
+3. The baseline collection-scan path is now contract-correct:
+   - `scroll`-based paginated retrieval
+   - canonical dense / multivector / sparse carriers
+   - top-level nullable vector columns for heterogeneous named collections
+   - current typed `qdrant-client` vector outputs only
+4. `INSERT INTO` is explicitly unsupported instead of panicking.
+5. The broad SQL-native `Qdrant` capability surface is still intentionally undefined.
 
 ## Done
 
@@ -31,48 +28,64 @@ Use it to resume work without replaying the full repository history.
 4. `Q-004`: Dependency posture on the rebaseline branch was immediately upgraded:
    - `DataFusion` moved to the same git revision currently used by `ndatafusion`
    - `qdrant-client` moved to the current major line
-5. `Q-005`: Internal planning governance is now explicit through `docs/README.md`, `docs/DECISIONS.md`, `docs/CAPABILITY_MATRIX.md`, `docs/EXECUTION_TRACKER.md`, and `docs/STATUS.md`.
+5. `Q-005`: Internal planning governance is explicit through `docs/README.md`, `docs/DECISIONS.md`, `docs/CAPABILITY_MATRIX.md`, `docs/EXECUTION_TRACKER.md`, and `docs/STATUS.md`.
 6. `Q-006`: Baseline compile health was restored on the upgraded dependency line.
-   - removed the stray `datafusion-functions-json` dependency from the baseline compile path
-   - updated the scan execution plan to the current `DataFusion` `ExecutionPlan` trait shape
-   - kept the UDF surface minimal rather than preserving speculative JSON integration
-   - verified `cargo check` on both the default feature set and `test-utils`
+7. `Q-007`: Collection-scan Arrow output contracts are locked to the canonical numerical carriers.
+8. `Q-008`: Scan deserialization now targets current typed `qdrant-client` vector outputs only.
+9. `Q-009`: The scan baseline now admits heterogeneous named-vector collections through top-level nullable vector columns.
+10. `Q-010`: Table scans now use paginated `scroll`, selector classification is contract-based, and stale public docs/speculative SQL examples were scrubbed.
+11. `Q-011`: A provider-owned pushdown model now exists for:
+    - projection
+    - payload access
+    - filters
+    - ordering
+    - limit
+    - continuation
+12. `Q-012`: Initial DataFusion-native pushdown wiring has landed:
+    - `supports_filters_pushdown` is explicit, even though all current filters remain unsupported
+    - `ExecutionPlan::try_pushdown_sort` now admits the exact `ORDER BY id ASC` case
+13. `Q-013`: The single-node ordered-scroll contract has now been validated directly against `Qdrant`:
+    - `order_by` is payload-key ordering only
+    - integer ordering requires a range-capable integer index
+    - `next_page_offset` is absent when ordered scroll is active
+    - duplicate-boundary pagination requires `start_from` plus accumulated boundary-ID exclusion
+    - returned datetime `order_value` currently surfaces as integer microseconds
+14. `Q-014`: Ordered-scroll lowering is now implemented in the provider runtime for the validated contract.
+    - `QdrantContinuation::Ordered` now lowers to `order_by`
+    - ordered pagination now uses `start_from` and `must_not has_id`
+    - ordered scroll rejects unexpected ID-offset pagination
 
 ## Next
 
-1. `Q-007`: Lock the collection-scan Arrow output contracts to the canonical numerical carriers.
-   - dense vector: `FixedSizeList<Float32>(D)`
-   - multivector: `arrow.variable_shape_tensor<Float32>` with rank 2 and fixed inner width
-   - sparse vector: `ndarrow.csr_matrix_batch<Float32>`
-   - no backward-compatibility aliases or legacy field splitting
-2. `Q-008`: Rewrite scan deserialization around current `qdrant-client` vector outputs only.
-   - use only typed `VectorOutput.vector` variants
-   - delete deprecated `data`, `indices`, and `vectors_count` fallback paths
-   - treat missing requested vectors as execution errors on the admitted fast path
-3. `Q-009`: Rebaseline validation and public docs.
-   - delete stale tests that encode wrong Arrow contracts or null-heavy legacy behavior
-   - replace them with tests that assert canonical carrier compatibility
-   - update the root `README.md` to describe the admitted current contracts
-4. `Q-010`: Keep the runtime surface intentionally small until scan correctness is complete.
-   - no speculative query-builder or SQL-translation surface by default
-   - only add abstractions that are justified by the admitted SQL contract
-5. `Q-011`: Design the stable SQL-native expansion map for `Qdrant` capabilities after the scan baseline is green.
-   - pause for detailed planning before settling the semantic bridge
-   - keep the future bridge general enough to support other vector stores where practical
+1. `Q-015`: Continue mapping the pushdown model onto `DataFusion`’s own idioms.
+   - `TreeNode` visitors / rewriters where traversal is required
+   - `LogicalPlan` expression and subquery helpers instead of ad hoc recursion
+   - exact filter admission instead of the current explicit-unsupported baseline
+   - payload-aware physical sort admission beyond `ORDER BY id ASC`
+2. `Q-016`: Admit the first explicit payload-key `ORDER BY` SQL subset.
+   - single sort key only
+   - direct payload-field mapping only
+   - indexed scalar payload fields only
+   - reject unsupported expressions cleanly instead of approximating them
+3. `Q-017`: Validate distributed-ordering behavior on the target `Qdrant` deployment modes before claiming broader exact payload-key sort pushdown.
+4. `Q-018`: Continue the payload-aware SQL bridge after the first ordering subset lands.
+   - payload-aware filters
+   - payload access helpers where they materially improve SQL ergonomics
+   - broader SQL-native `Qdrant` surface only after the semantics stay explicit
 
 ## Needed
 
 When the next implementation round starts:
 
-1. treat `Q-007` as the highest-priority open item unless explicitly redirected
-2. do not infer behavior from the old spike branch; it is reference material only
-3. prefer deletion over adaptation when legacy code conflicts with the admitted fast path
-4. keep the stabilization order intact:
-   - compile baseline
-   - canonical output contracts
-   - deserializer/API cleanup
-   - test and docs rebaseline
-   - capability expansion
-5. pause for explicit planning before designing SQL-to-vector-store semantic translation
-6. update this tracker in the same change set as any non-trivial landing
-7. avoid null-tolerant or compatibility-driven scan behavior unless it is explicitly re-admitted later
+1. do not infer SQL semantics from the abandoned spike branch or stale SDK surface ideas
+2. preserve the current scan truth:
+   - canonical carriers
+   - top-level nullable vector columns
+   - paginated `scroll`
+   - current typed `qdrant-client` APIs only
+3. keep writes unsupported until a deliberate write contract exists
+4. use `DataFusion` primary-source idioms before inventing project-local traversal or rewrite patterns
+5. admit only explicit pushdown subsets; reject unsupported cases cleanly instead of approximating them
+6. track unresolved distributed `Qdrant` ordering edge cases explicitly; the single-node ordered continuation contract is now known
+7. update this tracker in the same change set as any non-trivial landing
+8. stop for planning again before widening the SQL surface in a way that could affect other vector-store integrations

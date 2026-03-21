@@ -1,4 +1,4 @@
-//! Generate a stream of `Qdrant` points as arrow `RecordBatch`.
+//! Generate a stream of `Qdrant` points as Arrow `RecordBatch` values.
 
 use std::pin::Pin;
 use std::sync::Arc;
@@ -10,17 +10,7 @@ use datafusion::error::Result as DataFusionResult;
 use datafusion::execution::RecordBatchStream;
 use futures_util::Stream;
 
-/// Stream that yields `RecordBatch`es from Qdrant query results.
-///
-/// This stream implementation provides the bridge between `Qdrant`'s async query results
-/// and `DataFusion`'s streaming execution model. It typically yields a single batch
-/// containing all points from a `Qdrant` query, though it's designed to be extensible
-/// for future pagination support.
-///
-/// # Implementation Notes
-/// Currently optimized for `Qdrant`'s typical usage patterns where queries return
-/// relatively small result sets in a single response. Future versions may add
-/// support for streaming large result sets with pagination.
+/// Stream that yields paginated `RecordBatch` values from `Qdrant` scan results.
 #[pin_project::pin_project]
 pub struct QdrantQueryStream {
     schema: SchemaRef,
@@ -30,13 +20,6 @@ pub struct QdrantQueryStream {
 
 impl QdrantQueryStream {
     /// Create a new stream that yields record batches with the specified schema.
-    ///
-    /// # Arguments
-    /// * `schema` - The Arrow schema that defines the structure of record batches
-    /// * `stream` - The underlying stream of record batch results
-    ///
-    /// # Returns
-    /// A new `QdrantQueryStream` ready for `DataFusion` execution.
     pub fn new(
         schema: SchemaRef,
         stream: Pin<Box<dyn Stream<Item = DataFusionResult<RecordBatch>> + Send>>,
