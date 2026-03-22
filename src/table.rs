@@ -13,7 +13,7 @@ use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::logical_expr::TableProviderFilterPushDown;
 use datafusion::logical_expr::dml::InsertOp;
 use datafusion::physical_expr::PhysicalExpr;
-use datafusion::physical_expr::expressions::Column;
+use datafusion::physical_expr::expressions::{BinaryExpr, Column, Literal};
 use datafusion::physical_plan::execution_plan::Boundedness;
 use datafusion::physical_plan::expressions::PhysicalSortExpr;
 use datafusion::physical_plan::{
@@ -28,11 +28,11 @@ use qdrant_client::qdrant::{
 };
 
 use crate::arrow::deserialize::QdrantRecordBatchBuilder;
-use crate::arrow::schema::{ID_FIELD_NAME, collection_to_arrow_schema};
+use crate::arrow::schema::{ID_FIELD_NAME, PAYLOAD_FIELD_NAME, collection_to_arrow_schema};
 use crate::error::{Error, Result};
 use crate::pushdown::{
     QdrantContinuation, QdrantOrderValue, QdrantOrderedContinuation, QdrantOrdering,
-    QdrantPayloadSelector, QdrantScanSpec, QdrantVectorSelector,
+    QdrantPayloadSchema, QdrantPayloadSelector, QdrantScanSpec, QdrantVectorSelector,
 };
 use crate::stream::QdrantQueryStream;
 
@@ -94,9 +94,10 @@ use crate::stream::QdrantQueryStream;
 /// ```
 #[derive(Clone)]
 pub struct QdrantTableProvider {
-    table:  TableReference,
-    client: Arc<Qdrant>,
-    schema: Arc<Schema>,
+    table:          TableReference,
+    client:         Arc<Qdrant>,
+    schema:         Arc<Schema>,
+    payload_schema: Arc<QdrantPayloadSchema>,
 }
 
 impl std::fmt::Debug for QdrantTableProvider {
@@ -105,6 +106,7 @@ impl std::fmt::Debug for QdrantTableProvider {
             .field("table", &self.table)
             .field("client", &"Qdrant")
             .field("schema", &self.schema)
+            .field("payload_schema", &self.payload_schema)
             .finish()
     }
 }
@@ -145,16 +147,15 @@ impl QdrantTableProvider {
     /// ```
     pub async fn try_new(client: Qdrant, collection: &str) -> Result<Self> {
         let info = client.collection_info(collection).await?;
-        let config = info
-            .result
-            .ok_or(Error::MissingCollectionInfo(collection.into()))?
-            .config
-            .ok_or(Error::MissingCollectionInfo(collection.into()))?;
+        let info = info.result.ok_or(Error::MissingCollectionInfo(collection.into()))?;
+        let payload_schema = Arc::new(QdrantPayloadSchema::from(info.payload_schema));
+        let config = info.config.ok_or(Error::MissingCollectionInfo(collection.into()))?;
         let schema = collection_to_arrow_schema(collection, &config)?;
         Ok(Self {
-            table:  TableReference::bare(collection),
+            table: TableReference::bare(collection),
             client: Arc::new(client),
             schema: Arc::new(schema),
+            payload_schema,
         })
     }
 }
@@ -186,6 +187,7 @@ impl TableProvider for QdrantTableProvider {
             Arc::clone(&self.client),
             self.table.table().to_string(),
             pushdown,
+            Arc::clone(&self.payload_schema),
         )))
     }
 
@@ -216,10 +218,11 @@ impl TableProvider for QdrantTableProvider {
 /// `QdrantTableProvider` during SQL query execution.
 #[derive(Clone)]
 pub struct QdrantScanExec {
-    client:     Arc<Qdrant>,
-    collection: String,
-    pushdown:   Arc<QdrantScanSpec>,
-    properties: Arc<PlanProperties>,
+    client:         Arc<Qdrant>,
+    collection:     String,
+    pushdown:       Arc<QdrantScanSpec>,
+    payload_schema: Arc<QdrantPayloadSchema>,
+    properties:     Arc<PlanProperties>,
 }
 
 impl std::fmt::Debug for QdrantScanExec {
@@ -228,12 +231,18 @@ impl std::fmt::Debug for QdrantScanExec {
             .field("client", &"Qdrant")
             .field("collection", &self.collection)
             .field("pushdown", &self.pushdown)
+            .field("payload_schema", &self.payload_schema)
             .finish_non_exhaustive()
     }
 }
 
 impl QdrantScanExec {
-    fn new(client: Arc<Qdrant>, collection: String, pushdown: Arc<QdrantScanSpec>) -> Self {
+    fn new(
+        client: Arc<Qdrant>,
+        collection: String,
+        pushdown: Arc<QdrantScanSpec>,
+        payload_schema: Arc<QdrantPayloadSchema>,
+    ) -> Self {
         let mut eq_properties =
             datafusion::physical_expr::EquivalenceProperties::new(Arc::clone(&pushdown.schema));
         if matches!(pushdown.ordering, QdrantOrdering::ById)
@@ -250,7 +259,7 @@ impl QdrantScanExec {
             Boundedness::Bounded,
         );
 
-        Self { client, collection, pushdown, properties: Arc::new(properties) }
+        Self { client, collection, pushdown, payload_schema, properties: Arc::new(properties) }
     }
 }
 
@@ -433,13 +442,45 @@ impl ExecutionPlan for QdrantScanExec {
         let [sort] = order else {
             return Ok(SortOrderPushdownResult::Unsupported);
         };
-        let Some(column) = sort.expr.as_any().downcast_ref::<Column>() else {
+        if let Some(column) = sort.expr.as_any().downcast_ref::<Column>() {
+            if column.name() != ID_FIELD_NAME || sort.options.descending {
+                return Ok(SortOrderPushdownResult::Unsupported);
+            }
+            return Ok(SortOrderPushdownResult::Exact { inner: Arc::new(self.clone()) });
+        }
+        let Some(expr) = sort.expr.as_any().downcast_ref::<BinaryExpr>() else {
             return Ok(SortOrderPushdownResult::Unsupported);
         };
-        if column.name() != ID_FIELD_NAME || sort.options.descending {
+        if *expr.op() != datafusion::logical_expr::Operator::Colon {
             return Ok(SortOrderPushdownResult::Unsupported);
         }
-        Ok(SortOrderPushdownResult::Exact { inner: Arc::new(self.clone()) })
+        let Some(column) = expr.left().as_any().downcast_ref::<Column>() else {
+            return Ok(SortOrderPushdownResult::Unsupported);
+        };
+        if column.name() != PAYLOAD_FIELD_NAME {
+            return Ok(SortOrderPushdownResult::Unsupported);
+        }
+        let Some(path) = expr.right().as_any().downcast_ref::<Literal>().and_then(|literal| {
+            match literal.value() {
+                datafusion::common::ScalarValue::Utf8(Some(path)) => Some(path),
+                _ => None,
+            }
+        }) else {
+            return Ok(SortOrderPushdownResult::Unsupported);
+        };
+        let Some(ordering) = self.payload_schema.ordering_for(path, sort.options.descending) else {
+            return Ok(SortOrderPushdownResult::Unsupported);
+        };
+        let mut pushdown = (*self.pushdown).clone();
+        pushdown.ordering = QdrantOrdering::ByPayload(ordering);
+        Ok(SortOrderPushdownResult::Exact {
+            inner: Arc::new(Self::new(
+                Arc::clone(&self.client),
+                self.collection.clone(),
+                Arc::new(pushdown),
+                Arc::clone(&self.payload_schema),
+            )),
+        })
     }
 
     fn execute(
@@ -500,21 +541,43 @@ impl DisplayAs for QdrantScanExec {
 #[cfg(test)]
 mod tests {
     use datafusion::arrow::compute::SortOptions;
-    use datafusion::physical_expr::expressions::Column;
+    use datafusion::common::{Column as ExprColumn, ScalarValue};
+    use datafusion::logical_expr::{BinaryExpr, Expr, LogicalPlan, Operator};
+    use datafusion::physical_expr::expressions::{
+        BinaryExpr as PhysicalBinaryExpr, Column, Literal,
+    };
+    use datafusion::physical_plan::coop::CooperativeExec;
+    use datafusion::physical_plan::projection::ProjectionExec;
     use datafusion::physical_plan::{SortOrderPushdownResult, displayable};
     use datafusion::prelude::SessionContext;
     use futures_util::FutureExt;
-    use qdrant_client::qdrant::{OrderValue, PointId, point_id};
+    use qdrant_client::qdrant::{
+        IntegerIndexParams, OrderValue, PayloadSchemaInfo, PointId, point_id,
+    };
 
     use super::*;
-    use crate::arrow::schema::ID_FIELD_NAME;
+    use crate::arrow::schema::{ID_FIELD_NAME, PAYLOAD_FIELD_NAME};
 
     fn test_provider(schema: Schema) -> QdrantTableProvider {
         QdrantTableProvider {
-            table:  TableReference::bare("vectors"),
-            client: Arc::new(Qdrant::from_url("http://localhost:6334").build().expect("client")),
-            schema: Arc::new(schema),
+            table:          TableReference::bare("vectors"),
+            client:         Arc::new(
+                Qdrant::from_url("http://localhost:6334").build().expect("client"),
+            ),
+            schema:         Arc::new(schema),
+            payload_schema: Arc::new(QdrantPayloadSchema::default()),
         }
+    }
+
+    fn payload_schema(
+        entries: impl IntoIterator<Item = (&'static str, PayloadSchemaInfo)>,
+    ) -> Arc<QdrantPayloadSchema> {
+        Arc::new(QdrantPayloadSchema::from(
+            entries
+                .into_iter()
+                .map(|(field, info)| (field.to_owned(), info))
+                .collect::<std::collections::HashMap<_, _>>(),
+        ))
     }
 
     fn scan_exec(provider: &QdrantTableProvider) -> Arc<QdrantScanExec> {
@@ -530,6 +593,39 @@ mod tests {
             .expect("qdrant scan exec")
             .clone()
             .into()
+    }
+
+    fn logical_plan(provider: QdrantTableProvider, sql: &str) -> LogicalPlan {
+        let ctx = SessionContext::new();
+        drop(ctx.register_table("vectors", Arc::new(provider)).expect("register table"));
+        ctx.sql(sql)
+            .now_or_never()
+            .expect("sql future is ready")
+            .expect("dataframe")
+            .into_unoptimized_plan()
+    }
+
+    fn sort_expr(plan: &LogicalPlan) -> &Expr {
+        match plan {
+            LogicalPlan::Sort(sort) => &sort.expr[0].expr,
+            LogicalPlan::Projection(projection) => match projection.input.as_ref() {
+                LogicalPlan::Sort(sort) => &sort.expr[0].expr,
+                input => panic!("expected sort under projection, got {input:?}"),
+            },
+            other => panic!("expected sort plan, got {other:?}"),
+        }
+    }
+
+    fn assert_payload_string_access(expr: &Expr, expected_op: Operator, path: &str) {
+        let Expr::BinaryExpr(BinaryExpr { left, op, right }) = expr else {
+            panic!("expected binary expr, got {expr:?}");
+        };
+        assert_eq!(op, &expected_op);
+        let Expr::Column(ExprColumn { name, .. }) = left.as_ref() else {
+            panic!("expected payload column, got {left:?}");
+        };
+        assert_eq!(name, PAYLOAD_FIELD_NAME);
+        assert_eq!(right.as_ref(), &Expr::Literal(ScalarValue::Utf8(Some(path.to_owned())), None),);
     }
 
     #[test]
@@ -597,6 +693,102 @@ mod tests {
     }
 
     #[test]
+    fn sort_pushdown_is_exact_for_payload_path() {
+        let provider = test_provider(Schema::new(vec![
+            Field::new(ID_FIELD_NAME, DataType::Utf8, false),
+            Field::new(PAYLOAD_FIELD_NAME, DataType::Utf8, true),
+        ]));
+        let scan = Arc::new(QdrantScanExec::new(
+            Arc::clone(&provider.client),
+            "vectors".to_owned(),
+            Arc::new(QdrantScanSpec::try_new(&provider.schema, None, &[], None).expect("scan spec")),
+            payload_schema([(
+                "rank",
+                PayloadSchemaInfo {
+                    data_type: qdrant_client::qdrant::PayloadSchemaType::Integer as i32,
+                    params: Some(qdrant_client::qdrant::PayloadIndexParams {
+                        index_params: Some(
+                            qdrant_client::qdrant::payload_index_params::IndexParams::IntegerIndexParams(
+                                IntegerIndexParams {
+                                    range: Some(true),
+                                    ..Default::default()
+                                },
+                            ),
+                        ),
+                    }),
+                    points: None,
+                },
+            )]),
+        ));
+        let order = [PhysicalSortExpr::new(
+            Arc::new(PhysicalBinaryExpr::new(
+                Arc::new(Column::new(PAYLOAD_FIELD_NAME, 1)),
+                Operator::Colon,
+                Arc::new(Literal::new(ScalarValue::Utf8(Some("rank".to_owned())))),
+            )),
+            SortOptions::default(),
+        )];
+
+        let SortOrderPushdownResult::Exact { inner } =
+            scan.try_pushdown_sort(&order).expect("sort pushdown")
+        else {
+            panic!("expected exact payload sort pushdown");
+        };
+        let pushed = inner.as_any().downcast_ref::<QdrantScanExec>().expect("qdrant scan exec");
+
+        assert_eq!(
+            pushed.pushdown.ordering,
+            QdrantOrdering::ByPayload(crate::pushdown::QdrantPayloadOrdering {
+                field:      "rank".to_owned(),
+                descending: false,
+            }),
+        );
+    }
+
+    #[test]
+    fn sort_pushdown_rejects_unindexed_payload_path() {
+        let provider = test_provider(Schema::new(vec![
+            Field::new(ID_FIELD_NAME, DataType::Utf8, false),
+            Field::new(PAYLOAD_FIELD_NAME, DataType::Utf8, true),
+        ]));
+        let scan = Arc::new(QdrantScanExec::new(
+            Arc::clone(&provider.client),
+            "vectors".to_owned(),
+            Arc::new(QdrantScanSpec::try_new(&provider.schema, None, &[], None).expect("scan spec")),
+            payload_schema([(
+                "rank",
+                PayloadSchemaInfo {
+                    data_type: qdrant_client::qdrant::PayloadSchemaType::Integer as i32,
+                    params: Some(qdrant_client::qdrant::PayloadIndexParams {
+                        index_params: Some(
+                            qdrant_client::qdrant::payload_index_params::IndexParams::IntegerIndexParams(
+                                IntegerIndexParams {
+                                    range: Some(false),
+                                    ..Default::default()
+                                },
+                            ),
+                        ),
+                    }),
+                    points: None,
+                },
+            )]),
+        ));
+        let order = [PhysicalSortExpr::new(
+            Arc::new(PhysicalBinaryExpr::new(
+                Arc::new(Column::new(PAYLOAD_FIELD_NAME, 1)),
+                Operator::Colon,
+                Arc::new(Literal::new(ScalarValue::Utf8(Some("rank".to_owned())))),
+            )),
+            SortOptions::default(),
+        )];
+
+        assert!(matches!(
+            scan.try_pushdown_sort(&order).expect("sort pushdown"),
+            SortOrderPushdownResult::Unsupported
+        ));
+    }
+
+    #[test]
     fn physical_plan_drops_sort_exec_for_order_by_id() {
         let provider =
             test_provider(Schema::new(vec![Field::new(ID_FIELD_NAME, DataType::Utf8, false)]));
@@ -616,6 +808,94 @@ mod tests {
 
         assert!(display.contains("QdrantScanExec"), "{display}");
         assert!(!display.contains("SortExec"), "{display}");
+    }
+
+    #[test]
+    fn physical_plan_drops_sort_exec_for_order_by_payload_path() {
+        let provider = QdrantTableProvider {
+            payload_schema: payload_schema([
+                (
+                    "rank",
+                    PayloadSchemaInfo {
+                        data_type: qdrant_client::qdrant::PayloadSchemaType::Integer as i32,
+                        params: Some(qdrant_client::qdrant::PayloadIndexParams {
+                            index_params: Some(
+                                qdrant_client::qdrant::payload_index_params::IndexParams::IntegerIndexParams(
+                                    IntegerIndexParams {
+                                        range: Some(true),
+                                        ..Default::default()
+                                    },
+                                ),
+                            ),
+                        }),
+                        points: None,
+                    },
+                ),
+            ]),
+            ..test_provider(Schema::new(vec![
+                Field::new(ID_FIELD_NAME, DataType::Utf8, false),
+                Field::new(PAYLOAD_FIELD_NAME, DataType::Utf8, true),
+            ]))
+        };
+        let ctx = SessionContext::new();
+        drop(ctx.register_table("vectors", Arc::new(provider)).expect("register table"));
+        let dataframe = ctx
+            .sql("SELECT id FROM vectors ORDER BY payload:rank")
+            .now_or_never()
+            .expect("sql future is ready")
+            .expect("dataframe");
+        let plan = dataframe
+            .create_physical_plan()
+            .now_or_never()
+            .expect("plan future is ready")
+            .expect("physical plan");
+        let display = displayable(plan.as_ref()).indent(true).to_string();
+        let projection = plan.as_any().downcast_ref::<ProjectionExec>().expect("projection exec");
+        let cooperative = projection
+            .input()
+            .as_any()
+            .downcast_ref::<CooperativeExec>()
+            .expect("cooperative exec");
+        let scan = cooperative
+            .input()
+            .as_any()
+            .downcast_ref::<QdrantScanExec>()
+            .expect("qdrant scan exec");
+
+        assert!(!display.contains("SortExec"), "{display}");
+        assert_eq!(
+            scan.pushdown.ordering,
+            QdrantOrdering::ByPayload(crate::pushdown::QdrantPayloadOrdering {
+                field:      "rank".to_owned(),
+                descending: false,
+            }),
+        );
+    }
+
+    #[test]
+    fn logical_sort_expr_uses_payload_json_access_for_direct_path() {
+        let plan = logical_plan(
+            test_provider(Schema::new(vec![
+                Field::new(ID_FIELD_NAME, DataType::Utf8, false),
+                Field::new(PAYLOAD_FIELD_NAME, DataType::Utf8, true),
+            ])),
+            "SELECT id FROM vectors ORDER BY payload:rank",
+        );
+
+        assert_payload_string_access(sort_expr(&plan), Operator::Colon, "rank");
+    }
+
+    #[test]
+    fn logical_sort_expr_preserves_nested_payload_json_path() {
+        let plan = logical_plan(
+            test_provider(Schema::new(vec![
+                Field::new(ID_FIELD_NAME, DataType::Utf8, false),
+                Field::new(PAYLOAD_FIELD_NAME, DataType::Utf8, true),
+            ])),
+            "SELECT id FROM vectors ORDER BY payload:metadata.rank",
+        );
+
+        assert_payload_string_access(sort_expr(&plan), Operator::Colon, "metadata.rank");
     }
 
     fn ordered_point(id: u64, value: QdrantOrderValue) -> RetrievedPoint {

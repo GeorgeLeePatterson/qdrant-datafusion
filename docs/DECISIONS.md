@@ -1,6 +1,6 @@
 # Locked Decisions
 
-Last updated: 2026-03-21
+Last updated: 2026-03-22
 
 ## Core Constraints
 
@@ -37,6 +37,12 @@ Last updated: 2026-03-21
     - returned datetime order values currently surface as integer microseconds
 17. Distributed ordered-scroll exactness is still deferred. Do not claim broader payload-key sort exactness until the target `Qdrant` deployment mode is explicitly validated.
 18. Payload-aware SQL features are semantic pushdown concerns first, not generic JSON-function concerns first. Reintroduce generic JSON helpers only when they materially improve the SQL surface over the provider-owned payload contract.
+19. The first admitted payload-key SQL sort subset is `ORDER BY payload:<path>`.
+    - single sort key only
+    - direct `payload:<path>` expression only
+    - indexed integer / float / datetime payload fields only
+    - current pushdown result is `Exact` because `DataFusion` cannot execute the `:` operator in a fallback physical `SortExec`
+    - distributed exactness is still a tracked validation item beyond the current admitted runtime contract
 
 ## Execution Ordering
 

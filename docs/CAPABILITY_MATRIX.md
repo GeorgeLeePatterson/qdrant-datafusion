@@ -1,6 +1,6 @@
 # Capability Matrix
 
-Last updated: 2026-03-21
+Last updated: 2026-03-22
 
 ## Purpose
 
@@ -28,7 +28,7 @@ This file is the canonical scope and sufficiency map for `qdrant-datafusion`.
 | Pushdown architecture | provider-owned pushdown model | Implemented | `src/pushdown.rs` now owns the scan contract for projection, payload access, filters, ordering, limit, and continuation. |
 | DataFusion integration | DataFusion-native traversal / rewrite strategy | Partial | Primary-source pattern study is complete; `supports_filters_pushdown` and `ExecutionPlan::try_pushdown_sort` are now explicit, but broader traversal / rewrite work is still pending. |
 | Ordering pushdown | exact `ORDER BY id ASC` pushdown | Implemented | Qdrant’s existing ID-ordered scroll path is now admitted as an exact physical sort pushdown case. |
-| Ordering pushdown | payload-key ordered-scroll lowering | Partial | The provider runtime now supports validated payload-key ordered scroll continuation, but no admitted SQL `ORDER BY` subset maps to it yet. |
+| Ordering pushdown | payload-key `ORDER BY payload:<path>` subset | Implemented | The provider now admits a single-key `payload:<path>` sort subset for indexed integer / float / datetime payload fields and lowers it into ordered `scroll` as an exact physical sort pushdown on the currently validated runtime contract. |
 | Ordered continuation | duplicate-boundary ordered pagination contract | Partial | Single-node ordered continuation is validated and implemented through `start_from` plus accumulated boundary-ID exclusion; distributed exactness is still deferred. |
 | Filter pushdown | ID and payload filter translation | Missing | Deliberately deferred until the SQL bridge is designed. |
 | Dense vector output contract | canonical fixed-dimension vector carrier | Implemented | Dense scans use nullable `FixedSizeList<Float32>(D)`. |

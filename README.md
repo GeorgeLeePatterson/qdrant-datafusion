@@ -27,14 +27,14 @@ canonical carrier; missing values are not imputed during scan.
 - schema/projection-driven vector selection
 - SQL `LIMIT` pushdown to the scan stream
 - exact physical sort pushdown for `ORDER BY id ASC`
-- validated internal payload-key ordered-scroll continuation groundwork
+- exact payload-key sort pushdown for the admitted `ORDER BY payload:<path>` subset on indexed integer, float, and datetime payload fields
 - heterogeneous named-vector scans with top-level nullable vector columns
 
 ## Not Yet Admitted
 
 - write support or `INSERT INTO`
 - filter pushdown
-- payload-key SQL `ORDER BY` pushdown beyond `ORDER BY id ASC`
+- broader payload-key SQL `ORDER BY` pushdown beyond the admitted `payload:<path>` subset
 - `Qdrant`-specific UDFs, UDAFs, or UDTFs
 - SQL-native search / recommend / discover / fusion semantics
 - custom planning or rewrite passes
@@ -75,6 +75,10 @@ SELECT text_embedding
 FROM docs
 WHERE text_embedding IS NOT NULL
 ORDER BY id;
+
+SELECT id
+FROM docs
+ORDER BY payload:rank;
 
 SELECT multi_embedding, keywords
 FROM docs

@@ -1,6 +1,6 @@
 # Status Snapshot
 
-Last updated: 2026-03-21
+Last updated: 2026-03-22
 
 ## Summary
 
@@ -21,8 +21,10 @@ Current branch reality:
 8. A provider-owned pushdown model now exists for projection, payload access, filters, ordering, limit, and continuation.
 9. `ORDER BY id ASC` is admitted as an exact physical sort pushdown case.
 10. The single-node payload-key ordered-scroll runtime contract is now validated for integer, float, and datetime payload indexes.
-11. Ordered continuation lowering is implemented internally through `order_by`, `start_from`, and boundary-ID exclusion, but payload-key SQL sort admission is still deferred.
-12. The root `README.md`, repo notes, and tracker docs describe only the admitted baseline.
+11. Ordered continuation lowering is implemented internally through `order_by`, `start_from`, and boundary-ID exclusion.
+12. The first payload-key SQL sort subset is now admitted as `ORDER BY payload:<path>` for indexed integer, float, and datetime payload fields.
+13. Payload-key sort pushdown is currently admitted as `Exact` on the validated runtime contract because `DataFusion` cannot execute a fallback physical sort for the `:` operator.
+14. The root `README.md`, repo notes, and tracker docs describe only the admitted baseline.
 
 ## Current Code Ownership
 
@@ -32,9 +34,11 @@ Current branch reality:
    - provider-owned scan spec lowering
    - paginated `scroll` orchestration
    - exact `ORDER BY id ASC` pushdown
+   - exact `ORDER BY payload:<path>` pushdown
 2. `src/pushdown.rs`
    - provider-owned pushdown model
    - scan projection / payload / ordering / continuation contract
+   - payload index metadata normalization for admitted sort pushdown
 3. `src/arrow/schema.rs`
    - collection-config to Arrow schema translation
 4. `src/arrow/deserialize.rs`
@@ -47,7 +51,7 @@ Current branch reality:
 1. Prefer clean reimplementation over porting code from the old spike branch.
 2. Remove deprecated `qdrant-client` paths instead of preserving fallback behavior.
 3. Preserve truthful nullability at the scan boundary; do not impute missing vectors during scan.
-4. The next step is still not ad hoc implementation. It is the remaining pushdown-first SQL-bridge work tracked as `Q-015` through `Q-018`.
+4. The next step is still not ad hoc implementation. It is the remaining pushdown-first SQL-bridge work tracked as `Q-017` through `Q-018`.
 5. That next phase is explicitly anchored on `DataFusion`’s own idioms:
    - `TreeNode` traversal / rewriting
    - `LogicalPlan` expression and subquery helpers
@@ -57,4 +61,5 @@ Current branch reality:
    - `next_page_offset` is absent
    - duplicate-boundary pagination requires accumulated boundary-ID exclusion
    - datetime `order_value` currently returns integer microseconds
-8. Distributed-ordering behavior is still intentionally deferred before claiming broader payload-key sort exactness.
+8. The admitted SQL bridge for that runtime path is currently `payload:<path>` only, and it is treated as exact on the validated runtime contract because fallback physical execution of `:` is not available.
+9. Distributed-ordering behavior is still intentionally deferred before claiming broader payload-key sort exactness.

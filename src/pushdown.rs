@@ -1,9 +1,10 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::Result as DataFusionResult;
 use datafusion::prelude::Expr;
-use qdrant_client::qdrant::PointId;
+use qdrant_client::qdrant::{PayloadSchemaInfo, PayloadSchemaType, PointId, payload_index_params};
 
 use crate::arrow::schema::{
     PAYLOAD_FIELD_NAME, UNNAMED_VECTOR_FIELD_NAME, dense_vector_width, is_multi_vector_field,
@@ -26,11 +27,6 @@ pub(crate) enum QdrantPayloadSelector {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum QdrantOrdering {
     ById,
-    #[expect(
-        dead_code,
-        reason = "payload ORDER BY pushdown is modeled before SQL admission; execution support \
-                  exists but planner mapping is still deferred"
-    )]
     ByPayload(QdrantPayloadOrdering),
 }
 
@@ -38,6 +34,18 @@ pub(crate) enum QdrantOrdering {
 pub(crate) struct QdrantPayloadOrdering {
     pub(crate) field:      String,
     pub(crate) descending: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum QdrantPayloadField {
+    Integer,
+    Float,
+    Datetime,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct QdrantPayloadSchema {
+    fields: HashMap<String, QdrantPayloadField>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -128,9 +136,52 @@ impl QdrantScanSpec {
     }
 }
 
+impl From<HashMap<String, PayloadSchemaInfo>> for QdrantPayloadSchema {
+    fn from(payload_schema: HashMap<String, PayloadSchemaInfo>) -> Self {
+        let fields = payload_schema
+            .into_iter()
+            .filter_map(|(field_name, info)| {
+                let data_type = PayloadSchemaType::try_from(info.data_type).ok()?;
+                let params = info.params?.index_params?;
+                let field = match (data_type, params) {
+                    (
+                        PayloadSchemaType::Integer,
+                        payload_index_params::IndexParams::IntegerIndexParams(params),
+                    ) if params.range.unwrap_or(true) => QdrantPayloadField::Integer,
+                    (
+                        PayloadSchemaType::Float,
+                        payload_index_params::IndexParams::FloatIndexParams(_),
+                    ) => QdrantPayloadField::Float,
+                    (
+                        PayloadSchemaType::Datetime,
+                        payload_index_params::IndexParams::DatetimeIndexParams(_),
+                    ) => QdrantPayloadField::Datetime,
+                    _ => return None,
+                };
+                Some((field_name, field))
+            })
+            .collect();
+        Self { fields }
+    }
+}
+
+impl QdrantPayloadSchema {
+    pub(crate) fn ordering_for(
+        &self,
+        field: &str,
+        descending: bool,
+    ) -> Option<QdrantPayloadOrdering> {
+        if !self.fields.contains_key(field) {
+            return None;
+        }
+        Some(QdrantPayloadOrdering { field: field.to_owned(), descending })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use qdrant_client::qdrant::{FloatIndexParams, IntegerIndexParams};
 
     use super::*;
     use crate::arrow::schema::ID_FIELD_NAME;
@@ -190,5 +241,49 @@ mod tests {
         assert_eq!(spec.payload, QdrantPayloadSelector::Full);
         assert_eq!(spec.limit, Some(7));
         assert_eq!(spec.initial_continuation(), QdrantContinuation::Offset(None));
+    }
+
+    #[test]
+    fn payload_schema_keeps_orderable_scalar_indexes_only() {
+        let schema = QdrantPayloadSchema::from(HashMap::from([
+            ("rank".to_owned(), PayloadSchemaInfo {
+                data_type: PayloadSchemaType::Integer as i32,
+                params:    Some(qdrant_client::qdrant::PayloadIndexParams {
+                    index_params: Some(payload_index_params::IndexParams::IntegerIndexParams(
+                        IntegerIndexParams { range: Some(true), ..Default::default() },
+                    )),
+                }),
+                points:    None,
+            }),
+            ("score".to_owned(), PayloadSchemaInfo {
+                data_type: PayloadSchemaType::Float as i32,
+                params:    Some(qdrant_client::qdrant::PayloadIndexParams {
+                    index_params: Some(payload_index_params::IndexParams::FloatIndexParams(
+                        FloatIndexParams::default(),
+                    )),
+                }),
+                points:    None,
+            }),
+            ("lookup_only".to_owned(), PayloadSchemaInfo {
+                data_type: PayloadSchemaType::Integer as i32,
+                params:    Some(qdrant_client::qdrant::PayloadIndexParams {
+                    index_params: Some(payload_index_params::IndexParams::IntegerIndexParams(
+                        IntegerIndexParams { range: Some(false), ..Default::default() },
+                    )),
+                }),
+                points:    None,
+            }),
+        ]));
+
+        assert_eq!(
+            schema.ordering_for("rank", false),
+            Some(QdrantPayloadOrdering { field: "rank".to_owned(), descending: false }),
+        );
+        assert_eq!(
+            schema.ordering_for("score", true),
+            Some(QdrantPayloadOrdering { field: "score".to_owned(), descending: true }),
+        );
+        assert_eq!(schema.ordering_for("lookup_only", false), None);
+        assert_eq!(schema.ordering_for("missing", false), None);
     }
 }

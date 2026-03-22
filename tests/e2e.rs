@@ -21,6 +21,14 @@ e2e_test!(
 
 #[cfg(feature = "test-utils")]
 e2e_test!(
+    table_provider_orders_by_payload_field,
+    tests::test_table_provider_orders_by_payload_field,
+    TRACING_DIRECTIVES,
+    None
+);
+
+#[cfg(feature = "test-utils")]
+e2e_test!(
     qdrant_raw_ordered_scroll_integer_contracts,
     tests::test_qdrant_raw_ordered_scroll_integer_contracts,
     TRACING_DIRECTIVES,
@@ -492,6 +500,52 @@ mod tests {
         ids.sort_unstable();
 
         assert_eq!(ids, (1_u64..=12).collect::<Vec<_>>());
+
+        Ok(())
+    }
+
+    pub(super) async fn test_table_provider_orders_by_payload_field(
+        c: Arc<QdrantContainer>,
+    ) -> Result<()> {
+        let client = create_qdrant_client(&c)?;
+        let collection_name = "test_order_by_payload_field";
+        create_scalar_collection(&client, collection_name).await?;
+        create_payload_index(
+            &client,
+            collection_name,
+            "rank",
+            FieldType::Integer,
+            qdrant_client::qdrant::IntegerIndexParamsBuilder::new(false, true).build(),
+        )
+        .await?;
+        let points = vec![
+            scalar_point(1, "rank", 30_i64),
+            scalar_point(2, "rank", 10_i64),
+            scalar_point(3, "rank", 20_i64),
+        ];
+        drop(client.upsert_points(UpsertPointsBuilder::new(collection_name, points)).await?);
+
+        let table_provider = QdrantTableProvider::try_new(client.clone(), collection_name).await?;
+        let ctx = SessionContext::new();
+        drop(ctx.register_table("vectors", Arc::new(table_provider))?);
+
+        let batches =
+            ctx.sql("SELECT id FROM vectors ORDER BY payload:rank").await?.collect().await?;
+        let ids = batches
+            .iter()
+            .flat_map(|batch| {
+                batch
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .expect("id string array")
+                    .iter()
+                    .map(|value| value.expect("non-null id").parse::<u64>().expect("numeric id"))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(ids, vec![2, 3, 1]);
 
         Ok(())
     }

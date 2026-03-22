@@ -1,6 +1,6 @@
 # Execution Tracker
 
-Last updated: 2026-03-21
+Last updated: 2026-03-22
 
 ## Purpose
 
@@ -54,24 +54,28 @@ Use it to resume work without replaying the full repository history.
     - `QdrantContinuation::Ordered` now lowers to `order_by`
     - ordered pagination now uses `start_from` and `must_not has_id`
     - ordered scroll rejects unexpected ID-offset pagination
+15. `Q-015`: The pushdown model is now wired further into `DataFusion`’s physical sort idioms.
+    - payload-key sort admission is now recognized from physical `payload:<path>` expressions
+    - provider-side payload index metadata is now retained explicitly for pushdown validation
+    - unit plan-inspection coverage now checks both logical and physical sort expression shapes
+16. `Q-016`: The first explicit payload-key SQL `ORDER BY` subset is now admitted.
+    - single sort key only
+    - direct `payload:<path>` only
+    - indexed integer / float / datetime payload fields only
+    - current pushdown is `Exact` because `DataFusion` cannot execute fallback `payload:<path>` physical sorts
+    - end-to-end SQL coverage now exercises the admitted path against live `Qdrant`
 
 ## Next
 
-1. `Q-015`: Continue mapping the pushdown model onto `DataFusion`’s own idioms.
-   - `TreeNode` visitors / rewriters where traversal is required
-   - `LogicalPlan` expression and subquery helpers instead of ad hoc recursion
-   - exact filter admission instead of the current explicit-unsupported baseline
-   - payload-aware physical sort admission beyond `ORDER BY id ASC`
-2. `Q-016`: Admit the first explicit payload-key `ORDER BY` SQL subset.
-   - single sort key only
-   - direct payload-field mapping only
-   - indexed scalar payload fields only
-   - reject unsupported expressions cleanly instead of approximating them
-3. `Q-017`: Validate distributed-ordering behavior on the target `Qdrant` deployment modes before claiming broader exact payload-key sort pushdown.
-4. `Q-018`: Continue the payload-aware SQL bridge after the first ordering subset lands.
+1. `Q-017`: Validate distributed-ordering behavior on the target `Qdrant` deployment modes before claiming broader exact payload-key sort pushdown.
+2. `Q-018`: Continue the payload-aware SQL bridge after the first ordering subset lands.
    - payload-aware filters
    - payload access helpers where they materially improve SQL ergonomics
    - broader SQL-native `Qdrant` surface only after the semantics stay explicit
+3. Continue mapping the pushdown model onto `DataFusion`’s own idioms where broader traversal is required.
+   - `TreeNode` visitors / rewriters instead of ad hoc recursion
+   - `LogicalPlan` expression and subquery helpers before project-local traversal
+   - exact filter admission instead of the current explicit-unsupported baseline
 
 ## Needed
 
