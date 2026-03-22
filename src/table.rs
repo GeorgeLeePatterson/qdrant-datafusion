@@ -7,6 +7,7 @@ use datafusion::arrow::datatypes::*;
 use datafusion::catalog::{Session, TableProvider};
 use datafusion::common::exec_err;
 use datafusion::common::tree_node::TreeNodeRecursion;
+use datafusion::config::ConfigOptions;
 use datafusion::datasource::TableType;
 use datafusion::error::{DataFusionError, Result as DataFusionResult};
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
@@ -16,6 +17,9 @@ use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr::expressions::{BinaryExpr, Column, Literal};
 use datafusion::physical_plan::execution_plan::Boundedness;
 use datafusion::physical_plan::expressions::PhysicalSortExpr;
+use datafusion::physical_plan::filter_pushdown::{
+    ChildPushdownResult, FilterPushdownPhase, FilterPushdownPropagation, PushedDown,
+};
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, SortOrderPushdownResult,
 };
@@ -31,7 +35,7 @@ use crate::arrow::deserialize::QdrantRecordBatchBuilder;
 use crate::arrow::schema::{ID_FIELD_NAME, PAYLOAD_FIELD_NAME, collection_to_arrow_schema};
 use crate::error::{Error, Result};
 use crate::pushdown::{
-    QdrantContinuation, QdrantOrderValue, QdrantOrderedContinuation, QdrantOrdering,
+    QdrantContinuation, QdrantFilters, QdrantOrderValue, QdrantOrderedContinuation, QdrantOrdering,
     QdrantPayloadSchema, QdrantPayloadSelector, QdrantScanSpec, QdrantVectorSelector,
 };
 use crate::stream::QdrantQueryStream;
@@ -172,7 +176,16 @@ impl TableProvider for QdrantTableProvider {
         &self,
         filters: &[&Expr],
     ) -> DataFusionResult<Vec<TableProviderFilterPushDown>> {
-        Ok(vec![TableProviderFilterPushDown::Unsupported; filters.len()])
+        Ok(filters
+            .iter()
+            .map(|filter| {
+                if QdrantFilters::supports_exact(&self.schema, &self.payload_schema, filter) {
+                    TableProviderFilterPushDown::Exact
+                } else {
+                    TableProviderFilterPushDown::Unsupported
+                }
+            })
+            .collect())
     }
 
     async fn scan(
@@ -182,7 +195,13 @@ impl TableProvider for QdrantTableProvider {
         filters: &[Expr],
         limit: Option<usize>,
     ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
-        let pushdown = Arc::new(QdrantScanSpec::try_new(&self.schema, projection, filters, limit)?);
+        let pushdown = Arc::new(QdrantScanSpec::try_new(
+            &self.schema,
+            &self.payload_schema,
+            projection,
+            filters,
+            limit,
+        )?);
         Ok(Arc::new(QdrantScanExec::new(
             Arc::clone(&self.client),
             self.table.table().to_string(),
@@ -337,6 +356,7 @@ impl QdrantScrollState {
         let mut request = ScrollPointsBuilder::new(&collection)
             .limit(page_limit)
             .with_payload(matches!(pushdown.payload, QdrantPayloadSelector::Full));
+        let mut filter = pushdown.filters.to_filter();
         let mut ordered = None;
         match &pushdown.vectors {
             QdrantVectorSelector::None => request = request.with_vectors(false),
@@ -361,11 +381,16 @@ impl QdrantScrollState {
                 }
                 request = request.order_by(order_by);
                 if !next.boundary_ids.is_empty() {
-                    request = request
-                        .filter(Filter::must_not([Condition::has_id(next.boundary_ids.clone())]));
+                    filter
+                        .get_or_insert_with(Filter::default)
+                        .must_not
+                        .push(Condition::has_id(next.boundary_ids.clone()));
                 }
                 ordered = Some(next);
             }
+        }
+        if let Some(filter) = filter {
+            request = request.filter(filter);
         }
 
         let response = client
@@ -483,6 +508,43 @@ impl ExecutionPlan for QdrantScanExec {
         })
     }
 
+    fn handle_child_pushdown_result(
+        &self,
+        phase: FilterPushdownPhase,
+        child_pushdown_result: ChildPushdownResult,
+        _config: &ConfigOptions,
+    ) -> DataFusionResult<FilterPushdownPropagation<Arc<dyn ExecutionPlan>>> {
+        if phase != FilterPushdownPhase::Pre {
+            return Ok(FilterPushdownPropagation::all_unsupported(child_pushdown_result));
+        }
+        let parent_filters = child_pushdown_result
+            .parent_filters
+            .iter()
+            .map(|filter| Arc::clone(&filter.filter))
+            .collect::<Vec<_>>();
+        let (filters, support) = self.pushdown.filters.pushdown_physical(
+            &self.pushdown.schema,
+            &self.payload_schema,
+            &parent_filters,
+        );
+        let support = support
+            .into_iter()
+            .map(|supported| if supported { PushedDown::Yes } else { PushedDown::No })
+            .collect::<Vec<_>>();
+        let propagation = FilterPushdownPropagation::with_parent_pushdown_result(support);
+        if filters == self.pushdown.filters {
+            return Ok(propagation);
+        }
+        let mut pushdown = (*self.pushdown).clone();
+        pushdown.filters = filters;
+        Ok(propagation.with_updated_node(Arc::new(Self::new(
+            Arc::clone(&self.client),
+            self.collection.clone(),
+            Arc::new(pushdown),
+            Arc::clone(&self.payload_schema),
+        ))))
+    }
+
     fn execute(
         &self,
         _partition: usize,
@@ -547,7 +609,9 @@ mod tests {
         BinaryExpr as PhysicalBinaryExpr, Column, Literal,
     };
     use datafusion::physical_plan::coop::CooperativeExec;
+    use datafusion::physical_plan::filter::FilterExec;
     use datafusion::physical_plan::projection::ProjectionExec;
+    use datafusion::physical_plan::repartition::RepartitionExec;
     use datafusion::physical_plan::{SortOrderPushdownResult, displayable};
     use datafusion::prelude::SessionContext;
     use futures_util::FutureExt;
@@ -628,6 +692,25 @@ mod tests {
         assert_eq!(right.as_ref(), &Expr::Literal(ScalarValue::Utf8(Some(path.to_owned())), None),);
     }
 
+    fn qdrant_scan(plan: &Arc<dyn ExecutionPlan>) -> &QdrantScanExec {
+        if let Some(scan) = plan.as_any().downcast_ref::<QdrantScanExec>() {
+            return scan;
+        }
+        if let Some(cooperative) = plan.as_any().downcast_ref::<CooperativeExec>() {
+            return qdrant_scan(cooperative.input());
+        }
+        if let Some(projection) = plan.as_any().downcast_ref::<ProjectionExec>() {
+            return qdrant_scan(projection.input());
+        }
+        if let Some(filter) = plan.as_any().downcast_ref::<FilterExec>() {
+            return qdrant_scan(filter.input());
+        }
+        if let Some(repartition) = plan.as_any().downcast_ref::<RepartitionExec>() {
+            return qdrant_scan(repartition.input());
+        }
+        panic!("expected qdrant scan exec in plan:\n{}", displayable(plan.as_ref()).indent(true));
+    }
+
     #[test]
     fn scan_uses_all_for_unnamed_vector_contract() {
         let provider = test_provider(Schema::new(vec![
@@ -701,7 +784,16 @@ mod tests {
         let scan = Arc::new(QdrantScanExec::new(
             Arc::clone(&provider.client),
             "vectors".to_owned(),
-            Arc::new(QdrantScanSpec::try_new(&provider.schema, None, &[], None).expect("scan spec")),
+            Arc::new(
+                QdrantScanSpec::try_new(
+                    &provider.schema,
+                    &provider.payload_schema,
+                    None,
+                    &[],
+                    None,
+                )
+                .expect("scan spec"),
+            ),
             payload_schema([(
                 "rank",
                 PayloadSchemaInfo {
@@ -754,7 +846,16 @@ mod tests {
         let scan = Arc::new(QdrantScanExec::new(
             Arc::clone(&provider.client),
             "vectors".to_owned(),
-            Arc::new(QdrantScanSpec::try_new(&provider.schema, None, &[], None).expect("scan spec")),
+            Arc::new(
+                QdrantScanSpec::try_new(
+                    &provider.schema,
+                    &provider.payload_schema,
+                    None,
+                    &[],
+                    None,
+                )
+                .expect("scan spec"),
+            ),
             payload_schema([(
                 "rank",
                 PayloadSchemaInfo {
@@ -838,7 +939,7 @@ mod tests {
             ]))
         };
         let ctx = SessionContext::new();
-        drop(ctx.register_table("vectors", Arc::new(provider)).expect("register table"));
+        drop(ctx.register_table("vectors", Arc::new(provider.clone())).expect("register table"));
         let dataframe = ctx
             .sql("SELECT id FROM vectors ORDER BY payload:rank")
             .now_or_never()
@@ -870,6 +971,100 @@ mod tests {
                 descending: false,
             }),
         );
+    }
+
+    #[test]
+    fn physical_plan_drops_filter_exec_for_id_in() {
+        let provider =
+            test_provider(Schema::new(vec![Field::new(ID_FIELD_NAME, DataType::Utf8, false)]));
+        let ctx = SessionContext::new();
+        drop(ctx.register_table("vectors", Arc::new(provider)).expect("register table"));
+        let dataframe = ctx
+            .sql("SELECT id FROM vectors WHERE id IN ('1', '2')")
+            .now_or_never()
+            .expect("sql future is ready")
+            .expect("dataframe");
+        let plan = dataframe
+            .create_physical_plan()
+            .now_or_never()
+            .expect("plan future is ready")
+            .expect("physical plan");
+        let display = displayable(plan.as_ref()).indent(true).to_string();
+        let scan = qdrant_scan(&plan);
+
+        assert_eq!(scan.pushdown.filters.len(), 1);
+        assert!(!display.contains("FilterExec"), "{display}");
+    }
+
+    #[test]
+    fn physical_plan_drops_filter_exec_for_payload_path() {
+        let provider = QdrantTableProvider {
+            payload_schema: payload_schema([
+                (
+                    "rank",
+                    PayloadSchemaInfo {
+                        data_type: qdrant_client::qdrant::PayloadSchemaType::Integer as i32,
+                        params: Some(qdrant_client::qdrant::PayloadIndexParams {
+                            index_params: Some(
+                                qdrant_client::qdrant::payload_index_params::IndexParams::IntegerIndexParams(
+                                    IntegerIndexParams {
+                                        range: Some(true),
+                                        ..Default::default()
+                                    },
+                                ),
+                            ),
+                        }),
+                        points: None,
+                    },
+                ),
+            ]),
+            ..test_provider(Schema::new(vec![
+                Field::new(ID_FIELD_NAME, DataType::Utf8, false),
+                Field::new(PAYLOAD_FIELD_NAME, DataType::Utf8, true),
+            ]))
+        };
+        let ctx = SessionContext::new();
+        drop(ctx.register_table("vectors", Arc::new(provider.clone())).expect("register table"));
+        let dataframe = ctx
+            .sql("SELECT id FROM vectors WHERE payload:rank >= 10")
+            .now_or_never()
+            .expect("sql future is ready")
+            .expect("dataframe");
+        let plan = dataframe
+            .create_physical_plan()
+            .now_or_never()
+            .expect("plan future is ready")
+            .expect("physical plan");
+        let display = displayable(plan.as_ref()).indent(true).to_string();
+        let scan = qdrant_scan(&plan);
+
+        assert_eq!(scan.pushdown.filters.len(), 1);
+        assert!(!display.contains("FilterExec"), "{display}");
+    }
+
+    #[test]
+    fn physical_plan_drops_filter_exec_for_vector_presence() {
+        let provider = test_provider(Schema::new(vec![
+            Field::new(ID_FIELD_NAME, DataType::Utf8, false),
+            Field::new("image", DataType::new_fixed_size_list(DataType::Float32, 3, false), true),
+        ]));
+        let ctx = SessionContext::new();
+        drop(ctx.register_table("vectors", Arc::new(provider)).expect("register table"));
+        let dataframe = ctx
+            .sql("SELECT id FROM vectors WHERE image IS NULL")
+            .now_or_never()
+            .expect("sql future is ready")
+            .expect("dataframe");
+        let plan = dataframe
+            .create_physical_plan()
+            .now_or_never()
+            .expect("plan future is ready")
+            .expect("physical plan");
+        let display = displayable(plan.as_ref()).indent(true).to_string();
+        let scan = qdrant_scan(&plan);
+
+        assert_eq!(scan.pushdown.filters.len(), 1);
+        assert!(!display.contains("FilterExec"), "{display}");
     }
 
     #[test]

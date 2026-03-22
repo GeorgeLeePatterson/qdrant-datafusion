@@ -28,12 +28,16 @@ canonical carrier; missing values are not imputed during scan.
 - SQL `LIMIT` pushdown to the scan stream
 - exact physical sort pushdown for `ORDER BY id ASC`
 - exact payload-key sort pushdown for the admitted `ORDER BY payload:<path>` subset on indexed integer, float, and datetime payload fields
+- exact filter pushdown for the admitted subset:
+  - `id =`, `id !=`, `id IN (...)`, `id NOT IN (...)`
+  - vector-column `IS NULL` / `IS NOT NULL`
+  - indexed scalar `payload:<path>` comparisons, `IN`, `NOT IN`, and non-negated `BETWEEN`
 - heterogeneous named-vector scans with top-level nullable vector columns
 
 ## Not Yet Admitted
 
 - write support or `INSERT INTO`
-- filter pushdown
+- broader filter semantics such as `OR`, `NOT`, payload null/empty semantics, text, geo, nested, and count-oriented payload predicates
 - broader payload-key SQL `ORDER BY` pushdown beyond the admitted `payload:<path>` subset
 - `Qdrant`-specific UDFs, UDAFs, or UDTFs
 - SQL-native search / recommend / discover / fusion semantics
@@ -78,11 +82,17 @@ ORDER BY id;
 
 SELECT id
 FROM docs
+WHERE id IN ('1', '2', '3');
+
+SELECT id
+FROM docs
+WHERE payload:rank >= 10
 ORDER BY payload:rank;
 
 SELECT multi_embedding, keywords
 FROM docs
-WHERE multi_embedding IS NOT NULL OR keywords IS NOT NULL;
+WHERE multi_embedding IS NOT NULL
+  AND payload:rank BETWEEN 10 AND 20;
 ```
 
 ## Verification

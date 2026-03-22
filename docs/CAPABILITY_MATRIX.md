@@ -30,7 +30,8 @@ This file is the canonical scope and sufficiency map for `qdrant-datafusion`.
 | Ordering pushdown | exact `ORDER BY id ASC` pushdown | Implemented | Qdrant’s existing ID-ordered scroll path is now admitted as an exact physical sort pushdown case. |
 | Ordering pushdown | payload-key `ORDER BY payload:<path>` subset | Implemented | The provider now admits a single-key `payload:<path>` sort subset for indexed integer / float / datetime payload fields and lowers it into ordered `scroll` as an exact physical sort pushdown on the currently validated runtime contract. |
 | Ordered continuation | duplicate-boundary ordered pagination contract | Partial | Single-node ordered continuation is validated and implemented through `start_from` plus accumulated boundary-ID exclusion; distributed exactness is still deferred. |
-| Filter pushdown | ID and payload filter translation | Missing | Deliberately deferred until the SQL bridge is designed. |
+| Filter pushdown | first exact filter subset | Implemented | Admitted subset is `AND`-only `id` equality / membership, vector-column `IS NULL` / `IS NOT NULL`, and indexed scalar `payload:<path>` comparisons / `IN` / `NOT IN` / non-negated `BETWEEN`. Physical pushdown now absorbs those predicates so `FilterExec` does not remain above the scan. |
+| Filter pushdown | broader boolean and payload semantics | Missing | `OR`, `NOT`, payload null / empty semantics, text, geo, nested, and count-oriented predicates are still intentionally deferred. |
 | Dense vector output contract | canonical fixed-dimension vector carrier | Implemented | Dense scans use nullable `FixedSizeList<Float32>(D)`. |
 | Multivector output contract | canonical ragged tensor carrier | Implemented | Multivectors use nullable `arrow.variable_shape_tensor<Float32>`. |
 | Sparse vector output contract | canonical sparse carrier | Implemented | Sparse scans use nullable `ndarrow.csr_matrix_batch<Float32>`. |
@@ -47,5 +48,6 @@ This file is the canonical scope and sufficiency map for `qdrant-datafusion`.
 
 `qdrant-datafusion` is now sufficient for the next planning round, but not yet for the broader SQL-native capability expansion.
 
-The next blocking milestone is not more implementation against ad hoc assumptions. It is an explicit
-planning pass for the stable SQL-to-`Qdrant` semantic bridge.
+The next blocking milestone is no longer the first exact filter subset. It is the next planning
+pass for widening the SQL-to-`Qdrant` semantic bridge without breaking the provider-owned
+composition boundary already in place.

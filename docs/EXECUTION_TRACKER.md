@@ -42,7 +42,7 @@ Use it to resume work without replaying the full repository history.
     - limit
     - continuation
 12. `Q-012`: Initial DataFusion-native pushdown wiring has landed:
-    - `supports_filters_pushdown` is explicit, even though all current filters remain unsupported
+    - `supports_filters_pushdown` is explicit and now anchors exact admission of the current filter subset
     - `ExecutionPlan::try_pushdown_sort` now admits the exact `ORDER BY id ASC` case
 13. `Q-013`: The single-node ordered-scroll contract has now been validated directly against `Qdrant`:
     - `order_by` is payload-key ordering only
@@ -64,18 +64,25 @@ Use it to resume work without replaying the full repository history.
     - indexed integer / float / datetime payload fields only
     - current pushdown is `Exact` because `DataFusion` cannot execute fallback `payload:<path>` physical sorts
     - end-to-end SQL coverage now exercises the admitted path against live `Qdrant`
+17. `Q-018`: The first exact filter subset is now admitted through the provider-owned pushdown model.
+    - `AND`-only exact admission
+    - `id =`, `id !=`, `id IN (...)`, `id NOT IN (...)`
+    - vector-column `IS NULL` / `IS NOT NULL`
+    - indexed scalar `payload:<path>` comparisons, `IN`, `NOT IN`, and non-negated `BETWEEN`
+    - physical filter pushdown now absorbs the admitted subset so `FilterExec` does not remain above `QdrantScanExec`
+    - payload filter literals are coerced by indexed payload field type because `DataFusion`’s physical `payload:<path>` expressions do not carry a typed scalar contract
 
 ## Next
 
 1. `Q-017`: Validate distributed-ordering behavior on the target `Qdrant` deployment modes before claiming broader exact payload-key sort pushdown.
-2. `Q-018`: Continue the payload-aware SQL bridge after the first ordering subset lands.
-   - payload-aware filters
+2. `Q-019`: Continue the payload-aware SQL bridge beyond the first exact filter subset.
+   - broader boolean filter semantics
    - payload access helpers where they materially improve SQL ergonomics
    - broader SQL-native `Qdrant` surface only after the semantics stay explicit
 3. Continue mapping the pushdown model onto `DataFusion`’s own idioms where broader traversal is required.
    - `TreeNode` visitors / rewriters instead of ad hoc recursion
    - `LogicalPlan` expression and subquery helpers before project-local traversal
-   - exact filter admission instead of the current explicit-unsupported baseline
+   - exact admission of broader filter families instead of ad hoc expression splitting
 
 ## Needed
 

@@ -29,6 +29,22 @@ e2e_test!(
 
 #[cfg(feature = "test-utils")]
 e2e_test!(
+    table_provider_filters_by_id_and_vector_presence,
+    tests::test_table_provider_filters_by_id_and_vector_presence,
+    TRACING_DIRECTIVES,
+    None
+);
+
+#[cfg(feature = "test-utils")]
+e2e_test!(
+    table_provider_filters_by_payload_field,
+    tests::test_table_provider_filters_by_payload_field,
+    TRACING_DIRECTIVES,
+    None
+);
+
+#[cfg(feature = "test-utils")]
+e2e_test!(
     qdrant_raw_ordered_scroll_integer_contracts,
     tests::test_qdrant_raw_ordered_scroll_integer_contracts,
     TRACING_DIRECTIVES,
@@ -546,6 +562,239 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(ids, vec![2, 3, 1]);
+
+        Ok(())
+    }
+
+    pub(super) async fn test_table_provider_filters_by_id_and_vector_presence(
+        c: Arc<QdrantContainer>,
+    ) -> Result<()> {
+        let client = create_qdrant_client(&c)?;
+        let collection_name = "test_filter_id_and_vector_presence";
+
+        let mut vectors_config = VectorsConfigBuilder::default();
+        let _ = vectors_config.add_named_vector_params(
+            "text_embedding",
+            VectorParamsBuilder::new(3, Distance::Dot).build(),
+        );
+        let _ = vectors_config.add_named_vector_params(
+            "multi_embedding",
+            VectorParamsBuilder::new(2, Distance::Dot)
+                .multivector_config(MultiVectorConfig {
+                    comparator: MultiVectorComparator::MaxSim.into(),
+                })
+                .build(),
+        );
+
+        let _ = client
+            .create_collection(
+                CreateCollectionBuilder::new(collection_name).vectors_config(vectors_config),
+            )
+            .await?;
+
+        let mut vectors1 = NamedVectors::default();
+        vectors1 = vectors1.add_vector("text_embedding", Vector::new_dense(vec![0.1, 0.2, 0.3]));
+        vectors1 = vectors1
+            .add_vector("multi_embedding", Vector::new_multi(vec![vec![1.0, 2.0], vec![3.0, 4.0]]));
+
+        let mut vectors2 = NamedVectors::default();
+        vectors2 = vectors2.add_vector("text_embedding", Vector::new_dense(vec![0.4, 0.5, 0.6]));
+
+        let mut vectors3 = NamedVectors::default();
+        vectors3 = vectors3.add_vector("multi_embedding", Vector::new_multi(vec![vec![7.0, 8.0]]));
+
+        let points = vec![
+            PointStruct::new(1, vectors1, qdrant_client::Payload::new()),
+            PointStruct::new(2, vectors2, qdrant_client::Payload::new()),
+            PointStruct::new(3, vectors3, qdrant_client::Payload::new()),
+        ];
+        drop(client.upsert_points(UpsertPointsBuilder::new(collection_name, points)).await?);
+
+        let table_provider = QdrantTableProvider::try_new(client.clone(), collection_name).await?;
+        let ctx = SessionContext::new();
+        drop(ctx.register_table("docs", Arc::new(table_provider))?);
+
+        let id_batches = ctx
+            .sql("SELECT id FROM docs WHERE id IN ('1', '3') ORDER BY id")
+            .await?
+            .collect()
+            .await?;
+        let ids = id_batches
+            .iter()
+            .flat_map(|batch| {
+                batch
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .expect("id string array")
+                    .iter()
+                    .map(|value| value.expect("non-null id").parse::<u64>().expect("numeric id"))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(ids, vec![1, 3]);
+
+        let missing_batches = ctx
+            .sql("SELECT id FROM docs WHERE text_embedding IS NULL ORDER BY id")
+            .await?
+            .collect()
+            .await?;
+        let missing_ids = missing_batches
+            .iter()
+            .flat_map(|batch| {
+                batch
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .expect("id string array")
+                    .iter()
+                    .map(|value| value.expect("non-null id").parse::<u64>().expect("numeric id"))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(missing_ids, vec![3]);
+
+        let mixed_batches = ctx
+            .sql(
+                "SELECT id FROM docs WHERE text_embedding IS NOT NULL AND multi_embedding IS NULL \
+                 ORDER BY id",
+            )
+            .await?
+            .collect()
+            .await?;
+        let mixed_ids = mixed_batches
+            .iter()
+            .flat_map(|batch| {
+                batch
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .expect("id string array")
+                    .iter()
+                    .map(|value| value.expect("non-null id").parse::<u64>().expect("numeric id"))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(mixed_ids, vec![2]);
+
+        Ok(())
+    }
+
+    #[expect(clippy::too_many_lines)]
+    pub(super) async fn test_table_provider_filters_by_payload_field(
+        c: Arc<QdrantContainer>,
+    ) -> Result<()> {
+        let client = create_qdrant_client(&c)?;
+        let collection_name = "test_filter_payload_field";
+        create_scalar_collection(&client, collection_name).await?;
+        create_payload_index(
+            &client,
+            collection_name,
+            "rank",
+            FieldType::Integer,
+            qdrant_client::qdrant::IntegerIndexParamsBuilder::new(false, true).build(),
+        )
+        .await?;
+        create_payload_index(
+            &client,
+            collection_name,
+            "score",
+            FieldType::Float,
+            FloatIndexParamsBuilder::new().build(),
+        )
+        .await?;
+        create_payload_index(
+            &client,
+            collection_name,
+            "tag",
+            FieldType::Keyword,
+            qdrant_client::qdrant::KeywordIndexParamsBuilder::default().build(),
+        )
+        .await?;
+
+        let mut payload1 = qdrant_client::Payload::new();
+        payload1.insert("rank", 30_i64);
+        payload1.insert("score", 1.5_f64);
+        payload1.insert("tag", "red");
+        let mut payload2 = qdrant_client::Payload::new();
+        payload2.insert("rank", 10_i64);
+        payload2.insert("score", 2.25_f64);
+        payload2.insert("tag", "green");
+        let mut payload3 = qdrant_client::Payload::new();
+        payload3.insert("rank", 20_i64);
+        payload3.insert("score", 3.5_f64);
+        payload3.insert("tag", "blue");
+
+        let points = vec![
+            PointStruct::new(1, Vector::new_dense(vec![0.0]), payload1),
+            PointStruct::new(2, Vector::new_dense(vec![0.0]), payload2),
+            PointStruct::new(3, Vector::new_dense(vec![0.0]), payload3),
+        ];
+        drop(client.upsert_points(UpsertPointsBuilder::new(collection_name, points)).await?);
+
+        let table_provider = QdrantTableProvider::try_new(client.clone(), collection_name).await?;
+        let ctx = SessionContext::new();
+        drop(ctx.register_table("vectors", Arc::new(table_provider))?);
+
+        let rank_batches = ctx
+            .sql("SELECT id FROM vectors WHERE payload:rank >= 20 ORDER BY id")
+            .await?
+            .collect()
+            .await?;
+        let rank_ids = rank_batches
+            .iter()
+            .flat_map(|batch| {
+                batch
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .expect("id string array")
+                    .iter()
+                    .map(|value| value.expect("non-null id").parse::<u64>().expect("numeric id"))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(rank_ids, vec![1, 3]);
+
+        let score_batches = ctx
+            .sql("SELECT id FROM vectors WHERE payload:score IN (1.5, 3.5) ORDER BY id")
+            .await?
+            .collect()
+            .await?;
+        let score_ids = score_batches
+            .iter()
+            .flat_map(|batch| {
+                batch
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .expect("id string array")
+                    .iter()
+                    .map(|value| value.expect("non-null id").parse::<u64>().expect("numeric id"))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(score_ids, vec![1, 3]);
+
+        let tag_batches = ctx
+            .sql("SELECT id FROM vectors WHERE payload:tag NOT IN ('red') ORDER BY id")
+            .await?
+            .collect()
+            .await?;
+        let tag_ids = tag_batches
+            .iter()
+            .flat_map(|batch| {
+                batch
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .expect("id string array")
+                    .iter()
+                    .map(|value| value.expect("non-null id").parse::<u64>().expect("numeric id"))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(tag_ids, vec![2, 3]);
 
         Ok(())
     }

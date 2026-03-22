@@ -43,6 +43,18 @@ Last updated: 2026-03-22
     - indexed integer / float / datetime payload fields only
     - current pushdown result is `Exact` because `DataFusion` cannot execute the `:` operator in a fallback physical `SortExec`
     - distributed exactness is still a tracked validation item beyond the current admitted runtime contract
+20. The first admitted exact filter subset composes over the same provider-owned pushdown model rather than lowering `DataFusion` expressions inline at the scan callsite.
+    - admitted exact subset is `AND`-only
+    - `id =`, `id !=`, `id IN (...)`, `id NOT IN (...)`
+    - vector-column `IS NULL` / `IS NOT NULL`
+    - indexed scalar `payload:<path>` comparisons, `IN`, `NOT IN`, and non-negated `BETWEEN`
+    - broader `OR`, `NOT`, payload null / empty semantics, text, geo, nested, and count-oriented predicates remain deferred until the broader SQL bridge is designed
+21. Physical filter pushdown must absorb the admitted exact subset, not just logical filter pushdown declarations.
+    - `supports_filters_pushdown` alone is not sufficient on the current `DataFusion` revision
+    - `QdrantScanExec` must absorb supported physical predicates so `FilterExec` disappears from the final plan
+22. Payload filter coercion is governed by indexed payload field type, not by raw `DataFusion` physical literal type.
+    - current physical `payload:<path>` predicates may surface comparison literals as `Utf8`, for example `Utf8("10")`
+    - integer / float / bool / datetime payload filters therefore coerce from string literals when needed
 
 ## Execution Ordering
 

@@ -2972,10 +2972,12 @@ version = "0.1.1"
 dependencies = [
  "arrow-schema",
  "async-trait",
+ "chrono",
  "datafusion",
  "futures-util",
  "ndarrow",
  "pin-project",
+ "prost-types",
  "qdrant-client",
  "serde_json",
  "testcontainers",

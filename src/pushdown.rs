@@ -2,14 +2,17 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::common::Result as DataFusionResult;
-use datafusion::prelude::Expr;
+use datafusion::error::Result as DataFusionResult;
 use qdrant_client::qdrant::{PayloadSchemaInfo, PayloadSchemaType, PointId, payload_index_params};
 
 use crate::arrow::schema::{
     PAYLOAD_FIELD_NAME, UNNAMED_VECTOR_FIELD_NAME, dense_vector_width, is_multi_vector_field,
     is_sparse_vector_field,
 };
+
+mod filter;
+
+pub(crate) use filter::QdrantFilters;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum QdrantVectorSelector {
@@ -38,9 +41,12 @@ pub(crate) struct QdrantPayloadOrdering {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum QdrantPayloadField {
-    Integer,
+    Keyword,
+    Integer { range: bool },
     Float,
+    Bool,
     Datetime,
+    Uuid,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -73,7 +79,7 @@ pub(crate) struct QdrantScanSpec {
     pub(crate) projection: Option<Vec<usize>>,
     pub(crate) vectors:    QdrantVectorSelector,
     pub(crate) payload:    QdrantPayloadSelector,
-    pub(crate) filters:    Vec<Expr>,
+    pub(crate) filters:    QdrantFilters,
     pub(crate) ordering:   QdrantOrdering,
     pub(crate) limit:      Option<usize>,
 }
@@ -81,8 +87,9 @@ pub(crate) struct QdrantScanSpec {
 impl QdrantScanSpec {
     pub(crate) fn try_new(
         base_schema: &SchemaRef,
+        payload_schema: &QdrantPayloadSchema,
         projection: Option<&Vec<usize>>,
-        filters: &[Expr],
+        filters: &[datafusion::logical_expr::Expr],
         limit: Option<usize>,
     ) -> DataFusionResult<Self> {
         let schema = match projection {
@@ -116,7 +123,7 @@ impl QdrantScanSpec {
             projection: projection.cloned(),
             vectors,
             payload,
-            filters: filters.to_vec(),
+            filters: QdrantFilters::try_new(base_schema, payload_schema, filters)?,
             ordering: QdrantOrdering::ById,
             limit,
         })
@@ -145,17 +152,29 @@ impl From<HashMap<String, PayloadSchemaInfo>> for QdrantPayloadSchema {
                 let params = info.params?.index_params?;
                 let field = match (data_type, params) {
                     (
+                        PayloadSchemaType::Keyword,
+                        payload_index_params::IndexParams::KeywordIndexParams(_),
+                    ) => QdrantPayloadField::Keyword,
+                    (
                         PayloadSchemaType::Integer,
                         payload_index_params::IndexParams::IntegerIndexParams(params),
-                    ) if params.range.unwrap_or(true) => QdrantPayloadField::Integer,
+                    ) => QdrantPayloadField::Integer { range: params.range.unwrap_or(true) },
                     (
                         PayloadSchemaType::Float,
                         payload_index_params::IndexParams::FloatIndexParams(_),
                     ) => QdrantPayloadField::Float,
                     (
+                        PayloadSchemaType::Bool,
+                        payload_index_params::IndexParams::BoolIndexParams(_),
+                    ) => QdrantPayloadField::Bool,
+                    (
                         PayloadSchemaType::Datetime,
                         payload_index_params::IndexParams::DatetimeIndexParams(_),
                     ) => QdrantPayloadField::Datetime,
+                    (
+                        PayloadSchemaType::Uuid,
+                        payload_index_params::IndexParams::UuidIndexParams(_),
+                    ) => QdrantPayloadField::Uuid,
                     _ => return None,
                 };
                 Some((field_name, field))
@@ -171,17 +190,27 @@ impl QdrantPayloadSchema {
         field: &str,
         descending: bool,
     ) -> Option<QdrantPayloadOrdering> {
-        if !self.fields.contains_key(field) {
-            return None;
+        match self.fields.get(field) {
+            Some(
+                QdrantPayloadField::Integer { range: true }
+                | QdrantPayloadField::Float
+                | QdrantPayloadField::Datetime,
+            ) => Some(QdrantPayloadOrdering { field: field.to_owned(), descending }),
+            _ => None,
         }
-        Some(QdrantPayloadOrdering { field: field.to_owned(), descending })
+    }
+
+    pub(crate) fn field(&self, field: &str) -> Option<QdrantPayloadField> {
+        self.fields.get(field).copied()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
-    use qdrant_client::qdrant::{FloatIndexParams, IntegerIndexParams};
+    use qdrant_client::qdrant::{
+        BoolIndexParams, FloatIndexParams, IntegerIndexParams, KeywordIndexParams, UuidIndexParams,
+    };
 
     use super::*;
     use crate::arrow::schema::ID_FIELD_NAME;
@@ -199,7 +228,9 @@ mod tests {
             ),
         ]);
 
-        let spec = QdrantScanSpec::try_new(&schema, None, &[], None).expect("scan spec");
+        let spec =
+            QdrantScanSpec::try_new(&schema, &QdrantPayloadSchema::default(), None, &[], None)
+                .expect("scan spec");
 
         assert_eq!(spec.vectors, QdrantVectorSelector::All);
     }
@@ -216,7 +247,9 @@ mod tests {
             ),
         ]);
 
-        let spec = QdrantScanSpec::try_new(&schema, None, &[], None).expect("scan spec");
+        let spec =
+            QdrantScanSpec::try_new(&schema, &QdrantPayloadSchema::default(), None, &[], None)
+                .expect("scan spec");
 
         assert_eq!(spec.vectors, QdrantVectorSelector::Named(vec!["embedding".to_owned()]),);
     }
@@ -234,23 +267,39 @@ mod tests {
         ]);
 
         let projection = vec![1, 2];
-        let spec =
-            QdrantScanSpec::try_new(&schema, Some(&projection), &[], Some(7)).expect("scan spec");
+        let spec = QdrantScanSpec::try_new(
+            &schema,
+            &QdrantPayloadSchema::default(),
+            Some(&projection),
+            &[],
+            Some(7),
+        )
+        .expect("scan spec");
 
         assert_eq!(spec.projection, Some(projection));
         assert_eq!(spec.payload, QdrantPayloadSelector::Full);
         assert_eq!(spec.limit, Some(7));
+        assert_eq!(spec.filters.len(), 0);
         assert_eq!(spec.initial_continuation(), QdrantContinuation::Offset(None));
     }
 
     #[test]
-    fn payload_schema_keeps_orderable_scalar_indexes_only() {
+    fn payload_schema_keeps_filterable_and_orderable_scalar_indexes() {
         let schema = QdrantPayloadSchema::from(HashMap::from([
             ("rank".to_owned(), PayloadSchemaInfo {
                 data_type: PayloadSchemaType::Integer as i32,
                 params:    Some(qdrant_client::qdrant::PayloadIndexParams {
                     index_params: Some(payload_index_params::IndexParams::IntegerIndexParams(
                         IntegerIndexParams { range: Some(true), ..Default::default() },
+                    )),
+                }),
+                points:    None,
+            }),
+            ("lookup_only".to_owned(), PayloadSchemaInfo {
+                data_type: PayloadSchemaType::Integer as i32,
+                params:    Some(qdrant_client::qdrant::PayloadIndexParams {
+                    index_params: Some(payload_index_params::IndexParams::IntegerIndexParams(
+                        IntegerIndexParams { range: Some(false), ..Default::default() },
                     )),
                 }),
                 points:    None,
@@ -264,11 +313,29 @@ mod tests {
                 }),
                 points:    None,
             }),
-            ("lookup_only".to_owned(), PayloadSchemaInfo {
-                data_type: PayloadSchemaType::Integer as i32,
+            ("active".to_owned(), PayloadSchemaInfo {
+                data_type: PayloadSchemaType::Bool as i32,
                 params:    Some(qdrant_client::qdrant::PayloadIndexParams {
-                    index_params: Some(payload_index_params::IndexParams::IntegerIndexParams(
-                        IntegerIndexParams { range: Some(false), ..Default::default() },
+                    index_params: Some(payload_index_params::IndexParams::BoolIndexParams(
+                        BoolIndexParams::default(),
+                    )),
+                }),
+                points:    None,
+            }),
+            ("tag".to_owned(), PayloadSchemaInfo {
+                data_type: PayloadSchemaType::Keyword as i32,
+                params:    Some(qdrant_client::qdrant::PayloadIndexParams {
+                    index_params: Some(payload_index_params::IndexParams::KeywordIndexParams(
+                        KeywordIndexParams::default(),
+                    )),
+                }),
+                points:    None,
+            }),
+            ("doc_id".to_owned(), PayloadSchemaInfo {
+                data_type: PayloadSchemaType::Uuid as i32,
+                params:    Some(qdrant_client::qdrant::PayloadIndexParams {
+                    index_params: Some(payload_index_params::IndexParams::UuidIndexParams(
+                        UuidIndexParams::default(),
                     )),
                 }),
                 points:    None,
@@ -284,6 +351,8 @@ mod tests {
             Some(QdrantPayloadOrdering { field: "score".to_owned(), descending: true }),
         );
         assert_eq!(schema.ordering_for("lookup_only", false), None);
-        assert_eq!(schema.ordering_for("missing", false), None);
+        assert_eq!(schema.field("tag"), Some(QdrantPayloadField::Keyword));
+        assert_eq!(schema.field("active"), Some(QdrantPayloadField::Bool));
+        assert_eq!(schema.field("doc_id"), Some(QdrantPayloadField::Uuid));
     }
 }
