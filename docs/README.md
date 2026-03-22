@@ -17,8 +17,9 @@ This folder is the compaction-safe planning and execution source of truth for `q
 
 1. `docs/DECISIONS.md`: locked constraints and surface-shaping rules.
 2. `docs/CAPABILITY_MATRIX.md`: scope, current capability inventory, and sufficiency verdict.
-3. `docs/EXECUTION_TRACKER.md`: canonical `Done / Next / Needed` tracker for compaction-safe continuation.
-4. `docs/STATUS.md`: current repository snapshot and active branch reality.
+3. `docs/QDRANT_COMPATIBILITY_MATRIX.md`: detailed inventory of the broader `Qdrant` feature surface, organized by semantic family and release fit.
+4. `docs/EXECUTION_TRACKER.md`: canonical `Done / Next / Needed` tracker for compaction-safe continuation.
+5. `docs/STATUS.md`: current repository snapshot and active branch reality.
 
 ## Context Resume Protocol
 
@@ -27,8 +28,9 @@ When resuming from compacted context, read in this order:
 1. `docs/README.md`
 2. `docs/DECISIONS.md`
 3. `docs/CAPABILITY_MATRIX.md`
-4. `docs/EXECUTION_TRACKER.md`
-5. `docs/STATUS.md`
+4. `docs/QDRANT_COMPATIBILITY_MATRIX.md`
+5. `docs/EXECUTION_TRACKER.md`
+6. `docs/STATUS.md`
 
 Then verify repository state quickly:
 

@@ -30,6 +30,7 @@ canonical carrier; missing values are not imputed during scan.
 - exact payload-key sort pushdown for the admitted `ORDER BY payload:<path>` subset on indexed integer, float, and datetime payload fields
 - exact filter pushdown for the admitted subset:
   - `id =`, `id !=`, `id IN (...)`, `id NOT IN (...)`
+  - same-field equality disjunctions normalized to `IN`
   - vector-column `IS NULL` / `IS NOT NULL`
   - indexed scalar `payload:<path>` comparisons, `IN`, `NOT IN`, and non-negated `BETWEEN`
 - heterogeneous named-vector scans with top-level nullable vector columns
@@ -37,7 +38,7 @@ canonical carrier; missing values are not imputed during scan.
 ## Not Yet Admitted
 
 - write support or `INSERT INTO`
-- broader filter semantics such as `OR`, `NOT`, payload null/empty semantics, text, geo, nested, and count-oriented payload predicates
+- broader filter semantics beyond the admitted same-field equality `OR` subset, such as general `OR`, `NOT`, payload null/empty semantics, text, geo, nested, and count-oriented payload predicates
 - broader payload-key SQL `ORDER BY` pushdown beyond the admitted `payload:<path>` subset
 - `Qdrant`-specific UDFs, UDAFs, or UDTFs
 - SQL-native search / recommend / discover / fusion semantics

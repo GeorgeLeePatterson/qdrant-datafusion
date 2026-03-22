@@ -55,6 +55,15 @@ Last updated: 2026-03-22
 22. Payload filter coercion is governed by indexed payload field type, not by raw `DataFusion` physical literal type.
     - current physical `payload:<path>` predicates may surface comparison literals as `Utf8`, for example `Utf8("10")`
     - integer / float / bool / datetime payload filters therefore coerce from string literals when needed
+23. Capability expansion planning must be organized by semantic family, not by mirroring `Qdrant` SDK endpoints one-for-one.
+    - row restriction
+    - row ordering
+    - row production
+    - ranking / re-scoring
+    - aggregation / grouping
+    - mutation
+    - administration
+    - the detailed inventory for this planning round lives in `docs/QDRANT_COMPATIBILITY_MATRIX.md`
 
 ## Execution Ordering
 

@@ -65,8 +65,9 @@ Use it to resume work without replaying the full repository history.
     - current pushdown is `Exact` because `DataFusion` cannot execute fallback `payload:<path>` physical sorts
     - end-to-end SQL coverage now exercises the admitted path against live `Qdrant`
 17. `Q-018`: The first exact filter subset is now admitted through the provider-owned pushdown model.
-    - `AND`-only exact admission
+    - conjunctions of exact leaves
     - `id =`, `id !=`, `id IN (...)`, `id NOT IN (...)`
+    - same-field equality `OR` chains normalized to `IN`
     - vector-column `IS NULL` / `IS NOT NULL`
     - indexed scalar `payload:<path>` comparisons, `IN`, `NOT IN`, and non-negated `BETWEEN`
     - physical filter pushdown now absorbs the admitted subset so `FilterExec` does not remain above `QdrantScanExec`
@@ -74,12 +75,14 @@ Use it to resume work without replaying the full repository history.
 
 ## Next
 
-1. `Q-017`: Validate distributed-ordering behavior on the target `Qdrant` deployment modes before claiming broader exact payload-key sort pushdown.
-2. `Q-019`: Continue the payload-aware SQL bridge beyond the first exact filter subset.
-   - broader boolean filter semantics
-   - payload access helpers where they materially improve SQL ergonomics
-   - broader SQL-native `Qdrant` surface only after the semantics stay explicit
-3. Continue mapping the pushdown model onto `DataFusion`’s own idioms where broader traversal is required.
+1. The detailed planning inventory for the next expansion round now lives in `docs/QDRANT_COMPATIBILITY_MATRIX.md`.
+2. `Q-017`: Validate distributed-ordering behavior on the target `Qdrant` deployment modes before claiming broader exact payload-key sort pushdown.
+3. `Q-019`: Continue the payload-aware SQL bridge beyond the first exact filter subset.
+   - broader boolean filter semantics beyond same-field equality disjunctions
+   - payload `is_null` / `is_empty` semantics
+   - count / facet support as the first aggregate-like exploration surface
+   - the first retrieval relation only after the predicate algebra remains explicit
+4. Continue mapping the pushdown model onto `DataFusion`’s own idioms where broader traversal is required.
    - `TreeNode` visitors / rewriters instead of ad hoc recursion
    - `LogicalPlan` expression and subquery helpers before project-local traversal
    - exact admission of broader filter families instead of ad hoc expression splitting

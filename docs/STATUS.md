@@ -26,11 +26,13 @@ Current branch reality:
 13. Payload-key sort pushdown is currently admitted as `Exact` on the validated runtime contract because `DataFusion` cannot execute a fallback physical sort for the `:` operator.
 14. The first exact filter subset is now admitted:
     - `id =`, `id !=`, `id IN (...)`, `id NOT IN (...)`
+    - same-field equality `OR` chains normalized to `IN`
     - vector-column `IS NULL` / `IS NOT NULL`
     - indexed scalar `payload:<path>` comparisons, `IN`, `NOT IN`, and non-negated `BETWEEN`
 15. Physical filter pushdown now absorbs the admitted subset so `FilterExec` does not remain above `QdrantScanExec`.
 16. Payload filter literals are coerced by indexed payload field type because `DataFusion`’s physical `payload:<path>` expressions surface generic scalar literals such as `Utf8("10")`.
 17. The root `README.md`, repo notes, and tracker docs describe only the admitted baseline.
+18. Detailed capability-expansion planning now has an explicit semantic inventory in `docs/QDRANT_COMPATIBILITY_MATRIX.md`.
 
 ## Current Code Ownership
 
@@ -68,5 +70,9 @@ Current branch reality:
    - duplicate-boundary pagination requires accumulated boundary-ID exclusion
    - datetime `order_value` currently returns integer microseconds
 8. The admitted SQL bridge for that runtime path is currently `payload:<path>` only, and it is treated as exact on the validated runtime contract because fallback physical execution of `:` is not available.
-9. The admitted exact filter bridge is also currently anchored on `payload:<path>` for indexed scalar fields only.
+9. The admitted exact filter bridge is currently anchored on `payload:<path>` for indexed scalar fields only, plus same-field equality `OR` chains that can be normalized exactly to `IN`.
 10. Distributed-ordering behavior is still intentionally deferred before claiming broader payload-key sort exactness.
+11. The next capability round is now planned semantically rather than endpoint-by-endpoint:
+    - predicate algebra first
+    - aggregate-like exploration next
+    - retrieval relations after that

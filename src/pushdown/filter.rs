@@ -5,13 +5,14 @@ use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::{ScalarValue, exec_err};
 use datafusion::error::Result as DataFusionResult;
 use datafusion::logical_expr::expr::{Between, InList};
-use datafusion::logical_expr::utils::split_conjunction;
+use datafusion::logical_expr::utils::{split_binary, split_conjunction};
 use datafusion::logical_expr::{BinaryExpr, Expr, Operator};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr::expressions::{
     BinaryExpr as PhysicalBinaryExpr, Column as PhysicalColumn, InListExpr, IsNotNullExpr,
     IsNullExpr, Literal as PhysicalLiteral,
 };
+use datafusion::physical_expr::utils::split_disjunction;
 use prost_types::Timestamp;
 use qdrant_client::qdrant::{Condition, DatetimeRange, Filter, PointId, Range};
 
@@ -198,6 +199,9 @@ fn exact_predicate(
 ) -> Option<QdrantPredicate> {
     match expr {
         Expr::BinaryExpr(BinaryExpr { left, op, right }) => {
+            if *op == Operator::Or {
+                return exact_or_predicate(base_schema, payload_schema, expr);
+            }
             exact_binary_predicate(base_schema, payload_schema, left, *op, right)
         }
         Expr::InList(InList { expr, list, negated }) => {
@@ -235,47 +239,7 @@ fn exact_physical_predicate(
 ) -> Option<QdrantPredicate> {
     if let Some(binary) = expr.as_any().downcast_ref::<PhysicalBinaryExpr>() {
         if *binary.op() == Operator::Or {
-            let mut disjuncts = vec![expr];
-            let mut field = None;
-            let mut id_values = vec![];
-            let mut payload_values = vec![];
-            while let Some(expr) = disjuncts.pop() {
-                if let Some(binary) = expr.as_any().downcast_ref::<PhysicalBinaryExpr>()
-                    && *binary.op() == Operator::Or
-                {
-                    disjuncts.push(binary.right());
-                    disjuncts.push(binary.left());
-                    continue;
-                }
-                let binary = expr.as_any().downcast_ref::<PhysicalBinaryExpr>()?;
-                if *binary.op() != Operator::Eq {
-                    return None;
-                }
-                let next_field = physical_field_ref(base_schema, binary.left())
-                    .or_else(|| physical_field_ref(base_schema, binary.right()))?;
-                match (&field, &next_field) {
-                    (None, _) => field = Some(next_field.clone()),
-                    (Some(field), _) if *field == next_field => {}
-                    _ => return None,
-                }
-                let literal = physical_scalar_literal(binary.right())
-                    .or_else(|| physical_scalar_literal(binary.left()))?;
-                match next_field {
-                    QdrantFieldRef::Id => id_values.push(point_id_scalar(literal)?),
-                    QdrantFieldRef::Payload(ref name) => {
-                        let field_type = payload_schema.field(name)?;
-                        payload_values.push(payload_scalar(field_type, literal)?);
-                    }
-                    QdrantFieldRef::Vector(_) => return None,
-                }
-            }
-            return match field? {
-                QdrantFieldRef::Id => Some(QdrantPredicate::IdIn(id_values)),
-                QdrantFieldRef::Payload(field) => {
-                    Some(QdrantPredicate::PayloadIn { field, values: payload_values })
-                }
-                QdrantFieldRef::Vector(_) => None,
-            };
+            return exact_physical_or_predicate(base_schema, payload_schema, expr);
         }
         return exact_physical_binary_predicate(
             base_schema,
@@ -307,6 +271,42 @@ fn exact_physical_predicate(
         return Some(QdrantPredicate::HasVector(name));
     }
     None
+}
+
+fn exact_or_predicate(
+    base_schema: &SchemaRef,
+    payload_schema: &QdrantPayloadSchema,
+    expr: &Expr,
+) -> Option<QdrantPredicate> {
+    let disjuncts = split_binary(expr, Operator::Or);
+    let (field, value) = equality_leaf(base_schema, disjuncts.first().copied()?)?;
+    let mut values = vec![value];
+    for disjunct in disjuncts.into_iter().skip(1) {
+        let (next_field, next_value) = equality_leaf(base_schema, disjunct)?;
+        if next_field != field {
+            return None;
+        }
+        values.push(next_value);
+    }
+    in_list_predicate(payload_schema, field, values, false)
+}
+
+fn exact_physical_or_predicate(
+    base_schema: &SchemaRef,
+    payload_schema: &QdrantPayloadSchema,
+    expr: &Arc<dyn PhysicalExpr>,
+) -> Option<QdrantPredicate> {
+    let disjuncts = split_disjunction(expr);
+    let (field, value) = physical_equality_leaf(base_schema, disjuncts.first().copied()?)?;
+    let mut values = vec![value];
+    for disjunct in disjuncts.into_iter().skip(1) {
+        let (next_field, next_value) = physical_equality_leaf(base_schema, disjunct)?;
+        if next_field != field {
+            return None;
+        }
+        values.push(next_value);
+    }
+    in_list_predicate(payload_schema, field, values, false)
 }
 
 fn exact_binary_predicate(
@@ -389,6 +389,39 @@ fn exact_physical_in_list_predicate(
         list.iter().map(physical_scalar_literal).collect::<Option<Vec<_>>>()?,
         negated,
     )
+}
+
+fn equality_leaf<'a>(
+    base_schema: &SchemaRef,
+    expr: &'a Expr,
+) -> Option<(QdrantFieldRef, &'a ScalarValue)> {
+    let Expr::BinaryExpr(BinaryExpr { left, op: Operator::Eq, right }) = expr else {
+        return None;
+    };
+    let left_field = field_ref(base_schema, left);
+    let right_field = field_ref(base_schema, right);
+    match (left_field, right_field) {
+        (Some(field), None) => Some((field, scalar_literal(right)?)),
+        (None, Some(field)) => Some((field, scalar_literal(left)?)),
+        _ => None,
+    }
+}
+
+fn physical_equality_leaf<'a>(
+    base_schema: &SchemaRef,
+    expr: &'a Arc<dyn PhysicalExpr>,
+) -> Option<(QdrantFieldRef, &'a ScalarValue)> {
+    let binary = expr.as_any().downcast_ref::<PhysicalBinaryExpr>()?;
+    if *binary.op() != Operator::Eq {
+        return None;
+    }
+    let left_field = physical_field_ref(base_schema, binary.left());
+    let right_field = physical_field_ref(base_schema, binary.right());
+    match (left_field, right_field) {
+        (Some(field), None) => Some((field, physical_scalar_literal(binary.right())?)),
+        (None, Some(field)) => Some((field, physical_scalar_literal(binary.left())?)),
+        _ => None,
+    }
 }
 
 fn in_list_predicate(
@@ -872,6 +905,23 @@ mod tests {
                 false,
             )),
         ));
+        assert!(QdrantFilters::supports_exact(
+            &schema,
+            &payload_schema,
+            &Expr::BinaryExpr(BinaryExpr::new(
+                Box::new(Expr::BinaryExpr(BinaryExpr::new(
+                    Box::new(payload_path("tag")),
+                    Operator::Eq,
+                    Box::new(Expr::Literal(ScalarValue::Utf8(Some("a".to_owned())), None)),
+                ))),
+                Operator::Or,
+                Box::new(Expr::BinaryExpr(BinaryExpr::new(
+                    Box::new(payload_path("tag")),
+                    Operator::Eq,
+                    Box::new(Expr::Literal(ScalarValue::Utf8(Some("b".to_owned())), None)),
+                ))),
+            )),
+        ));
         assert!(!QdrantFilters::supports_exact(
             &schema,
             &payload_schema,
@@ -966,5 +1016,39 @@ mod tests {
 
         assert_eq!(support, vec![true]);
         assert_eq!(filters.len(), 1);
+    }
+
+    #[test]
+    fn pushdown_physical_rejects_mixed_field_or_chain() {
+        let schema = schema(vec![
+            Field::new(ID_FIELD_NAME, DataType::Utf8, false),
+            Field::new(PAYLOAD_FIELD_NAME, DataType::Utf8, true),
+        ]);
+        let payload_schema =
+            QdrantPayloadSchema::from(HashMap::from([("tag".to_owned(), PayloadSchemaInfo {
+                data_type: PayloadSchemaType::Keyword as i32,
+                params:    Some(qdrant_client::qdrant::PayloadIndexParams {
+                    index_params: Some(payload_index_params::IndexParams::KeywordIndexParams(
+                        KeywordIndexParams::default(),
+                    )),
+                }),
+                points:    None,
+            })]));
+        let left = Arc::new(PhysicalBinaryExpr::new(
+            Arc::new(PhysicalColumn::new(ID_FIELD_NAME, 0)),
+            Operator::Eq,
+            Arc::new(PhysicalLiteral::new(ScalarValue::Utf8(Some("1".to_owned())))),
+        ));
+        let right = Arc::new(PhysicalBinaryExpr::new(
+            physical_payload_path("tag"),
+            Operator::Eq,
+            Arc::new(PhysicalLiteral::new(ScalarValue::Utf8(Some("blue".to_owned())))),
+        ));
+        let filter = Arc::new(PhysicalBinaryExpr::new(left, Operator::Or, right));
+
+        let (_, support) =
+            QdrantFilters::default().pushdown_physical(&schema, &payload_schema, &[filter]);
+
+        assert_eq!(support, vec![false]);
     }
 }
