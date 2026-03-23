@@ -1,6 +1,8 @@
 #![doc = include_str!("../README.md")]
 
+mod analyzer;
 pub mod arrow;
+pub mod context;
 pub mod error;
 pub mod prelude;
 mod pushdown;

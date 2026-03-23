@@ -1,6 +1,6 @@
 # Qdrant Compatibility Matrix
 
-Last updated: 2026-03-22
+Last updated: 2026-03-23
 
 ## Purpose
 
@@ -84,8 +84,8 @@ This matrix is derived from:
 | Ranking / re-scoring | fusion (`RRF`, `DBSF`) | `Query::Fusion`, `Query::Rrf` | ranking composition over retrieval relations | `Later` | Should compose over retrieval relations, not over table scans. |
 | Ranking / re-scoring | formula query | `Query::Formula` | score-expression modifier | `Later` | This is a scoring algebra problem, not a scan problem. |
 | Ranking / re-scoring | relevance feedback | `Query::RelevanceFeedback` | feedback-driven ranking | `Later` | Likely after retrieval IR and ranking algebra exist. |
-| Aggregation / grouping | point count | `count` | `COUNT(*)`-like pushdown | `Next` | Strong fit for SQL and composes directly over predicate algebra. |
-| Aggregation / grouping | facet counts | `facet` | grouped count / facet relation | `Next` | Strong fit. Should likely be expressed as aggregate-like relation, not as a scalar function. |
+| Aggregation / grouping | point count | `count` | exact `COUNT(*)`-like pushdown | `Current` | The first aggregate-like slice is now admitted through a narrow analyzer / extension-planner path over a single `Qdrant` source. It composes directly over the existing predicate algebra. |
+| Aggregation / grouping | top-facet grouped counts over one keyword payload field | `facet` | `GROUP BY payload:<path> ORDER BY count DESC LIMIT N` | `Current` | The first facet slice is now admitted through the analyzer / extension-planner path for keyword-indexed fields only. It composes over the existing predicate algebra, but it is intentionally narrower than general SQL grouping. |
 | Aggregation / grouping | grouped search results | `query_groups`, `search_groups`, `recommend_groups` | grouped retrieval relation | `Later` | Likely after core retrieval relation exists. |
 | Aggregation / grouping | `with_lookup` on groups | group builders | grouped retrieval enrichment | `Later` | Depends on grouped retrieval surface. |
 | Aggregation / grouping | search matrix pairs | `search_matrix_pairs` | similarity-graph / pair relation | `Later` | Interesting, but specialized. |
@@ -155,13 +155,12 @@ Grouped retrieval should follow only after the retrieval relation surface is sta
 
 ## Next Release Priority
 
-### P0: aggregate-like exploration over the predicate algebra
+### P0: continue aggregate-like exploration over the predicate algebra
 
-This is now the strongest next implementation focus.
+This remains the strongest next implementation focus.
 
-1. `COUNT(*)`-like pushdown
-2. facet counts
-3. explicit output contracts for aggregate-like `Qdrant` exploration surfaces
+1. explicit output contracts for aggregate-like `Qdrant` exploration surfaces beyond exact `COUNT(*)` and the first keyword-facet slice
+2. determine the next grouped/exploration surface without overstating `Qdrant` facet as general SQL grouping
 4. preserve the exact-subset-first boundary already established by the predicate algebra
 
 ### P0.5: explicit payload null / empty semantics
@@ -175,8 +174,7 @@ This remains important, but should land only once the SQL denotation is explicit
 
 These are strong next-release candidates because they are SQL-natural and reuse the predicate work:
 
-1. count pushdown
-2. facet counts
+1. broader aggregate-like exploration beyond exact single-source counts and the first keyword-facet slice
 
 ### P2: introduce the first retrieval relation
 
@@ -208,7 +206,7 @@ Only after the first retrieval relation exists:
 
 ## Recommended Implementation Order
 
-1. implement count and facet on top of the predicate algebra
+1. settle whether the next grouped/exploration step is broader facet semantics or a separate aggregate-like relation
 2. settle explicit payload `is_null` / `is_empty` semantics
 3. design the first retrieval relation and its score contract
 4. implement nearest retrieval

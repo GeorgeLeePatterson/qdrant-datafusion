@@ -11,7 +11,9 @@ This folder is the compaction-safe planning and execution source of truth for `q
    - preserve truthful collection scans over canonical carriers
    - use current `qdrant-client` APIs only
    - widen the SQL-native capability surface only through explicit semantic milestones
-4. The current milestone is predicate algebra completion. The next milestone is aggregate-like exploration over that algebra.
+4. The current milestone is aggregate-like exploration over the predicate algebra.
+   - the first slice is exact `COUNT(*)` pushdown over a single `Qdrant` source
+   - the next admitted slice is exact top-facet grouped counts over one keyword payload field
 
 ## Documents
 

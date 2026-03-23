@@ -1,6 +1,6 @@
 # Execution Tracker
 
-Last updated: 2026-03-22
+Last updated: 2026-03-23
 
 ## Purpose
 
@@ -18,7 +18,7 @@ Use it to resume work without replaying the full repository history.
    - top-level nullable vector columns for heterogeneous named collections
    - current typed `qdrant-client` vector outputs only
 4. `INSERT INTO` is explicitly unsupported instead of panicking.
-5. The broad SQL-native `Qdrant` capability surface is still intentionally incomplete, but the predicate algebra foundation is now in place for the next expansion round.
+5. The broad SQL-native `Qdrant` capability surface is still intentionally incomplete, but the predicate algebra foundation and the first aggregate-like planner slices are now in place for the next expansion round.
 
 ## Done
 
@@ -72,22 +72,33 @@ Use it to resume work without replaying the full repository history.
       - indexed scalar `payload:<path>` comparisons, `IN`, `NOT IN`, `BETWEEN`, and `NOT BETWEEN`
     - physical filter pushdown now absorbs the admitted subset so `FilterExec` does not remain above `QdrantScanExec`
     - payload filter literals are coerced by indexed payload field type because `DataFusion`’s physical `payload:<path>` expressions do not carry a typed scalar contract
+18. `Q-021`: Exact `COUNT(*)` pushdown is now admitted as the first aggregate-like planner slice.
+    - the current `DataFusion` revision does not expose aggregate pushdown on `TableProvider`
+    - a narrow analyzer rule and extension planner now recognize exact single-source `COUNT(*)`
+    - the execution path lowers into `Qdrant`’s native `count` API
+    - admitted exact filters still reuse the existing provider-owned predicate algebra
+    - unsupported aggregate shapes fall back cleanly instead of pretending to be exact
+19. `Q-022`: Exact top-facet grouped counts are now admitted as the second aggregate-like planner slice.
+    - the admitted SQL subset is `GROUP BY payload:<path> ORDER BY count DESC LIMIT N`
+    - the grouped field is currently limited to keyword-indexed payload fields
+    - the execution path lowers into `Qdrant`’s native `facet` API
+    - admitted exact filters still reuse the existing provider-owned predicate algebra
+    - broader grouped SQL remains deferred because `Qdrant` facet denotes top-N grouped counts, not unconstrained SQL grouping
 
 ## Next
 
 1. The detailed planning inventory for the next expansion round now lives in `docs/QDRANT_COMPATIBILITY_MATRIX.md`.
 2. `Q-017`: Validate distributed-ordering behavior on the target `Qdrant` deployment modes before claiming broader exact payload-key sort pushdown.
-3. `M-002`: Aggregate-like exploration over the predicate algebra.
-   - `COUNT(*)`-like pushdown
-   - facet counts
-   - explicit output contracts for aggregate-like `Qdrant` exploration surfaces
+3. `M-002`: Continue aggregate-like exploration over the predicate algebra.
+   - explicit output contracts for aggregate-like `Qdrant` exploration surfaces beyond exact `COUNT(*)` and top-facet grouped counts
+   - determine whether the next grouped slice is broader facet semantics or a separate aggregate-like relation
 4. `Q-020`: Extend the predicate algebra only where the SQL semantics are explicit.
    - payload `is_null` / `is_empty`
    - text, geo, nested, and count-oriented predicates
 5. Continue mapping the pushdown model onto `DataFusion`’s own idioms where broader traversal is required.
    - `TreeNode` visitors / rewriters instead of ad hoc recursion
    - `LogicalPlan` expression and subquery helpers before project-local traversal
-   - exact admission of broader filter families instead of ad hoc expression splitting
+   - exact admission of broader filter families and aggregate-like shapes instead of ad hoc expression splitting
 
 ## Needed
 
@@ -105,3 +116,6 @@ When the next implementation round starts:
 6. track unresolved distributed `Qdrant` ordering edge cases explicitly; the single-node ordered continuation contract is now known
 7. update this tracker in the same change set as any non-trivial landing
 8. stop for planning again before widening the SQL surface in a way that could affect other vector-store integrations
+9. keep aggregate-like planner work compositional:
+   - provider-owned predicate algebra remains the lowering target
+   - relation-producing retrieval work is still a separate higher layer

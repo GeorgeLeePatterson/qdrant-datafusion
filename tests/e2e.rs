@@ -45,6 +45,22 @@ e2e_test!(
 
 #[cfg(feature = "test-utils")]
 e2e_test!(
+    table_provider_pushes_down_count_star,
+    tests::test_table_provider_pushes_down_count_star,
+    TRACING_DIRECTIVES,
+    None
+);
+
+#[cfg(feature = "test-utils")]
+e2e_test!(
+    table_provider_pushes_down_keyword_facet,
+    tests::test_table_provider_pushes_down_keyword_facet,
+    TRACING_DIRECTIVES,
+    None
+);
+
+#[cfg(feature = "test-utils")]
+e2e_test!(
     qdrant_raw_ordered_scroll_integer_contracts,
     tests::test_qdrant_raw_ordered_scroll_integer_contracts,
     TRACING_DIRECTIVES,
@@ -81,7 +97,9 @@ mod tests {
     use std::sync::Arc;
 
     use datafusion::arrow::array::types::Float32Type;
-    use datafusion::arrow::array::{Array, FixedSizeListArray, StringArray, StructArray};
+    use datafusion::arrow::array::{
+        Array, FixedSizeListArray, Int64Array, StringArray, StructArray,
+    };
     use datafusion::prelude::*;
     use ndarrow::{
         csr_matrix_batch_iter, fixed_size_list_as_array2, fixed_size_list_as_array2_masked,
@@ -99,6 +117,7 @@ mod tests {
     use qdrant_datafusion::arrow::schema::{
         dense_vector_width, is_multi_vector_field, is_sparse_vector_field, multivector_width,
     };
+    use qdrant_datafusion::context::QdrantSessionContext;
     use qdrant_datafusion::error::Result;
     use qdrant_datafusion::table::QdrantTableProvider;
     use qdrant_datafusion::test_utils::QdrantContainer;
@@ -841,6 +860,153 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert_eq!(boolean_ids, vec![2]);
+
+        Ok(())
+    }
+
+    pub(super) async fn test_table_provider_pushes_down_count_star(
+        c: Arc<QdrantContainer>,
+    ) -> Result<()> {
+        let client = create_qdrant_client(&c)?;
+        let collection_name = "test_count_pushdown";
+        create_scalar_collection(&client, collection_name).await?;
+        create_payload_index(
+            &client,
+            collection_name,
+            "rank",
+            FieldType::Integer,
+            qdrant_client::qdrant::IntegerIndexParamsBuilder::new(false, true).build(),
+        )
+        .await?;
+
+        let mut payload1 = qdrant_client::Payload::new();
+        payload1.insert("rank", 30_i64);
+        let mut payload2 = qdrant_client::Payload::new();
+        payload2.insert("rank", 10_i64);
+        let mut payload3 = qdrant_client::Payload::new();
+        payload3.insert("rank", 20_i64);
+
+        let points = vec![
+            PointStruct::new(1, Vector::new_dense(vec![0.0]), payload1),
+            PointStruct::new(2, Vector::new_dense(vec![0.0]), payload2),
+            PointStruct::new(3, Vector::new_dense(vec![0.0]), payload3),
+        ];
+        drop(client.upsert_points(UpsertPointsBuilder::new(collection_name, points)).await?);
+
+        let table_provider = QdrantTableProvider::try_new(client.clone(), collection_name).await?;
+        let ctx = QdrantSessionContext::from(SessionContext::new());
+        drop(ctx.session_context().register_table("vectors", Arc::new(table_provider))?);
+
+        let dataframe =
+            ctx.sql("SELECT COUNT(*) AS total FROM vectors WHERE payload:rank >= 20").await?;
+        let plan = dataframe.clone().create_physical_plan().await?;
+        let display =
+            datafusion::physical_plan::displayable(plan.as_ref()).indent(true).to_string();
+        let batches = dataframe.collect().await?;
+        let values = batches
+            .iter()
+            .flat_map(|batch| {
+                batch
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .expect("count int64 array")
+                    .iter()
+                    .map(|value| value.expect("non-null count"))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(values, vec![2]);
+        assert!(display.contains("QdrantCountExec"), "{display}");
+        assert!(!display.contains("AggregateExec"), "{display}");
+
+        Ok(())
+    }
+
+    pub(super) async fn test_table_provider_pushes_down_keyword_facet(
+        c: Arc<QdrantContainer>,
+    ) -> Result<()> {
+        let client = create_qdrant_client(&c)?;
+        let collection_name = "test_keyword_facet_pushdown";
+        create_scalar_collection(&client, collection_name).await?;
+        create_payload_index(
+            &client,
+            collection_name,
+            "rank",
+            FieldType::Integer,
+            qdrant_client::qdrant::IntegerIndexParamsBuilder::new(false, true).build(),
+        )
+        .await?;
+        create_payload_index(
+            &client,
+            collection_name,
+            "tag",
+            FieldType::Keyword,
+            qdrant_client::qdrant::KeywordIndexParamsBuilder::default().build(),
+        )
+        .await?;
+
+        let mut payload1 = qdrant_client::Payload::new();
+        payload1.insert("rank", 30_i64);
+        payload1.insert("tag", "red");
+        let mut payload2 = qdrant_client::Payload::new();
+        payload2.insert("rank", 10_i64);
+        payload2.insert("tag", "blue");
+        let mut payload3 = qdrant_client::Payload::new();
+        payload3.insert("rank", 20_i64);
+        payload3.insert("tag", "red");
+        let mut payload4 = qdrant_client::Payload::new();
+        payload4.insert("rank", 5_i64);
+        payload4.insert("tag", "green");
+
+        let points = vec![
+            PointStruct::new(1, Vector::new_dense(vec![0.0]), payload1),
+            PointStruct::new(2, Vector::new_dense(vec![0.0]), payload2),
+            PointStruct::new(3, Vector::new_dense(vec![0.0]), payload3),
+            PointStruct::new(4, Vector::new_dense(vec![0.0]), payload4),
+        ];
+        drop(client.upsert_points(UpsertPointsBuilder::new(collection_name, points)).await?);
+
+        let table_provider = QdrantTableProvider::try_new(client.clone(), collection_name).await?;
+        let ctx = QdrantSessionContext::from(SessionContext::new());
+        drop(ctx.session_context().register_table("vectors", Arc::new(table_provider))?);
+
+        let dataframe = ctx
+            .sql(
+                "SELECT payload:tag AS tag, COUNT(*) AS total FROM vectors WHERE payload:rank >= \
+                 10 GROUP BY payload:tag ORDER BY total DESC LIMIT 2",
+            )
+            .await?;
+        let plan = dataframe.clone().create_physical_plan().await?;
+        let display =
+            datafusion::physical_plan::displayable(plan.as_ref()).indent(true).to_string();
+        let batches = dataframe.collect().await?;
+        let rows = batches
+            .iter()
+            .flat_map(|batch| {
+                let tags = batch
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .expect("tag string array");
+                let totals = batch
+                    .column(1)
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .expect("count int64 array");
+                (0..batch.num_rows())
+                    .map(|row| (tags.value(row).to_owned(), totals.value(row)))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(rows, vec![("red".to_owned(), 2), ("blue".to_owned(), 1)]);
+        assert!(display.contains("QdrantFacetExec"), "{display}");
+        assert!(!display.contains("AggregateExec"), "{display}");
+        assert!(!display.contains("SortExec"), "{display}");
+        assert!(!display.contains("GlobalLimitExec"), "{display}");
+        assert!(!display.contains("LocalLimitExec"), "{display}");
 
         Ok(())
     }

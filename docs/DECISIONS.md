@@ -1,6 +1,6 @@
 # Locked Decisions
 
-Last updated: 2026-03-22
+Last updated: 2026-03-23
 
 ## Core Constraints
 
@@ -65,6 +65,23 @@ Last updated: 2026-03-22
     - mutation
     - administration
     - the detailed inventory for this planning round lives in `docs/QDRANT_COMPATIBILITY_MATRIX.md`
+24. Aggregate-like exploration is the first admitted `Qdrant` feature family that crosses beyond plain `TableProvider::scan`.
+    - the current `DataFusion` revision does not expose an aggregate pushdown hook on `TableProvider`
+    - exact `COUNT(*)` pushdown therefore uses a narrow analyzer / extension-planner path instead of overloading scan semantics
+    - the existing provider-owned predicate algebra remains the lowering target for that higher layer; it is not duplicated
+25. The first admitted aggregate-like SQL subset is exact `COUNT(*)` over a single `Qdrant` source.
+    - no `GROUP BY`
+    - no grouped aggregates
+    - no `COUNT(column)`
+    - exact admitted filters may still participate through the existing predicate algebra
+    - this path currently requires the `Qdrant` session/planner helper rather than plain `SessionContext`
+26. The second admitted aggregate-like SQL subset is exact top-facet grouped counts over one keyword payload field.
+    - the admitted SQL shape is `SELECT payload:<path>, COUNT(*) ... GROUP BY payload:<path> ORDER BY count DESC LIMIT N`
+    - the current implementation admits one grouped field only
+    - the grouped field must be a keyword-indexed payload field
+    - exact admitted filters may still participate through the existing predicate algebra
+    - this path also requires the `Qdrant` session/planner helper rather than plain `SessionContext`
+    - broader grouped SQL remains deferred because `Qdrant` facet denotes top-N grouped counts, not unconstrained SQL grouping
 
 ## Execution Ordering
 

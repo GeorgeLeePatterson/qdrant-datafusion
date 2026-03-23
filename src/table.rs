@@ -162,6 +162,12 @@ impl QdrantTableProvider {
             payload_schema,
         })
     }
+
+    pub(crate) fn client(&self) -> &Arc<Qdrant> { &self.client }
+
+    pub(crate) fn collection(&self) -> &str { self.table.table() }
+
+    pub(crate) fn payload_schema(&self) -> &Arc<QdrantPayloadSchema> { &self.payload_schema }
 }
 
 #[async_trait::async_trait]
@@ -621,6 +627,8 @@ mod tests {
 
     use super::*;
     use crate::arrow::schema::{ID_FIELD_NAME, PAYLOAD_FIELD_NAME};
+    use crate::context::QdrantSessionContext;
+    use crate::context::plan_node::{QdrantCountExec, QdrantFacetExec};
 
     fn test_provider(schema: Schema) -> QdrantTableProvider {
         QdrantTableProvider {
@@ -709,6 +717,32 @@ mod tests {
             return qdrant_scan(repartition.input());
         }
         panic!("expected qdrant scan exec in plan:\n{}", displayable(plan.as_ref()).indent(true));
+    }
+
+    fn qdrant_count(plan: &Arc<dyn ExecutionPlan>) -> &QdrantCountExec {
+        if let Some(count) = plan.as_any().downcast_ref::<QdrantCountExec>() {
+            return count;
+        }
+        if let Some(cooperative) = plan.as_any().downcast_ref::<CooperativeExec>() {
+            return qdrant_count(cooperative.input());
+        }
+        if let Some(projection) = plan.as_any().downcast_ref::<ProjectionExec>() {
+            return qdrant_count(projection.input());
+        }
+        panic!("expected qdrant count exec in plan:\n{}", displayable(plan.as_ref()).indent(true));
+    }
+
+    fn qdrant_facet(plan: &Arc<dyn ExecutionPlan>) -> &QdrantFacetExec {
+        if let Some(facet) = plan.as_any().downcast_ref::<QdrantFacetExec>() {
+            return facet;
+        }
+        if let Some(cooperative) = plan.as_any().downcast_ref::<CooperativeExec>() {
+            return qdrant_facet(cooperative.input());
+        }
+        if let Some(projection) = plan.as_any().downcast_ref::<ProjectionExec>() {
+            return qdrant_facet(projection.input());
+        }
+        panic!("expected qdrant facet exec in plan:\n{}", displayable(plan.as_ref()).indent(true));
     }
 
     #[test]
@@ -1171,6 +1205,134 @@ mod tests {
 
         assert_eq!(scan.pushdown.filters.len(), 1);
         assert!(!display.contains("FilterExec"), "{display}");
+    }
+
+    #[test]
+    fn physical_plan_uses_qdrant_count_exec_for_count_star() {
+        let provider = QdrantTableProvider {
+            payload_schema: payload_schema([(
+                "rank",
+                PayloadSchemaInfo {
+                    data_type: qdrant_client::qdrant::PayloadSchemaType::Integer as i32,
+                    params: Some(qdrant_client::qdrant::PayloadIndexParams {
+                        index_params: Some(
+                            qdrant_client::qdrant::payload_index_params::IndexParams::IntegerIndexParams(
+                                IntegerIndexParams {
+                                    range: Some(true),
+                                    ..Default::default()
+                                },
+                            ),
+                        ),
+                    }),
+                    points: None,
+                },
+            )]),
+            ..test_provider(Schema::new(vec![
+                Field::new(ID_FIELD_NAME, DataType::Utf8, false),
+                Field::new(PAYLOAD_FIELD_NAME, DataType::Utf8, true),
+            ]))
+        };
+        let ctx = QdrantSessionContext::from(SessionContext::new());
+        drop(
+            ctx.session_context()
+                .register_table("vectors", Arc::new(provider))
+                .expect("register table"),
+        );
+        let dataframe = ctx
+            .sql("SELECT COUNT(*) FROM vectors WHERE payload:rank >= 10")
+            .now_or_never()
+            .expect("sql future is ready")
+            .expect("dataframe");
+        let plan = dataframe
+            .create_physical_plan()
+            .now_or_never()
+            .expect("plan future is ready")
+            .expect("physical plan");
+        let display = displayable(plan.as_ref()).indent(true).to_string();
+        let _count = qdrant_count(&plan);
+
+        assert!(display.contains("QdrantCountExec"), "{display}");
+        assert!(!display.contains("AggregateExec"), "{display}");
+        assert!(!display.contains("FilterExec"), "{display}");
+    }
+
+    #[test]
+    fn physical_plan_keeps_aggregate_exec_for_count_column() {
+        let provider = test_provider(Schema::new(vec![
+            Field::new(ID_FIELD_NAME, DataType::Utf8, false),
+            Field::new(PAYLOAD_FIELD_NAME, DataType::Utf8, true),
+        ]));
+        let ctx = QdrantSessionContext::from(SessionContext::new());
+        drop(
+            ctx.session_context()
+                .register_table("vectors", Arc::new(provider))
+                .expect("register table"),
+        );
+        let dataframe = ctx
+            .sql("SELECT COUNT(payload) FROM vectors")
+            .now_or_never()
+            .expect("sql future is ready")
+            .expect("dataframe");
+        let plan = dataframe
+            .create_physical_plan()
+            .now_or_never()
+            .expect("plan future is ready")
+            .expect("physical plan");
+        let display = displayable(plan.as_ref()).indent(true).to_string();
+
+        assert!(display.contains("AggregateExec"), "{display}");
+        assert!(!display.contains("QdrantCountExec"), "{display}");
+    }
+
+    #[test]
+    fn physical_plan_uses_qdrant_facet_exec_for_top_keyword_facets() {
+        let provider = QdrantTableProvider {
+            payload_schema: payload_schema([(
+                "tag",
+                PayloadSchemaInfo {
+                    data_type: qdrant_client::qdrant::PayloadSchemaType::Keyword as i32,
+                    params: Some(qdrant_client::qdrant::PayloadIndexParams {
+                        index_params: Some(
+                            qdrant_client::qdrant::payload_index_params::IndexParams::KeywordIndexParams(
+                                qdrant_client::qdrant::KeywordIndexParams::default(),
+                            ),
+                        ),
+                    }),
+                    points: None,
+                },
+            )]),
+            ..test_provider(Schema::new(vec![
+                Field::new(ID_FIELD_NAME, DataType::Utf8, false),
+                Field::new(PAYLOAD_FIELD_NAME, DataType::Utf8, true),
+            ]))
+        };
+        let ctx = QdrantSessionContext::from(SessionContext::new());
+        drop(
+            ctx.session_context()
+                .register_table("vectors", Arc::new(provider))
+                .expect("register table"),
+        );
+        let dataframe = ctx
+            .sql(
+                "SELECT payload:tag AS tag, COUNT(*) AS total FROM vectors GROUP BY payload:tag \
+                 ORDER BY total DESC LIMIT 2",
+            )
+            .now_or_never()
+            .expect("sql future is ready")
+            .expect("dataframe");
+        let plan = dataframe
+            .create_physical_plan()
+            .now_or_never()
+            .expect("plan future is ready")
+            .expect("physical plan");
+        let display = displayable(plan.as_ref()).indent(true).to_string();
+        let _facet = qdrant_facet(&plan);
+
+        assert!(display.contains("QdrantFacetExec"), "{display}");
+        assert!(!display.contains("AggregateExec"), "{display}");
+        assert!(!display.contains("SortExec"), "{display}");
+        assert!(!display.contains("GlobalLimitExec"), "{display}");
+        assert!(!display.contains("LocalLimitExec"), "{display}");
     }
 
     #[test]

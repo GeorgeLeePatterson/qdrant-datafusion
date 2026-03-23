@@ -1,6 +1,6 @@
 # Status Snapshot
 
-Last updated: 2026-03-22
+Last updated: 2026-03-23
 
 ## Summary
 
@@ -31,8 +31,17 @@ Current branch reality:
     - indexed scalar `payload:<path>` comparisons, `IN`, `NOT IN`, `BETWEEN`, and `NOT BETWEEN`
 15. Physical filter pushdown now absorbs the admitted predicate algebra so `FilterExec` does not remain above `QdrantScanExec`.
 16. Payload filter literals are coerced by indexed payload field type because `DataFusion`’s physical `payload:<path>` expressions surface generic scalar literals such as `Utf8("10")`.
-17. The root `README.md`, repo notes, and tracker docs describe only the admitted baseline.
-18. Detailed capability-expansion planning now has an explicit semantic inventory in `docs/QDRANT_COMPATIBILITY_MATRIX.md`.
+17. Exact `COUNT(*)` pushdown is now admitted as the first aggregate-like planner slice.
+    - it lowers into `Qdrant`’s native `count` API
+    - it currently requires the `Qdrant` session/planner helper
+    - it reuses the existing provider-owned predicate algebra for admitted exact filters
+18. Exact top-facet grouped counts are now admitted as the second aggregate-like planner slice.
+    - it lowers into `Qdrant`’s native `facet` API
+    - it currently requires the `Qdrant` session/planner helper
+    - it is currently limited to one keyword-indexed `payload:<path>` field with `ORDER BY count DESC LIMIT N`
+    - it reuses the existing provider-owned predicate algebra for admitted exact filters
+19. The root `README.md`, repo notes, and tracker docs describe only the admitted baseline.
+20. Detailed capability-expansion planning now has an explicit semantic inventory in `docs/QDRANT_COMPATIBILITY_MATRIX.md`.
 
 ## Current Code Ownership
 
@@ -52,14 +61,18 @@ Current branch reality:
 4. `src/arrow/deserialize.rs`
    - `Qdrant` point to Arrow record-batch materialization
 5. `tests/e2e.rs`
-   - integration coverage for the admitted scan baseline only
+   - integration coverage for the admitted scan baseline and the first exact aggregate-like slices
+6. `src/context.rs`, `src/context/planner.rs`, `src/context/plan_node.rs`
+   - narrow session / analyzer / extension-planner support for exact `COUNT(*)` and keyword-facet pushdown
+7. `src/analyzer.rs`, `src/analyzer/common.rs`, `src/analyzer/count_pushdown.rs`, `src/analyzer/facet_pushdown.rs`
+   - exact aggregate-like plan admission for single-source `Qdrant` counts and the first keyword-facet grouped-count subset
 
 ## Operational Notes
 
 1. Prefer clean reimplementation over porting code from the old spike branch.
 2. Remove deprecated `qdrant-client` paths instead of preserving fallback behavior.
 3. Preserve truthful nullability at the scan boundary; do not impute missing vectors during scan.
-4. The next step is still not ad hoc implementation. It is the remaining pushdown-first SQL-bridge work tracked as `Q-017` and `Q-019`.
+4. The next step is still not ad hoc implementation. It is the remaining pushdown-first SQL-bridge work tracked as `Q-017`, `M-002`, and `Q-020`.
 5. That next phase is explicitly anchored on `DataFusion`’s own idioms:
    - `TreeNode` traversal / rewriting
    - `LogicalPlan` expression and subquery helpers
@@ -73,5 +86,5 @@ Current branch reality:
 9. The admitted exact filter bridge is now a real predicate algebra over the current admitted leaves, not just conjunctive leaf pushdown.
 10. Distributed-ordering behavior is still intentionally deferred before claiming broader payload-key sort exactness.
 11. The next capability round is now planned semantically rather than endpoint-by-endpoint:
-    - aggregate-like exploration next
+    - broader aggregate-like exploration beyond the first keyword-facet slice
     - retrieval relations after that

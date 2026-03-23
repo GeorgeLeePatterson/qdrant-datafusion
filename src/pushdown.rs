@@ -2,7 +2,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::common::ScalarValue;
 use datafusion::error::Result as DataFusionResult;
+use datafusion::logical_expr::expr::BinaryExpr;
+use datafusion::logical_expr::{Expr, Operator};
 use qdrant_client::qdrant::{PayloadSchemaInfo, PayloadSchemaType, PointId, payload_index_params};
 
 use crate::arrow::schema::{
@@ -37,6 +40,17 @@ pub(crate) enum QdrantOrdering {
 pub(crate) struct QdrantPayloadOrdering {
     pub(crate) field:      String,
     pub(crate) descending: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct QdrantPayloadPath {
+    path: String,
+}
+
+impl QdrantPayloadPath {
+    pub(crate) fn new(path: String) -> Option<Self> { (!path.is_empty()).then_some(Self { path }) }
+
+    pub(crate) fn key(&self) -> &str { &self.path }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,7 +103,7 @@ impl QdrantScanSpec {
         base_schema: &SchemaRef,
         payload_schema: &QdrantPayloadSchema,
         projection: Option<&Vec<usize>>,
-        filters: &[datafusion::logical_expr::Expr],
+        filters: &[Expr],
         limit: Option<usize>,
     ) -> DataFusionResult<Self> {
         let schema = match projection {
@@ -202,6 +216,28 @@ impl QdrantPayloadSchema {
 
     pub(crate) fn field(&self, field: &str) -> Option<QdrantPayloadField> {
         self.fields.get(field).copied()
+    }
+}
+
+pub(crate) fn logical_payload_path(expr: &Expr) -> Option<QdrantPayloadPath> {
+    match expr {
+        Expr::BinaryExpr(BinaryExpr { left, op: Operator::Colon, right }) => {
+            let Expr::Column(column) = left.as_ref() else {
+                return None;
+            };
+            if column.name != PAYLOAD_FIELD_NAME {
+                return None;
+            }
+            match right.as_ref() {
+                Expr::Literal(
+                    ScalarValue::Utf8(Some(path)) | ScalarValue::LargeUtf8(Some(path)),
+                    _,
+                ) => QdrantPayloadPath::new(path.clone()),
+                _ => None,
+            }
+        }
+        Expr::Alias(alias) => logical_payload_path(&alias.expr),
+        _ => None,
     }
 }
 

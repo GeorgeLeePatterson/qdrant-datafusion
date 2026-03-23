@@ -18,7 +18,7 @@ use datafusion::physical_expr::utils::{
 use prost_types::Timestamp;
 use qdrant_client::qdrant::{Condition, DatetimeRange, Filter, PointId, Range};
 
-use super::{QdrantPayloadField, QdrantPayloadSchema};
+use super::{QdrantPayloadField, QdrantPayloadPath, QdrantPayloadSchema, logical_payload_path};
 use crate::arrow::schema::{
     ID_FIELD_NAME, PAYLOAD_FIELD_NAME, UNNAMED_VECTOR_FIELD_NAME, dense_vector_width,
     is_multi_vector_field, is_sparse_vector_field,
@@ -38,15 +38,15 @@ enum QdrantPredicate {
     IdIn(Vec<PointId>),
     HasVector(String),
     PayloadEq {
-        field: PayloadFieldRef,
+        field: QdrantPayloadPath,
         value: QdrantFilterValue,
     },
     PayloadIn {
-        field:  PayloadFieldRef,
+        field:  QdrantPayloadPath,
         values: Vec<QdrantFilterValue>,
     },
     PayloadRange {
-        field: PayloadFieldRef,
+        field: QdrantPayloadPath,
         lower: Option<(QdrantFilterValue, bool)>,
         upper: Option<(QdrantFilterValue, bool)>,
     },
@@ -66,20 +66,9 @@ pub(crate) struct QdrantFilters {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct PayloadFieldRef {
-    path: String,
-}
-
-impl PayloadFieldRef {
-    fn new(path: String) -> Option<Self> { (!path.is_empty()).then_some(Self { path }) }
-
-    fn key(&self) -> &str { &self.path }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 enum QdrantFieldRef {
     Id,
-    Payload(PayloadFieldRef),
+    Payload(QdrantPayloadPath),
     Vector(String),
 }
 
@@ -469,7 +458,7 @@ fn filter_expr(
 }
 
 fn range_predicate(
-    field: PayloadFieldRef,
+    field: QdrantPayloadPath,
     field_type: QdrantPayloadField,
     lower: Option<(QdrantFilterValue, bool)>,
     upper: Option<(QdrantFilterValue, bool)>,
@@ -524,16 +513,14 @@ fn disjunction_predicate(exprs: &[QdrantFilterExpr]) -> Option<QdrantPredicate> 
 fn field_ref(base_schema: &SchemaRef, expr: &Expr) -> Option<QdrantFieldRef> {
     match expr {
         Expr::Column(column) => column_field_ref(base_schema, &column.name),
-        Expr::BinaryExpr(BinaryExpr { left, op: Operator::Colon, right }) => {
+        Expr::BinaryExpr(BinaryExpr { left, op: Operator::Colon, right: _ }) => {
             let Expr::Column(column) = left.as_ref() else {
                 return None;
             };
             if column.name != PAYLOAD_FIELD_NAME {
                 return None;
             }
-            Some(QdrantFieldRef::Payload(PayloadFieldRef::new(string_scalar(scalar_literal(
-                right,
-            )?)?)?))
+            Some(QdrantFieldRef::Payload(logical_payload_path(expr)?))
         }
         Expr::Alias(alias) => field_ref(base_schema, &alias.expr),
         _ => None,
@@ -555,7 +542,7 @@ fn physical_field_ref(
     if column.name() != PAYLOAD_FIELD_NAME {
         return None;
     }
-    Some(QdrantFieldRef::Payload(PayloadFieldRef::new(string_scalar(physical_scalar_literal(
+    Some(QdrantFieldRef::Payload(QdrantPayloadPath::new(string_scalar(physical_scalar_literal(
         binary.right(),
     )?)?)?))
 }
@@ -734,7 +721,7 @@ fn timestamp_from_string(value: &str) -> Option<Timestamp> {
     Some(Timestamp { seconds: value.and_utc().timestamp(), nanos: 0 })
 }
 
-fn eq_condition(field: &PayloadFieldRef, value: &QdrantFilterValue) -> Condition {
+fn eq_condition(field: &QdrantPayloadPath, value: &QdrantFilterValue) -> Condition {
     match value {
         QdrantFilterValue::String(value) => Condition::matches(field.key(), value.clone()),
         QdrantFilterValue::Integer(value) => Condition::matches(field.key(), *value),
@@ -754,7 +741,7 @@ fn eq_condition(field: &PayloadFieldRef, value: &QdrantFilterValue) -> Condition
     }
 }
 
-fn in_condition(field: &PayloadFieldRef, values: &[QdrantFilterValue]) -> Condition {
+fn in_condition(field: &QdrantPayloadPath, values: &[QdrantFilterValue]) -> Condition {
     match values {
         [] => unreachable!("empty IN list is not admitted"),
         [QdrantFilterValue::String(_), ..] => Condition::matches(
@@ -782,7 +769,7 @@ fn in_condition(field: &PayloadFieldRef, values: &[QdrantFilterValue]) -> Condit
 }
 
 fn range_condition(
-    field: &PayloadFieldRef,
+    field: &QdrantPayloadPath,
     lower: Option<&(QdrantFilterValue, bool)>,
     upper: Option<&(QdrantFilterValue, bool)>,
 ) -> Condition {

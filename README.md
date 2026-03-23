@@ -3,9 +3,10 @@
 `qdrant-datafusion` exposes `Qdrant` collections as `DataFusion` tables.
 
 The current crate scope is intentionally narrow: correct, paginated collection scans over the
-canonical Arrow carriers used by `ndarrow` and `nabled::arrow`, plus the first exact
-pushdown-first SQL bridge for ordering and filtering. It is not yet the broad SQL surface for
-`Qdrant` search, recommend, discover, fusion, or planner rewrites.
+canonical Arrow carriers used by `ndarrow` and `nabled::arrow`, the exact pushdown-first SQL
+bridge for ordering and filtering, and the first narrow planner slices for exact `COUNT(*)` and
+top-facet grouped-count pushdown. It is not yet the broad SQL surface for `Qdrant` search,
+recommend, discover, fusion, or broader planner rewrites.
 
 ## Current Scan Contract
 
@@ -33,7 +34,9 @@ canonical carrier; missing values are not imputed during scan.
   - `AND`, `OR`, and `NOT`
   - `id =`, `id !=`, `id IN (...)`, `id NOT IN (...)`
   - vector-column `IS NULL` / `IS NOT NULL`
-  - indexed scalar `payload:<path>` comparisons, `IN`, `NOT IN`, `BETWEEN`, and `NOT BETWEEN`
+- indexed scalar `payload:<path>` comparisons, `IN`, `NOT IN`, `BETWEEN`, and `NOT BETWEEN`
+- exact `COUNT(*)` pushdown over a single `Qdrant` source through the crate's session/planner helper
+- exact top-facet grouped-count pushdown over one keyword `payload:<path>` field through the crate's session/planner helper
 - heterogeneous named-vector scans with top-level nullable vector columns
 
 ## Not Yet Admitted
@@ -41,9 +44,10 @@ canonical carrier; missing values are not imputed during scan.
 - write support or `INSERT INTO`
 - payload null/empty semantics, text, geo, nested, and count-oriented payload predicates
 - broader payload-key SQL `ORDER BY` pushdown beyond the admitted `payload:<path>` subset
+- broader aggregate/grouped SQL beyond the admitted keyword-facet subset
 - `Qdrant`-specific UDFs, UDAFs, or UDTFs
 - SQL-native search / recommend / discover / fusion semantics
-- custom planning or rewrite passes
+- broader planner rewrites beyond the narrow exact `COUNT(*)` / facet slices
 
 ## Basic Usage
 
@@ -63,6 +67,32 @@ ctx.register_table("vectors", Arc::new(table_provider))?;
 
 let batches = ctx
     .sql("SELECT id, payload, vector FROM vectors ORDER BY id LIMIT 10")
+    .await?
+    .collect()
+    .await?;
+# Ok(())
+# }
+```
+
+Exact aggregate-like pushdown currently requires the crate's prepared session context:
+
+```rust,ignore
+use std::sync::Arc;
+
+use datafusion::prelude::*;
+use qdrant_client::Qdrant;
+use qdrant_datafusion::prelude::*;
+
+# async fn example() -> Result<()> {
+let client = Qdrant::from_url("http://localhost:6334").build()?;
+let table_provider = QdrantTableProvider::try_new(client, "my_collection").await?;
+
+let ctx = QdrantSessionContext::from(SessionContext::new());
+ctx.session_context()
+    .register_table("vectors", Arc::new(table_provider))?;
+
+let batches = ctx
+    .sql("SELECT COUNT(*) AS total FROM vectors WHERE payload:rank >= 10")
     .await?
     .collect()
     .await?;
@@ -101,6 +131,13 @@ SELECT multi_embedding, keywords
 FROM docs
 WHERE multi_embedding IS NOT NULL
   AND payload:rank BETWEEN 10 AND 20;
+
+SELECT payload:tag AS tag, COUNT(*) AS total
+FROM docs
+WHERE payload:rank >= 10
+GROUP BY payload:tag
+ORDER BY total DESC
+LIMIT 10;
 ```
 
 ## Verification
