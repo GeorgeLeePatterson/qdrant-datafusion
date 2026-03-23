@@ -3,8 +3,9 @@
 `qdrant-datafusion` exposes `Qdrant` collections as `DataFusion` tables.
 
 The current crate scope is intentionally narrow: correct, paginated collection scans over the
-canonical Arrow carriers used by `ndarrow` and `nabled::arrow`. It is not yet the broad SQL
-surface for `Qdrant` search, recommend, discover, fusion, or planner rewrites.
+canonical Arrow carriers used by `ndarrow` and `nabled::arrow`, plus the first exact
+pushdown-first SQL bridge for ordering and filtering. It is not yet the broad SQL surface for
+`Qdrant` search, recommend, discover, fusion, or planner rewrites.
 
 ## Current Scan Contract
 
@@ -28,17 +29,17 @@ canonical carrier; missing values are not imputed during scan.
 - SQL `LIMIT` pushdown to the scan stream
 - exact physical sort pushdown for `ORDER BY id ASC`
 - exact payload-key sort pushdown for the admitted `ORDER BY payload:<path>` subset on indexed integer, float, and datetime payload fields
-- exact filter pushdown for the admitted subset:
+- exact boolean filter pushdown over the admitted leaf subset:
+  - `AND`, `OR`, and `NOT`
   - `id =`, `id !=`, `id IN (...)`, `id NOT IN (...)`
-  - same-field equality disjunctions normalized to `IN`
   - vector-column `IS NULL` / `IS NOT NULL`
-  - indexed scalar `payload:<path>` comparisons, `IN`, `NOT IN`, and non-negated `BETWEEN`
+  - indexed scalar `payload:<path>` comparisons, `IN`, `NOT IN`, `BETWEEN`, and `NOT BETWEEN`
 - heterogeneous named-vector scans with top-level nullable vector columns
 
 ## Not Yet Admitted
 
 - write support or `INSERT INTO`
-- broader filter semantics beyond the admitted same-field equality `OR` subset, such as general `OR`, `NOT`, payload null/empty semantics, text, geo, nested, and count-oriented payload predicates
+- payload null/empty semantics, text, geo, nested, and count-oriented payload predicates
 - broader payload-key SQL `ORDER BY` pushdown beyond the admitted `payload:<path>` subset
 - `Qdrant`-specific UDFs, UDAFs, or UDTFs
 - SQL-native search / recommend / discover / fusion semantics
@@ -89,6 +90,12 @@ SELECT id
 FROM docs
 WHERE payload:rank >= 10
 ORDER BY payload:rank;
+
+SELECT id
+FROM docs
+WHERE (payload:tag = 'red' OR id = '2')
+  AND NOT payload:rank > 20
+ORDER BY id;
 
 SELECT multi_embedding, keywords
 FROM docs

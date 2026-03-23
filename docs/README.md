@@ -6,12 +6,12 @@ This folder is the compaction-safe planning and execution source of truth for `q
 
 1. `qdrant-datafusion` is the `DataFusion` and SQL layer over `Qdrant`.
 2. Canonical numerical Arrow contracts come from `ndarrow` and `nabled::arrow`, not repo-local ad hoc schemas.
-3. The current round is a baseline-hardening round before feature expansion:
+3. The current round is a pushdown-first capability-expansion round on top of the stable scan baseline:
    - keep the dependency line aligned with `ndatafusion`
-   - expose truthful collection scans over canonical carriers
+   - preserve truthful collection scans over canonical carriers
    - use current `qdrant-client` APIs only
-   - keep the SQL-native capability surface intentionally small until planning is complete
-4. After the scan baseline is correct and stable, pause for explicit SQL-bridge planning before widening capabilities.
+   - widen the SQL-native capability surface only through explicit semantic milestones
+4. The current milestone is predicate algebra completion. The next milestone is aggregate-like exploration over that algebra.
 
 ## Documents
 
@@ -41,5 +41,5 @@ Then verify repository state quickly:
 
 This round is not the broad `Qdrant` capability expansion round yet.
 
-First make the collection-scan baseline correct, current, and contract-aligned. Only then widen the
-SQL surface for search, recommendation, discover, fusion, planner hooks, and related features.
+The collection-scan baseline is now correct, current, and contract-aligned. Widen the SQL surface
+only through semantic milestones that compose cleanly over the provider-owned pushdown model.

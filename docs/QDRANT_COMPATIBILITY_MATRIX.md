@@ -53,11 +53,11 @@ This matrix is derived from:
 | Row restriction | `has_vector` | `Condition::has_vector` | vector-column `IS NULL` / `IS NOT NULL` | `Current` | Already admitted through nullable vector scan contract. |
 | Row restriction | payload equality | `Condition::matches` | `payload:<path> = ...` | `Current` | Already admitted for indexed scalar payload fields. |
 | Row restriction | payload inequality / range | `Condition::range`, `Condition::datetime_range` | `<`, `<=`, `>`, `>=`, non-negated `BETWEEN` | `Current` | Already admitted for integer / float / datetime. |
-| Row restriction | `Match Any` | `Condition::matches` over collections | `IN (...)` | `Next` | Already effectively present for exact subset; should be generalized as part of the broader predicate algebra. |
-| Row restriction | `Match Except` | `Condition::matches(!MatchValue::...)` | `NOT IN (...)` | `Next` | Already effectively present for admitted scalar fields; broaden with boolean normalization. |
-| Row restriction | same-field equality disjunction | normalized to `IN` | `a = 1 OR a = 2` | `Current` | Admitted exact subset. This is not general `OR`. |
-| Row restriction | general `OR` | `should` | boolean predicate normalization | `Next` | Requires full exact-subset analysis. Partial pushdown is not acceptable. |
-| Row restriction | general `NOT` | `must_not` | boolean predicate normalization | `Next` | Requires leaf-level inversion rules and explicit null / empty semantics. |
+| Row restriction | `Match Any` | `Condition::matches` over collections | `IN (...)` | `Current` | Admitted for the current exact predicate algebra. |
+| Row restriction | `Match Except` | `Condition::matches(!MatchValue::...)` | `NOT IN (...)` | `Current` | Admitted for the current exact predicate algebra. |
+| Row restriction | same-field equality disjunction | normalized to `IN` | `a = 1 OR a = 2` | `Current` | Admitted as an optimization inside the broader exact boolean predicate algebra. |
+| Row restriction | general `OR` | `should` | boolean predicate normalization | `Current` | Admitted exactly over the current leaf subset. Unsupported branches still reject cleanly. |
+| Row restriction | general `NOT` | `must_not` | boolean predicate normalization | `Current` | Admitted exactly over the current leaf subset. Payload null / empty semantics are still deferred. |
 | Row restriction | `is_null` | field condition | payload null semantics | `Next` | Must not be conflated with SQL nulls blindly. |
 | Row restriction | `is_empty` | field condition | payload empty / missing semantics | `Next` | Distinct from `is_null`; important to model explicitly. |
 | Row restriction | `values_count` | field condition | cardinality predicates | `Later` | Good fit semantically, but depends on payload shape policy. |
@@ -155,14 +155,21 @@ Grouped retrieval should follow only after the retrieval relation surface is sta
 
 ## Next Release Priority
 
-### P0: finish the predicate algebra
+### P0: aggregate-like exploration over the predicate algebra
 
-This should be the next implementation focus.
+This is now the strongest next implementation focus.
 
-1. broaden exact boolean semantics beyond the currently admitted same-field equality `OR` subset
-2. model payload `is_null` and `is_empty` explicitly
-3. extend scalar payload matching cleanly across keyword / integer / bool / datetime cases
-4. keep the contract exact-subset-first and reject unsupported combinations cleanly
+1. `COUNT(*)`-like pushdown
+2. facet counts
+3. explicit output contracts for aggregate-like `Qdrant` exploration surfaces
+4. preserve the exact-subset-first boundary already established by the predicate algebra
+
+### P0.5: explicit payload null / empty semantics
+
+This remains important, but should land only once the SQL denotation is explicit.
+
+1. model payload `is_null` and `is_empty` explicitly
+2. keep missing-vs-null-vs-empty semantics explicit instead of guessing
 
 ### P1: add aggregate-like exploration that composes over filters
 
@@ -201,8 +208,8 @@ Only after the first retrieval relation exists:
 
 ## Recommended Implementation Order
 
-1. complete predicate algebra
-2. implement count and facet on top of that algebra
+1. implement count and facet on top of the predicate algebra
+2. settle explicit payload `is_null` / `is_empty` semantics
 3. design the first retrieval relation and its score contract
 4. implement nearest retrieval
 5. layer retrieval modifiers and secondary retrieval operators on top

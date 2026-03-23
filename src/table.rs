@@ -1086,6 +1086,69 @@ mod tests {
     }
 
     #[test]
+    fn physical_plan_drops_filter_exec_for_general_boolean_filter() {
+        let provider = QdrantTableProvider {
+            payload_schema: payload_schema([
+                (
+                    "rank",
+                    PayloadSchemaInfo {
+                        data_type: qdrant_client::qdrant::PayloadSchemaType::Integer as i32,
+                        params: Some(qdrant_client::qdrant::PayloadIndexParams {
+                            index_params: Some(
+                                qdrant_client::qdrant::payload_index_params::IndexParams::IntegerIndexParams(
+                                    IntegerIndexParams {
+                                        range: Some(true),
+                                        ..Default::default()
+                                    },
+                                ),
+                            ),
+                        }),
+                        points: None,
+                    },
+                ),
+                (
+                    "tag",
+                    PayloadSchemaInfo {
+                        data_type: qdrant_client::qdrant::PayloadSchemaType::Keyword as i32,
+                        params: Some(qdrant_client::qdrant::PayloadIndexParams {
+                            index_params: Some(
+                                qdrant_client::qdrant::payload_index_params::IndexParams::KeywordIndexParams(
+                                    qdrant_client::qdrant::KeywordIndexParams::default(),
+                                ),
+                            ),
+                        }),
+                        points: None,
+                    },
+                ),
+            ]),
+            ..test_provider(Schema::new(vec![
+                Field::new(ID_FIELD_NAME, DataType::Utf8, false),
+                Field::new(PAYLOAD_FIELD_NAME, DataType::Utf8, true),
+            ]))
+        };
+        let ctx = SessionContext::new();
+        drop(ctx.register_table("vectors", Arc::new(provider)).expect("register table"));
+        let dataframe = ctx
+            .sql(
+                "SELECT id FROM vectors WHERE (payload:tag = 'red' OR id = '2') AND NOT \
+                 payload:rank > 20",
+            )
+            .now_or_never()
+            .expect("sql future is ready")
+            .expect("dataframe");
+        let plan = dataframe
+            .create_physical_plan()
+            .now_or_never()
+            .expect("plan future is ready")
+            .expect("physical plan");
+        let display = displayable(plan.as_ref()).indent(true).to_string();
+        let scan = qdrant_scan(&plan);
+
+        assert_eq!(scan.pushdown.filters.len(), 3);
+        assert!(!display.contains("FilterExec"), "{display}");
+    }
+
+    #[test]
     fn physical_plan_drops_filter_exec_for_vector_presence() {
         let provider = test_provider(Schema::new(vec![
             Field::new(ID_FIELD_NAME, DataType::Utf8, false),

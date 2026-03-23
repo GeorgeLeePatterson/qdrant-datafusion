@@ -10,9 +10,11 @@ use datafusion::logical_expr::{BinaryExpr, Expr, Operator};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr::expressions::{
     BinaryExpr as PhysicalBinaryExpr, Column as PhysicalColumn, InListExpr, IsNotNullExpr,
-    IsNullExpr, Literal as PhysicalLiteral,
+    IsNullExpr, Literal as PhysicalLiteral, NotExpr,
 };
-use datafusion::physical_expr::utils::split_disjunction;
+use datafusion::physical_expr::utils::{
+    split_conjunction as split_physical_conjunction, split_disjunction,
+};
 use prost_types::Timestamp;
 use qdrant_client::qdrant::{Condition, DatetimeRange, Filter, PointId, Range};
 
@@ -34,42 +36,136 @@ enum QdrantFilterValue {
 #[derive(Debug, Clone, PartialEq)]
 enum QdrantPredicate {
     IdIn(Vec<PointId>),
-    IdNotIn(Vec<PointId>),
     HasVector(String),
-    MissingVector(String),
     PayloadEq {
-        field: String,
-        value: QdrantFilterValue,
-    },
-    PayloadNotEq {
-        field: String,
+        field: PayloadFieldRef,
         value: QdrantFilterValue,
     },
     PayloadIn {
-        field:  String,
-        values: Vec<QdrantFilterValue>,
-    },
-    PayloadNotIn {
-        field:  String,
+        field:  PayloadFieldRef,
         values: Vec<QdrantFilterValue>,
     },
     PayloadRange {
-        field: String,
+        field: PayloadFieldRef,
         lower: Option<(QdrantFilterValue, bool)>,
         upper: Option<(QdrantFilterValue, bool)>,
     },
 }
 
+#[derive(Debug, Clone, PartialEq)]
+enum QdrantFilterExpr {
+    Predicate(QdrantPredicate),
+    And(Vec<Self>),
+    Or(Vec<Self>),
+    Not(Box<Self>),
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct QdrantFilters {
-    predicates: Vec<QdrantPredicate>,
+    exprs: Vec<QdrantFilterExpr>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PayloadFieldRef {
+    path: String,
+}
+
+impl PayloadFieldRef {
+    fn new(path: String) -> Option<Self> { (!path.is_empty()).then_some(Self { path }) }
+
+    fn key(&self) -> &str { &self.path }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum QdrantFieldRef {
     Id,
-    Payload(String),
+    Payload(PayloadFieldRef),
     Vector(String),
+}
+
+impl QdrantPredicate {
+    fn to_condition(&self) -> Condition {
+        match self {
+            Self::IdIn(ids) => Condition::has_id(ids.clone()),
+            Self::HasVector(name) => Condition::has_vector(name.clone()),
+            Self::PayloadEq { field, value } => eq_condition(field, value),
+            Self::PayloadIn { field, values } => in_condition(field, values),
+            Self::PayloadRange { field, lower, upper } => {
+                range_condition(field, lower.as_ref(), upper.as_ref())
+            }
+        }
+    }
+}
+
+impl QdrantFilterExpr {
+    fn and(exprs: impl IntoIterator<Item = Self>) -> Self {
+        let mut flat = vec![];
+        for expr in exprs {
+            match expr {
+                Self::And(exprs) => flat.extend(exprs),
+                expr => flat.push(expr),
+            }
+        }
+        match flat.len() {
+            1 => flat.pop().expect("single and child"),
+            _ => Self::And(flat),
+        }
+    }
+
+    fn or(exprs: impl IntoIterator<Item = Self>) -> Self {
+        let mut flat = vec![];
+        for expr in exprs {
+            match expr {
+                Self::Or(exprs) => flat.extend(exprs),
+                expr => flat.push(expr),
+            }
+        }
+        if let Some(predicate) = disjunction_predicate(&flat) {
+            return Self::Predicate(predicate);
+        }
+        match flat.len() {
+            1 => flat.pop().expect("single or child"),
+            _ => Self::Or(flat),
+        }
+    }
+
+    fn not(expr: Self) -> Self {
+        match expr {
+            Self::Not(expr) => *expr,
+            expr => Self::Not(Box::new(expr)),
+        }
+    }
+
+    fn leaf_count(&self) -> usize {
+        match self {
+            Self::Predicate(_) => 1,
+            Self::And(exprs) | Self::Or(exprs) => exprs.iter().map(Self::leaf_count).sum(),
+            Self::Not(expr) => expr.leaf_count(),
+        }
+    }
+
+    fn into_and_parts(self) -> Vec<Self> {
+        match self {
+            Self::And(exprs) => exprs,
+            expr => vec![expr],
+        }
+    }
+
+    fn to_filter(&self) -> Filter {
+        match self {
+            Self::Predicate(predicate) => Filter::must([predicate.to_condition()]),
+            Self::And(exprs) => Filter::must(exprs.iter().map(Self::to_condition)),
+            Self::Or(exprs) => Filter::should(exprs.iter().map(Self::to_condition)),
+            Self::Not(expr) => Filter { must_not: vec![expr.to_condition()], ..Default::default() },
+        }
+    }
+
+    fn to_condition(&self) -> Condition {
+        match self {
+            Self::Predicate(predicate) => predicate.to_condition(),
+            _ => self.to_filter().into(),
+        }
+    }
 }
 
 impl QdrantFilters {
@@ -78,14 +174,15 @@ impl QdrantFilters {
         payload_schema: &QdrantPayloadSchema,
         filters: &[Expr],
     ) -> DataFusionResult<Self> {
-        let mut predicates = vec![];
+        let mut pushdown = Self::default();
         for filter in filters {
-            let Some(exact) = exact_filter_predicates(base_schema, payload_schema, filter) else {
+            let filter = filter.clone().unalias_nested().data;
+            let Some(expr) = exact_expr(base_schema, payload_schema, &filter) else {
                 return exec_err!("unsupported pushed filter: {filter}");
             };
-            predicates.extend(exact);
+            pushdown.push(expr);
         }
-        Ok(Self { predicates })
+        Ok(pushdown)
     }
 
     pub(crate) fn supports_exact(
@@ -93,7 +190,8 @@ impl QdrantFilters {
         payload_schema: &QdrantPayloadSchema,
         filter: &Expr,
     ) -> bool {
-        exact_filter_predicates(base_schema, payload_schema, filter).is_some()
+        let filter = filter.clone().unalias_nested().data;
+        exact_expr(base_schema, payload_schema, &filter).is_some()
     }
 
     pub(crate) fn pushdown_physical(
@@ -106,377 +204,263 @@ impl QdrantFilters {
         let support = filters
             .iter()
             .map(|filter| {
-                let original_len = pushed.predicates.len();
-                let mut conjuncts = vec![filter];
-                while let Some(expr) = conjuncts.pop() {
-                    if let Some(binary) = expr.as_any().downcast_ref::<PhysicalBinaryExpr>()
-                        && *binary.op() == Operator::And
-                    {
-                        conjuncts.push(binary.right());
-                        conjuncts.push(binary.left());
-                        continue;
-                    }
-                    let Some(predicate) =
-                        exact_physical_predicate(base_schema, payload_schema, expr)
-                    else {
-                        pushed.predicates.truncate(original_len);
-                        return false;
-                    };
-                    pushed.extend([predicate]);
-                }
+                let Some(expr) = exact_physical_expr(base_schema, payload_schema, filter) else {
+                    return false;
+                };
+                pushed.push(expr);
                 true
             })
             .collect();
         (pushed, support)
     }
 
-    pub(crate) fn len(&self) -> usize { self.predicates.len() }
+    pub(crate) fn len(&self) -> usize { self.exprs.iter().map(QdrantFilterExpr::leaf_count).sum() }
 
-    pub(crate) fn is_empty(&self) -> bool { self.predicates.is_empty() }
-
-    fn extend(&mut self, predicates: impl IntoIterator<Item = QdrantPredicate>) {
-        for predicate in predicates {
-            if !self.predicates.contains(&predicate) {
-                self.predicates.push(predicate);
-            }
-        }
-    }
+    pub(crate) fn is_empty(&self) -> bool { self.exprs.is_empty() }
 
     pub(crate) fn to_filter(&self) -> Option<Filter> {
-        if self.predicates.is_empty() {
-            return None;
+        match self.exprs.as_slice() {
+            [] => None,
+            [expr] => Some(expr.to_filter()),
+            exprs => Some(Filter::must(exprs.iter().map(QdrantFilterExpr::to_condition))),
         }
-        let mut filter = Filter::default();
-        for predicate in &self.predicates {
-            match predicate {
-                QdrantPredicate::IdIn(ids) => filter.must.push(Condition::has_id(ids.clone())),
-                QdrantPredicate::IdNotIn(ids) => {
-                    filter.must_not.push(Condition::has_id(ids.clone()));
-                }
-                QdrantPredicate::HasVector(name) => {
-                    filter.must.push(Condition::has_vector(name.clone()));
-                }
-                QdrantPredicate::MissingVector(name) => {
-                    filter.must_not.push(Condition::has_vector(name.clone()));
-                }
-                QdrantPredicate::PayloadEq { field, value } => {
-                    filter.must.push(eq_condition(field, value));
-                }
-                QdrantPredicate::PayloadNotEq { field, value } => {
-                    filter.must_not.push(eq_condition(field, value));
-                }
-                QdrantPredicate::PayloadIn { field, values } => {
-                    filter.must.push(in_condition(field, values));
-                }
-                QdrantPredicate::PayloadNotIn { field, values } => {
-                    filter.must_not.push(in_condition(field, values));
-                }
-                QdrantPredicate::PayloadRange { field, lower, upper } => {
-                    filter.must.push(range_condition(field, lower.as_ref(), upper.as_ref()));
-                }
+    }
+
+    fn push(&mut self, expr: QdrantFilterExpr) {
+        for expr in expr.into_and_parts() {
+            if !self.exprs.contains(&expr) {
+                self.exprs.push(expr);
             }
         }
-        Some(filter)
     }
 }
 
-fn exact_filter_predicates(
-    base_schema: &SchemaRef,
-    payload_schema: &QdrantPayloadSchema,
-    filter: &Expr,
-) -> Option<Vec<QdrantPredicate>> {
-    let filter = filter.clone().unalias_nested().data;
-    split_conjunction(&filter)
-        .into_iter()
-        .map(|expr| exact_predicate(base_schema, payload_schema, expr))
-        .collect()
-}
-
-fn exact_predicate(
+fn exact_expr(
     base_schema: &SchemaRef,
     payload_schema: &QdrantPayloadSchema,
     expr: &Expr,
-) -> Option<QdrantPredicate> {
+) -> Option<QdrantFilterExpr> {
     match expr {
-        Expr::BinaryExpr(BinaryExpr { left, op, right }) => {
-            if *op == Operator::Or {
-                return exact_or_predicate(base_schema, payload_schema, expr);
+        Expr::Alias(alias) => exact_expr(base_schema, payload_schema, &alias.expr),
+        Expr::Not(expr) => {
+            Some(QdrantFilterExpr::not(exact_expr(base_schema, payload_schema, expr)?))
+        }
+        Expr::BinaryExpr(BinaryExpr { op: Operator::And, .. }) => Some(QdrantFilterExpr::and(
+            split_conjunction(expr)
+                .into_iter()
+                .map(|expr| exact_expr(base_schema, payload_schema, expr))
+                .collect::<Option<Vec<_>>>()?,
+        )),
+        Expr::BinaryExpr(BinaryExpr { op: Operator::Or, .. }) => Some(QdrantFilterExpr::or(
+            split_binary(expr, Operator::Or)
+                .into_iter()
+                .map(|expr| exact_expr(base_schema, payload_schema, expr))
+                .collect::<Option<Vec<_>>>()?,
+        )),
+        Expr::BinaryExpr(BinaryExpr { left, op, right }) => filter_expr_from_refs(
+            payload_schema,
+            field_ref(base_schema, left),
+            field_ref(base_schema, right),
+            *op,
+            scalar_literal(left),
+            scalar_literal(right),
+        ),
+        Expr::InList(InList { expr, list, negated }) => in_list_expr_from_refs(
+            payload_schema,
+            field_ref(base_schema, expr),
+            list.iter().map(scalar_literal).collect::<Option<Vec<_>>>(),
+            *negated,
+        ),
+        Expr::IsNull(expr) => match field_ref(base_schema, expr)? {
+            QdrantFieldRef::Vector(name) => Some(QdrantFilterExpr::not(
+                QdrantFilterExpr::Predicate(QdrantPredicate::HasVector(name)),
+            )),
+            _ => None,
+        },
+        Expr::IsNotNull(expr) => match field_ref(base_schema, expr)? {
+            QdrantFieldRef::Vector(name) => {
+                Some(QdrantFilterExpr::Predicate(QdrantPredicate::HasVector(name)))
             }
-            exact_binary_predicate(base_schema, payload_schema, left, *op, right)
-        }
-        Expr::InList(InList { expr, list, negated }) => {
-            exact_in_list_predicate(base_schema, payload_schema, expr, list, *negated)
-        }
-        Expr::IsNull(expr) => {
-            let QdrantFieldRef::Vector(name) = field_ref(base_schema, expr)? else {
-                return None;
-            };
-            Some(QdrantPredicate::MissingVector(name))
-        }
-        Expr::IsNotNull(expr) => {
-            let QdrantFieldRef::Vector(name) = field_ref(base_schema, expr)? else {
-                return None;
-            };
-            Some(QdrantPredicate::HasVector(name))
-        }
-        Expr::Between(Between { expr, negated, low, high }) if !negated => {
+            _ => None,
+        },
+        Expr::Between(Between { expr, negated, low, high }) => {
             let QdrantFieldRef::Payload(field) = field_ref(base_schema, expr)? else {
                 return None;
             };
-            let field_type = payload_schema.field(&field)?;
+            let field_type = payload_schema.field(field.key())?;
             let low = payload_scalar(field_type, scalar_literal(low)?)?;
             let high = payload_scalar(field_type, scalar_literal(high)?)?;
-            range_predicate(field, field_type, Some((low, true)), Some((high, true)))
+            let range = range_predicate(field, field_type, Some((low, true)), Some((high, true)))?;
+            if *negated {
+                Some(QdrantFilterExpr::not(QdrantFilterExpr::Predicate(range)))
+            } else {
+                Some(QdrantFilterExpr::Predicate(range))
+            }
         }
         _ => None,
     }
 }
 
-fn exact_physical_predicate(
+fn exact_physical_expr(
     base_schema: &SchemaRef,
     payload_schema: &QdrantPayloadSchema,
     expr: &Arc<dyn PhysicalExpr>,
-) -> Option<QdrantPredicate> {
-    if let Some(binary) = expr.as_any().downcast_ref::<PhysicalBinaryExpr>() {
-        if *binary.op() == Operator::Or {
-            return exact_physical_or_predicate(base_schema, payload_schema, expr);
-        }
-        return exact_physical_binary_predicate(
+) -> Option<QdrantFilterExpr> {
+    if let Some(expr) = expr.as_any().downcast_ref::<NotExpr>() {
+        return Some(QdrantFilterExpr::not(exact_physical_expr(
             base_schema,
             payload_schema,
-            binary.left(),
+            expr.arg(),
+        )?));
+    }
+    if let Some(binary) = expr.as_any().downcast_ref::<PhysicalBinaryExpr>() {
+        if *binary.op() == Operator::And {
+            return Some(QdrantFilterExpr::and(
+                split_physical_conjunction(expr)
+                    .into_iter()
+                    .map(|expr| exact_physical_expr(base_schema, payload_schema, expr))
+                    .collect::<Option<Vec<_>>>()?,
+            ));
+        }
+        if *binary.op() == Operator::Or {
+            return Some(QdrantFilterExpr::or(
+                split_disjunction(expr)
+                    .into_iter()
+                    .map(|expr| exact_physical_expr(base_schema, payload_schema, expr))
+                    .collect::<Option<Vec<_>>>()?,
+            ));
+        }
+        return filter_expr_from_refs(
+            payload_schema,
+            physical_field_ref(base_schema, binary.left()),
+            physical_field_ref(base_schema, binary.right()),
             *binary.op(),
-            binary.right(),
+            physical_scalar_literal(binary.left()),
+            physical_scalar_literal(binary.right()),
         );
     }
     if let Some(in_list) = expr.as_any().downcast_ref::<InListExpr>() {
-        return exact_physical_in_list_predicate(
-            base_schema,
+        return in_list_expr_from_refs(
             payload_schema,
-            in_list.expr(),
-            in_list.list(),
+            physical_field_ref(base_schema, in_list.expr()),
+            in_list.list().iter().map(physical_scalar_literal).collect::<Option<Vec<_>>>(),
             in_list.negated(),
         );
     }
     if let Some(expr) = expr.as_any().downcast_ref::<IsNullExpr>() {
-        let QdrantFieldRef::Vector(name) = physical_field_ref(base_schema, expr.arg())? else {
-            return None;
+        return match physical_field_ref(base_schema, expr.arg())? {
+            QdrantFieldRef::Vector(name) => Some(QdrantFilterExpr::not(
+                QdrantFilterExpr::Predicate(QdrantPredicate::HasVector(name)),
+            )),
+            _ => None,
         };
-        return Some(QdrantPredicate::MissingVector(name));
     }
     if let Some(expr) = expr.as_any().downcast_ref::<IsNotNullExpr>() {
-        let QdrantFieldRef::Vector(name) = physical_field_ref(base_schema, expr.arg())? else {
-            return None;
+        return match physical_field_ref(base_schema, expr.arg())? {
+            QdrantFieldRef::Vector(name) => {
+                Some(QdrantFilterExpr::Predicate(QdrantPredicate::HasVector(name)))
+            }
+            _ => None,
         };
-        return Some(QdrantPredicate::HasVector(name));
     }
     None
 }
 
-fn exact_or_predicate(
-    base_schema: &SchemaRef,
+fn filter_expr_from_refs(
     payload_schema: &QdrantPayloadSchema,
-    expr: &Expr,
-) -> Option<QdrantPredicate> {
-    let disjuncts = split_binary(expr, Operator::Or);
-    let (field, value) = equality_leaf(base_schema, disjuncts.first().copied()?)?;
-    let mut values = vec![value];
-    for disjunct in disjuncts.into_iter().skip(1) {
-        let (next_field, next_value) = equality_leaf(base_schema, disjunct)?;
-        if next_field != field {
-            return None;
-        }
-        values.push(next_value);
-    }
-    in_list_predicate(payload_schema, field, values, false)
-}
-
-fn exact_physical_or_predicate(
-    base_schema: &SchemaRef,
-    payload_schema: &QdrantPayloadSchema,
-    expr: &Arc<dyn PhysicalExpr>,
-) -> Option<QdrantPredicate> {
-    let disjuncts = split_disjunction(expr);
-    let (field, value) = physical_equality_leaf(base_schema, disjuncts.first().copied()?)?;
-    let mut values = vec![value];
-    for disjunct in disjuncts.into_iter().skip(1) {
-        let (next_field, next_value) = physical_equality_leaf(base_schema, disjunct)?;
-        if next_field != field {
-            return None;
-        }
-        values.push(next_value);
-    }
-    in_list_predicate(payload_schema, field, values, false)
-}
-
-fn exact_binary_predicate(
-    base_schema: &SchemaRef,
-    payload_schema: &QdrantPayloadSchema,
-    left: &Expr,
+    left_field: Option<QdrantFieldRef>,
+    right_field: Option<QdrantFieldRef>,
     op: Operator,
-    right: &Expr,
-) -> Option<QdrantPredicate> {
-    let left_field = field_ref(base_schema, left);
-    let right_field = field_ref(base_schema, right);
+    left_literal: Option<&ScalarValue>,
+    right_literal: Option<&ScalarValue>,
+) -> Option<QdrantFilterExpr> {
     match (left_field, right_field) {
-        (Some(field), None) => {
-            predicate_from_field_op(payload_schema, field, op, scalar_literal(right)?)
+        (Some(field), None) => filter_expr(payload_schema, field, op, right_literal?),
+        (None, Some(field)) => {
+            filter_expr(payload_schema, field, reverse_operator(op)?, left_literal?)
         }
-        (None, Some(field)) => predicate_from_field_op(
-            payload_schema,
-            field,
-            reverse_operator(op)?,
-            scalar_literal(left)?,
+        _ => None,
+    }
+}
+
+fn in_list_expr_from_refs(
+    payload_schema: &QdrantPayloadSchema,
+    field: Option<QdrantFieldRef>,
+    values: Option<Vec<&ScalarValue>>,
+    negated: bool,
+) -> Option<QdrantFilterExpr> {
+    let values = values?;
+    if values.is_empty() {
+        return None;
+    }
+    let predicate = match field? {
+        QdrantFieldRef::Id => QdrantPredicate::IdIn(
+            values.into_iter().map(point_id_scalar).collect::<Option<Vec<_>>>()?,
         ),
-        _ => None,
-    }
-}
-
-fn exact_physical_binary_predicate(
-    base_schema: &SchemaRef,
-    payload_schema: &QdrantPayloadSchema,
-    left: &Arc<dyn PhysicalExpr>,
-    op: Operator,
-    right: &Arc<dyn PhysicalExpr>,
-) -> Option<QdrantPredicate> {
-    let left_field = physical_field_ref(base_schema, left);
-    let right_field = physical_field_ref(base_schema, right);
-    match (left_field, right_field) {
-        (Some(field), None) => {
-            predicate_from_field_op(payload_schema, field, op, physical_scalar_literal(right)?)
-        }
-        (None, Some(field)) => predicate_from_field_op(
-            payload_schema,
-            field,
-            reverse_operator(op)?,
-            physical_scalar_literal(left)?,
-        ),
-        _ => None,
-    }
-}
-
-fn exact_in_list_predicate(
-    base_schema: &SchemaRef,
-    payload_schema: &QdrantPayloadSchema,
-    expr: &Expr,
-    list: &[Expr],
-    negated: bool,
-) -> Option<QdrantPredicate> {
-    if list.is_empty() {
-        return None;
-    }
-    in_list_predicate(
-        payload_schema,
-        field_ref(base_schema, expr)?,
-        list.iter().map(scalar_literal).collect::<Option<Vec<_>>>()?,
-        negated,
-    )
-}
-
-fn exact_physical_in_list_predicate(
-    base_schema: &SchemaRef,
-    payload_schema: &QdrantPayloadSchema,
-    expr: &Arc<dyn PhysicalExpr>,
-    list: &[Arc<dyn PhysicalExpr>],
-    negated: bool,
-) -> Option<QdrantPredicate> {
-    if list.is_empty() {
-        return None;
-    }
-    in_list_predicate(
-        payload_schema,
-        physical_field_ref(base_schema, expr)?,
-        list.iter().map(physical_scalar_literal).collect::<Option<Vec<_>>>()?,
-        negated,
-    )
-}
-
-fn equality_leaf<'a>(
-    base_schema: &SchemaRef,
-    expr: &'a Expr,
-) -> Option<(QdrantFieldRef, &'a ScalarValue)> {
-    let Expr::BinaryExpr(BinaryExpr { left, op: Operator::Eq, right }) = expr else {
-        return None;
-    };
-    let left_field = field_ref(base_schema, left);
-    let right_field = field_ref(base_schema, right);
-    match (left_field, right_field) {
-        (Some(field), None) => Some((field, scalar_literal(right)?)),
-        (None, Some(field)) => Some((field, scalar_literal(left)?)),
-        _ => None,
-    }
-}
-
-fn physical_equality_leaf<'a>(
-    base_schema: &SchemaRef,
-    expr: &'a Arc<dyn PhysicalExpr>,
-) -> Option<(QdrantFieldRef, &'a ScalarValue)> {
-    let binary = expr.as_any().downcast_ref::<PhysicalBinaryExpr>()?;
-    if *binary.op() != Operator::Eq {
-        return None;
-    }
-    let left_field = physical_field_ref(base_schema, binary.left());
-    let right_field = physical_field_ref(base_schema, binary.right());
-    match (left_field, right_field) {
-        (Some(field), None) => Some((field, physical_scalar_literal(binary.right())?)),
-        (None, Some(field)) => Some((field, physical_scalar_literal(binary.left())?)),
-        _ => None,
-    }
-}
-
-fn in_list_predicate(
-    payload_schema: &QdrantPayloadSchema,
-    field: QdrantFieldRef,
-    values: Vec<&ScalarValue>,
-    negated: bool,
-) -> Option<QdrantPredicate> {
-    match field {
-        QdrantFieldRef::Id => {
-            let ids = values.into_iter().map(point_id_scalar).collect::<Option<Vec<_>>>()?;
-            if negated {
-                Some(QdrantPredicate::IdNotIn(ids))
-            } else {
-                Some(QdrantPredicate::IdIn(ids))
-            }
-        }
         QdrantFieldRef::Payload(field) => {
-            let field_type = payload_schema.field(&field)?;
+            let field_type = payload_schema.field(field.key())?;
             let values = values
                 .into_iter()
                 .map(|value| payload_scalar(field_type, value))
                 .collect::<Option<Vec<_>>>()?;
-            if negated {
-                Some(QdrantPredicate::PayloadNotIn { field, values })
-            } else {
-                Some(QdrantPredicate::PayloadIn { field, values })
-            }
+            QdrantPredicate::PayloadIn { field, values }
         }
-        QdrantFieldRef::Vector(_) => None,
-    }
+        QdrantFieldRef::Vector(_) => return None,
+    };
+    let expr = QdrantFilterExpr::Predicate(predicate);
+    Some(if negated { QdrantFilterExpr::not(expr) } else { expr })
 }
 
-fn predicate_from_field_op(
+fn filter_expr(
     payload_schema: &QdrantPayloadSchema,
     field: QdrantFieldRef,
     op: Operator,
     literal: &ScalarValue,
-) -> Option<QdrantPredicate> {
+) -> Option<QdrantFilterExpr> {
     match field {
-        QdrantFieldRef::Id => match op {
-            Operator::Eq => Some(QdrantPredicate::IdIn(vec![point_id_scalar(literal)?])),
-            Operator::NotEq => Some(QdrantPredicate::IdNotIn(vec![point_id_scalar(literal)?])),
-            _ => None,
-        },
+        QdrantFieldRef::Id => {
+            let expr =
+                QdrantFilterExpr::Predicate(QdrantPredicate::IdIn(vec![point_id_scalar(literal)?]));
+            match op {
+                Operator::Eq => Some(expr),
+                Operator::NotEq => Some(QdrantFilterExpr::not(expr)),
+                _ => None,
+            }
+        }
         QdrantFieldRef::Payload(field) => {
-            let field_type = payload_schema.field(&field)?;
+            let field_type = payload_schema.field(field.key())?;
             let value = payload_scalar(field_type, literal)?;
             match op {
-                Operator::Eq => Some(QdrantPredicate::PayloadEq { field, value }),
-                Operator::NotEq => Some(QdrantPredicate::PayloadNotEq { field, value }),
-                Operator::Lt => range_predicate(field, field_type, None, Some((value, false))),
-                Operator::LtEq => range_predicate(field, field_type, None, Some((value, true))),
-                Operator::Gt => range_predicate(field, field_type, Some((value, false)), None),
-                Operator::GtEq => range_predicate(field, field_type, Some((value, true)), None),
+                Operator::Eq => {
+                    Some(QdrantFilterExpr::Predicate(QdrantPredicate::PayloadEq { field, value }))
+                }
+                Operator::NotEq => Some(QdrantFilterExpr::not(QdrantFilterExpr::Predicate(
+                    QdrantPredicate::PayloadEq { field, value },
+                ))),
+                Operator::Lt => Some(QdrantFilterExpr::Predicate(range_predicate(
+                    field,
+                    field_type,
+                    None,
+                    Some((value, false)),
+                )?)),
+                Operator::LtEq => Some(QdrantFilterExpr::Predicate(range_predicate(
+                    field,
+                    field_type,
+                    None,
+                    Some((value, true)),
+                )?)),
+                Operator::Gt => Some(QdrantFilterExpr::Predicate(range_predicate(
+                    field,
+                    field_type,
+                    Some((value, false)),
+                    None,
+                )?)),
+                Operator::GtEq => Some(QdrantFilterExpr::Predicate(range_predicate(
+                    field,
+                    field_type,
+                    Some((value, true)),
+                    None,
+                )?)),
                 _ => None,
             }
         }
@@ -485,7 +469,7 @@ fn predicate_from_field_op(
 }
 
 fn range_predicate(
-    field: String,
+    field: PayloadFieldRef,
     field_type: QdrantPayloadField,
     lower: Option<(QdrantFilterValue, bool)>,
     upper: Option<(QdrantFilterValue, bool)>,
@@ -500,22 +484,46 @@ fn range_predicate(
     }
 }
 
+fn disjunction_predicate(exprs: &[QdrantFilterExpr]) -> Option<QdrantPredicate> {
+    match exprs {
+        [QdrantFilterExpr::Predicate(QdrantPredicate::IdIn(_)), ..] => {
+            let mut ids = vec![];
+            for expr in exprs {
+                let QdrantFilterExpr::Predicate(QdrantPredicate::IdIn(next_ids)) = expr else {
+                    return None;
+                };
+                if next_ids.len() != 1 {
+                    return None;
+                }
+                ids.push(next_ids[0].clone());
+            }
+            Some(QdrantPredicate::IdIn(ids))
+        }
+        [QdrantFilterExpr::Predicate(QdrantPredicate::PayloadEq { field, .. }), ..] => {
+            let field = field.clone();
+            let mut values = vec![];
+            for expr in exprs {
+                let QdrantFilterExpr::Predicate(QdrantPredicate::PayloadEq {
+                    field: next_field,
+                    value,
+                }) = expr
+                else {
+                    return None;
+                };
+                if *next_field != field {
+                    return None;
+                }
+                values.push(value.clone());
+            }
+            Some(QdrantPredicate::PayloadIn { field, values })
+        }
+        _ => None,
+    }
+}
+
 fn field_ref(base_schema: &SchemaRef, expr: &Expr) -> Option<QdrantFieldRef> {
     match expr {
-        Expr::Column(column) if column.name == ID_FIELD_NAME => Some(QdrantFieldRef::Id),
-        Expr::Column(column) => {
-            let field = base_schema.field_with_name(&column.name).ok()?;
-            if column.name == UNNAMED_VECTOR_FIELD_NAME {
-                return None;
-            }
-            if dense_vector_width(field).is_some()
-                || is_multi_vector_field(field)
-                || is_sparse_vector_field(field)
-            {
-                return Some(QdrantFieldRef::Vector(column.name.clone()));
-            }
-            None
-        }
+        Expr::Column(column) => column_field_ref(base_schema, &column.name),
         Expr::BinaryExpr(BinaryExpr { left, op: Operator::Colon, right }) => {
             let Expr::Column(column) = left.as_ref() else {
                 return None;
@@ -523,7 +531,9 @@ fn field_ref(base_schema: &SchemaRef, expr: &Expr) -> Option<QdrantFieldRef> {
             if column.name != PAYLOAD_FIELD_NAME {
                 return None;
             }
-            Some(QdrantFieldRef::Payload(string_scalar(scalar_literal(right)?)?))
+            Some(QdrantFieldRef::Payload(PayloadFieldRef::new(string_scalar(scalar_literal(
+                right,
+            )?)?)?))
         }
         Expr::Alias(alias) => field_ref(base_schema, &alias.expr),
         _ => None,
@@ -535,20 +545,7 @@ fn physical_field_ref(
     expr: &Arc<dyn PhysicalExpr>,
 ) -> Option<QdrantFieldRef> {
     if let Some(column) = expr.as_any().downcast_ref::<PhysicalColumn>() {
-        if column.name() == ID_FIELD_NAME {
-            return Some(QdrantFieldRef::Id);
-        }
-        let field = base_schema.field_with_name(column.name()).ok()?;
-        if column.name() == UNNAMED_VECTOR_FIELD_NAME {
-            return None;
-        }
-        if dense_vector_width(field).is_some()
-            || is_multi_vector_field(field)
-            || is_sparse_vector_field(field)
-        {
-            return Some(QdrantFieldRef::Vector(column.name().to_owned()));
-        }
-        return None;
+        return column_field_ref(base_schema, column.name());
     }
     let binary = expr.as_any().downcast_ref::<PhysicalBinaryExpr>()?;
     if *binary.op() != Operator::Colon {
@@ -558,7 +555,26 @@ fn physical_field_ref(
     if column.name() != PAYLOAD_FIELD_NAME {
         return None;
     }
-    Some(QdrantFieldRef::Payload(string_scalar(physical_scalar_literal(binary.right())?)?))
+    Some(QdrantFieldRef::Payload(PayloadFieldRef::new(string_scalar(physical_scalar_literal(
+        binary.right(),
+    )?)?)?))
+}
+
+fn column_field_ref(base_schema: &SchemaRef, name: &str) -> Option<QdrantFieldRef> {
+    if name == ID_FIELD_NAME {
+        return Some(QdrantFieldRef::Id);
+    }
+    let field = base_schema.field_with_name(name).ok()?;
+    if name == UNNAMED_VECTOR_FIELD_NAME {
+        return None;
+    }
+    if dense_vector_width(field).is_some()
+        || is_multi_vector_field(field)
+        || is_sparse_vector_field(field)
+    {
+        return Some(QdrantFieldRef::Vector(name.to_owned()));
+    }
+    None
 }
 
 fn reverse_operator(op: Operator) -> Option<Operator> {
@@ -650,7 +666,7 @@ fn float_scalar(value: &ScalarValue) -> Option<f64> {
         ScalarValue::Float64(Some(value)) => Some(*value),
         ScalarValue::Float32(Some(value)) => Some(f64::from(*value)),
         ScalarValue::Utf8(Some(value)) | ScalarValue::LargeUtf8(Some(value)) => value.parse().ok(),
-        _ => integer_scalar(value).and_then(integer_to_f64),
+        _ => integer_scalar(value).map(integer_to_f64),
     }
 }
 
@@ -718,29 +734,31 @@ fn timestamp_from_string(value: &str) -> Option<Timestamp> {
     Some(Timestamp { seconds: value.and_utc().timestamp(), nanos: 0 })
 }
 
-fn eq_condition(field: &str, value: &QdrantFilterValue) -> Condition {
+fn eq_condition(field: &PayloadFieldRef, value: &QdrantFilterValue) -> Condition {
     match value {
-        QdrantFilterValue::String(value) => Condition::matches(field, value.clone()),
-        QdrantFilterValue::Integer(value) => Condition::matches(field, *value),
-        QdrantFilterValue::Bool(value) => Condition::matches(field, *value),
-        QdrantFilterValue::Float(value) => Condition::range(field, Range {
+        QdrantFilterValue::String(value) => Condition::matches(field.key(), value.clone()),
+        QdrantFilterValue::Integer(value) => Condition::matches(field.key(), *value),
+        QdrantFilterValue::Bool(value) => Condition::matches(field.key(), *value),
+        QdrantFilterValue::Float(value) => Condition::range(field.key(), Range {
             gte: Some(*value),
             lte: Some(*value),
             ..Default::default()
         }),
-        QdrantFilterValue::Datetime(value) => Condition::datetime_range(field, DatetimeRange {
-            gte: Some(*value),
-            lte: Some(*value),
-            ..Default::default()
-        }),
+        QdrantFilterValue::Datetime(value) => {
+            Condition::datetime_range(field.key(), DatetimeRange {
+                gte: Some(*value),
+                lte: Some(*value),
+                ..Default::default()
+            })
+        }
     }
 }
 
-fn in_condition(field: &str, values: &[QdrantFilterValue]) -> Condition {
+fn in_condition(field: &PayloadFieldRef, values: &[QdrantFilterValue]) -> Condition {
     match values {
         [] => unreachable!("empty IN list is not admitted"),
         [QdrantFilterValue::String(_), ..] => Condition::matches(
-            field,
+            field.key(),
             values
                 .iter()
                 .map(|value| match value {
@@ -750,7 +768,7 @@ fn in_condition(field: &str, values: &[QdrantFilterValue]) -> Condition {
                 .collect::<Vec<_>>(),
         ),
         [QdrantFilterValue::Integer(_), ..] => Condition::matches(
-            field,
+            field.key(),
             values
                 .iter()
                 .map(|value| match value {
@@ -764,7 +782,7 @@ fn in_condition(field: &str, values: &[QdrantFilterValue]) -> Condition {
 }
 
 fn range_condition(
-    field: &str,
+    field: &PayloadFieldRef,
     lower: Option<&(QdrantFilterValue, bool)>,
     upper: Option<&(QdrantFilterValue, bool)>,
 ) -> Condition {
@@ -784,7 +802,7 @@ fn range_condition(
                 range.lt = Some(*value);
             }
         }
-        return Condition::datetime_range(field, range);
+        return Condition::datetime_range(field.key(), range);
     }
     let mut range = Range::default();
     if let Some((value, inclusive)) = lower {
@@ -807,14 +825,15 @@ fn range_condition(
             range.lt = Some(value);
         }
     }
-    Condition::range(field, range)
+    Condition::range(field.key(), range)
 }
 
-fn integer_to_f64(value: i64) -> Option<f64> { value.to_string().parse().ok() }
+#[allow(clippy::cast_precision_loss)]
+fn integer_to_f64(value: i64) -> f64 { value as f64 }
 
 fn range_bound(value: &QdrantFilterValue) -> Option<f64> {
     match value {
-        QdrantFilterValue::Integer(value) => integer_to_f64(*value),
+        QdrantFilterValue::Integer(value) => Some(integer_to_f64(*value)),
         QdrantFilterValue::Float(value) => Some(*value),
         _ => None,
     }
@@ -831,6 +850,7 @@ mod tests {
     use datafusion::physical_expr::PhysicalExpr;
     use datafusion::physical_expr::expressions::{
         BinaryExpr as PhysicalBinaryExpr, Column as PhysicalColumn, Literal as PhysicalLiteral,
+        NotExpr,
     };
     use qdrant_client::qdrant::{
         IntegerIndexParams, KeywordIndexParams, PayloadSchemaInfo, PayloadSchemaType,
@@ -840,6 +860,29 @@ mod tests {
     use super::*;
 
     fn schema(fields: Vec<Field>) -> SchemaRef { Arc::new(Schema::new(fields)) }
+
+    fn payload_schema() -> QdrantPayloadSchema {
+        QdrantPayloadSchema::from(HashMap::from([
+            ("rank".to_owned(), PayloadSchemaInfo {
+                data_type: PayloadSchemaType::Integer as i32,
+                params:    Some(qdrant_client::qdrant::PayloadIndexParams {
+                    index_params: Some(payload_index_params::IndexParams::IntegerIndexParams(
+                        IntegerIndexParams { range: Some(true), ..Default::default() },
+                    )),
+                }),
+                points:    None,
+            }),
+            ("tag".to_owned(), PayloadSchemaInfo {
+                data_type: PayloadSchemaType::Keyword as i32,
+                params:    Some(qdrant_client::qdrant::PayloadIndexParams {
+                    index_params: Some(payload_index_params::IndexParams::KeywordIndexParams(
+                        KeywordIndexParams::default(),
+                    )),
+                }),
+                points:    None,
+            }),
+        ]))
+    }
 
     fn payload_path(path: &str) -> Expr {
         Expr::BinaryExpr(BinaryExpr::new(
@@ -863,26 +906,7 @@ mod tests {
             Field::new(ID_FIELD_NAME, DataType::Utf8, false),
             Field::new(PAYLOAD_FIELD_NAME, DataType::Utf8, true),
         ]);
-        let payload_schema = QdrantPayloadSchema::from(HashMap::from([
-            ("rank".to_owned(), PayloadSchemaInfo {
-                data_type: PayloadSchemaType::Integer as i32,
-                params:    Some(qdrant_client::qdrant::PayloadIndexParams {
-                    index_params: Some(payload_index_params::IndexParams::IntegerIndexParams(
-                        IntegerIndexParams { range: Some(true), ..Default::default() },
-                    )),
-                }),
-                points:    None,
-            }),
-            ("tag".to_owned(), PayloadSchemaInfo {
-                data_type: PayloadSchemaType::Keyword as i32,
-                params:    Some(qdrant_client::qdrant::PayloadIndexParams {
-                    index_params: Some(payload_index_params::IndexParams::KeywordIndexParams(
-                        KeywordIndexParams::default(),
-                    )),
-                }),
-                points:    None,
-            }),
-        ]));
+        let payload_schema = payload_schema();
 
         assert!(QdrantFilters::supports_exact(
             &schema,
@@ -908,6 +932,15 @@ mod tests {
         assert!(QdrantFilters::supports_exact(
             &schema,
             &payload_schema,
+            &Expr::Not(Box::new(Expr::BinaryExpr(BinaryExpr::new(
+                Box::new(payload_path("tag")),
+                Operator::Eq,
+                Box::new(Expr::Literal(ScalarValue::Utf8(Some("a".to_owned())), None)),
+            )))),
+        ));
+        assert!(QdrantFilters::supports_exact(
+            &schema,
+            &payload_schema,
             &Expr::BinaryExpr(BinaryExpr::new(
                 Box::new(Expr::BinaryExpr(BinaryExpr::new(
                     Box::new(payload_path("tag")),
@@ -916,9 +949,9 @@ mod tests {
                 ))),
                 Operator::Or,
                 Box::new(Expr::BinaryExpr(BinaryExpr::new(
-                    Box::new(payload_path("tag")),
+                    Box::new(payload_path("rank")),
                     Operator::Eq,
-                    Box::new(Expr::Literal(ScalarValue::Utf8(Some("b".to_owned())), None)),
+                    Box::new(Expr::Literal(ScalarValue::Int64(Some(10)), None)),
                 ))),
             )),
         ));
@@ -957,6 +990,13 @@ mod tests {
             &QdrantPayloadSchema::default(),
             &Expr::IsNull(Box::new(Expr::Column(Column::from_name("image")))),
         ));
+        assert!(QdrantFilters::supports_exact(
+            &schema,
+            &QdrantPayloadSchema::default(),
+            &Expr::Not(Box::new(Expr::IsNotNull(Box::new(Expr::Column(Column::from_name(
+                "image",
+            )))))),
+        ));
         assert!(!QdrantFilters::supports_exact(
             &schema,
             &QdrantPayloadSchema::default(),
@@ -965,89 +1005,54 @@ mod tests {
     }
 
     #[test]
-    fn pushdown_physical_supports_payload_scalar_filters() {
+    fn pushdown_physical_supports_boolean_filters() {
         let schema = schema(vec![
             Field::new(ID_FIELD_NAME, DataType::Utf8, false),
             Field::new(PAYLOAD_FIELD_NAME, DataType::Utf8, true),
         ]);
-        let payload_schema =
-            QdrantPayloadSchema::from(HashMap::from([("rank".to_owned(), PayloadSchemaInfo {
-                data_type: PayloadSchemaType::Integer as i32,
-                params:    Some(qdrant_client::qdrant::PayloadIndexParams {
-                    index_params: Some(payload_index_params::IndexParams::IntegerIndexParams(
-                        IntegerIndexParams { range: Some(true), ..Default::default() },
-                    )),
-                }),
-                points:    None,
-            })]));
-        let filter = Arc::new(PhysicalBinaryExpr::new(
+        let payload_schema = payload_schema();
+        let left = Arc::new(PhysicalBinaryExpr::new(
             physical_payload_path("rank"),
             Operator::GtEq,
             Arc::new(PhysicalLiteral::new(ScalarValue::Utf8(Some("10".to_owned())))),
-        ));
-
-        let (filters, support) =
-            QdrantFilters::default().pushdown_physical(&schema, &payload_schema, &[filter]);
-
-        assert_eq!(support, vec![true]);
-        assert_eq!(filters.len(), 1);
-    }
-
-    #[test]
-    fn pushdown_physical_normalizes_in_list_or_chain() {
-        let schema = schema(vec![Field::new(ID_FIELD_NAME, DataType::Utf8, false)]);
-        let left = Arc::new(PhysicalBinaryExpr::new(
-            Arc::new(PhysicalColumn::new(ID_FIELD_NAME, 0)),
-            Operator::Eq,
-            Arc::new(PhysicalLiteral::new(ScalarValue::Utf8(Some("1".to_owned())))),
-        ));
-        let right = Arc::new(PhysicalBinaryExpr::new(
-            Arc::new(PhysicalColumn::new(ID_FIELD_NAME, 0)),
-            Operator::Eq,
-            Arc::new(PhysicalLiteral::new(ScalarValue::Utf8(Some("2".to_owned())))),
-        ));
-        let filter = Arc::new(PhysicalBinaryExpr::new(left, Operator::Or, right));
-
-        let (filters, support) = QdrantFilters::default().pushdown_physical(
-            &schema,
-            &QdrantPayloadSchema::default(),
-            &[filter],
-        );
-
-        assert_eq!(support, vec![true]);
-        assert_eq!(filters.len(), 1);
-    }
-
-    #[test]
-    fn pushdown_physical_rejects_mixed_field_or_chain() {
-        let schema = schema(vec![
-            Field::new(ID_FIELD_NAME, DataType::Utf8, false),
-            Field::new(PAYLOAD_FIELD_NAME, DataType::Utf8, true),
-        ]);
-        let payload_schema =
-            QdrantPayloadSchema::from(HashMap::from([("tag".to_owned(), PayloadSchemaInfo {
-                data_type: PayloadSchemaType::Keyword as i32,
-                params:    Some(qdrant_client::qdrant::PayloadIndexParams {
-                    index_params: Some(payload_index_params::IndexParams::KeywordIndexParams(
-                        KeywordIndexParams::default(),
-                    )),
-                }),
-                points:    None,
-            })]));
-        let left = Arc::new(PhysicalBinaryExpr::new(
-            Arc::new(PhysicalColumn::new(ID_FIELD_NAME, 0)),
-            Operator::Eq,
-            Arc::new(PhysicalLiteral::new(ScalarValue::Utf8(Some("1".to_owned())))),
         ));
         let right = Arc::new(PhysicalBinaryExpr::new(
             physical_payload_path("tag"),
             Operator::Eq,
             Arc::new(PhysicalLiteral::new(ScalarValue::Utf8(Some("blue".to_owned())))),
         ));
+        let filter =
+            Arc::new(NotExpr::new(Arc::new(PhysicalBinaryExpr::new(left, Operator::Or, right))));
+
+        let (filters, support) =
+            QdrantFilters::default().pushdown_physical(&schema, &payload_schema, &[filter]);
+
+        assert_eq!(support, vec![true]);
+        assert_eq!(filters.len(), 2);
+        let filter = filters.to_filter().expect("qdrant filter");
+        assert_eq!(filter.must_not.len(), 1);
+    }
+
+    #[test]
+    fn pushdown_physical_rejects_unsupported_boolean_leaf() {
+        let schema = schema(vec![
+            Field::new(ID_FIELD_NAME, DataType::Utf8, false),
+            Field::new(PAYLOAD_FIELD_NAME, DataType::Utf8, true),
+        ]);
+        let left = Arc::new(PhysicalBinaryExpr::new(
+            physical_payload_path("tag"),
+            Operator::LikeMatch,
+            Arc::new(PhysicalLiteral::new(ScalarValue::Utf8(Some("%red".to_owned())))),
+        ));
+        let right = Arc::new(PhysicalBinaryExpr::new(
+            Arc::new(PhysicalColumn::new(ID_FIELD_NAME, 0)),
+            Operator::Eq,
+            Arc::new(PhysicalLiteral::new(ScalarValue::Utf8(Some("1".to_owned())))),
+        ));
         let filter = Arc::new(PhysicalBinaryExpr::new(left, Operator::Or, right));
 
         let (_, support) =
-            QdrantFilters::default().pushdown_physical(&schema, &payload_schema, &[filter]);
+            QdrantFilters::default().pushdown_physical(&schema, &payload_schema(), &[filter]);
 
         assert_eq!(support, vec![false]);
     }

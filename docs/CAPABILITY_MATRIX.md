@@ -30,8 +30,8 @@ This file is the canonical scope and sufficiency map for `qdrant-datafusion`.
 | Ordering pushdown | exact `ORDER BY id ASC` pushdown | Implemented | Qdrant’s existing ID-ordered scroll path is now admitted as an exact physical sort pushdown case. |
 | Ordering pushdown | payload-key `ORDER BY payload:<path>` subset | Implemented | The provider now admits a single-key `payload:<path>` sort subset for indexed integer / float / datetime payload fields and lowers it into ordered `scroll` as an exact physical sort pushdown on the currently validated runtime contract. |
 | Ordered continuation | duplicate-boundary ordered pagination contract | Partial | Single-node ordered continuation is validated and implemented through `start_from` plus accumulated boundary-ID exclusion; distributed exactness is still deferred. |
-| Filter pushdown | first exact filter subset | Implemented | Admitted subset is conjunctions of exact leaves: `id` equality / membership, same-field equality `OR` chains normalized to `IN`, vector-column `IS NULL` / `IS NOT NULL`, and indexed scalar `payload:<path>` comparisons / `IN` / `NOT IN` / non-negated `BETWEEN`. Physical pushdown now absorbs those predicates so `FilterExec` does not remain above the scan. |
-| Filter pushdown | broader boolean and payload semantics | Missing | General `OR`, `NOT`, payload null / empty semantics, text, geo, nested, and count-oriented predicates are still intentionally deferred. |
+| Filter pushdown | predicate algebra over admitted leaves | Implemented | Exact pushdown now admits `AND`, `OR`, and `NOT` over `id` equality / membership, vector-column `IS NULL` / `IS NOT NULL`, and indexed scalar `payload:<path>` comparisons / `IN` / `NOT IN` / `BETWEEN` / `NOT BETWEEN`. Physical pushdown absorbs the same subset so `FilterExec` does not remain above the scan. |
+| Filter pushdown | payload null / empty, text, geo, nested, and count-oriented predicates | Missing | Those predicate families are still intentionally deferred until their SQL contracts are explicit. |
 | Dense vector output contract | canonical fixed-dimension vector carrier | Implemented | Dense scans use nullable `FixedSizeList<Float32>(D)`. |
 | Multivector output contract | canonical ragged tensor carrier | Implemented | Multivectors use nullable `arrow.variable_shape_tensor<Float32>`. |
 | Sparse vector output contract | canonical sparse carrier | Implemented | Sparse scans use nullable `ndarrow.csr_matrix_batch<Float32>`. |
@@ -48,6 +48,6 @@ This file is the canonical scope and sufficiency map for `qdrant-datafusion`.
 
 `qdrant-datafusion` is now sufficient for the next planning round, but not yet for the broader SQL-native capability expansion.
 
-The next blocking milestone is no longer the first exact filter subset. It is the next planning
-pass for widening the SQL-to-`Qdrant` semantic bridge without breaking the provider-owned
+The next blocking milestone is no longer predicate algebra. It is aggregate-like exploration and
+the next widening of the SQL-to-`Qdrant` semantic bridge without breaking the provider-owned
 composition boundary already in place.

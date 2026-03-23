@@ -18,7 +18,7 @@ Use it to resume work without replaying the full repository history.
    - top-level nullable vector columns for heterogeneous named collections
    - current typed `qdrant-client` vector outputs only
 4. `INSERT INTO` is explicitly unsupported instead of panicking.
-5. The broad SQL-native `Qdrant` capability surface is still intentionally undefined.
+5. The broad SQL-native `Qdrant` capability surface is still intentionally incomplete, but the predicate algebra foundation is now in place for the next expansion round.
 
 ## Done
 
@@ -64,12 +64,12 @@ Use it to resume work without replaying the full repository history.
     - indexed integer / float / datetime payload fields only
     - current pushdown is `Exact` because `DataFusion` cannot execute fallback `payload:<path>` physical sorts
     - end-to-end SQL coverage now exercises the admitted path against live `Qdrant`
-17. `Q-018`: The first exact filter subset is now admitted through the provider-owned pushdown model.
-    - conjunctions of exact leaves
-    - `id =`, `id !=`, `id IN (...)`, `id NOT IN (...)`
-    - same-field equality `OR` chains normalized to `IN`
-    - vector-column `IS NULL` / `IS NOT NULL`
-    - indexed scalar `payload:<path>` comparisons, `IN`, `NOT IN`, and non-negated `BETWEEN`
+17. `M-001`: Predicate algebra foundation is now implemented through the provider-owned pushdown model.
+    - exact boolean composition over admitted leaves: `AND`, `OR`, `NOT`
+    - admitted exact leaves:
+      - `id =`, `id !=`, `id IN (...)`, `id NOT IN (...)`
+      - vector-column `IS NULL` / `IS NOT NULL`
+      - indexed scalar `payload:<path>` comparisons, `IN`, `NOT IN`, `BETWEEN`, and `NOT BETWEEN`
     - physical filter pushdown now absorbs the admitted subset so `FilterExec` does not remain above `QdrantScanExec`
     - payload filter literals are coerced by indexed payload field type because `DataFusion`’s physical `payload:<path>` expressions do not carry a typed scalar contract
 
@@ -77,12 +77,14 @@ Use it to resume work without replaying the full repository history.
 
 1. The detailed planning inventory for the next expansion round now lives in `docs/QDRANT_COMPATIBILITY_MATRIX.md`.
 2. `Q-017`: Validate distributed-ordering behavior on the target `Qdrant` deployment modes before claiming broader exact payload-key sort pushdown.
-3. `Q-019`: Continue the payload-aware SQL bridge beyond the first exact filter subset.
-   - broader boolean filter semantics beyond same-field equality disjunctions
-   - payload `is_null` / `is_empty` semantics
-   - count / facet support as the first aggregate-like exploration surface
-   - the first retrieval relation only after the predicate algebra remains explicit
-4. Continue mapping the pushdown model onto `DataFusion`’s own idioms where broader traversal is required.
+3. `M-002`: Aggregate-like exploration over the predicate algebra.
+   - `COUNT(*)`-like pushdown
+   - facet counts
+   - explicit output contracts for aggregate-like `Qdrant` exploration surfaces
+4. `Q-020`: Extend the predicate algebra only where the SQL semantics are explicit.
+   - payload `is_null` / `is_empty`
+   - text, geo, nested, and count-oriented predicates
+5. Continue mapping the pushdown model onto `DataFusion`’s own idioms where broader traversal is required.
    - `TreeNode` visitors / rewriters instead of ad hoc recursion
    - `LogicalPlan` expression and subquery helpers before project-local traversal
    - exact admission of broader filter families instead of ad hoc expression splitting

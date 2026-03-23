@@ -24,12 +24,12 @@ Current branch reality:
 11. Ordered continuation lowering is implemented internally through `order_by`, `start_from`, and boundary-ID exclusion.
 12. The first payload-key SQL sort subset is now admitted as `ORDER BY payload:<path>` for indexed integer, float, and datetime payload fields.
 13. Payload-key sort pushdown is currently admitted as `Exact` on the validated runtime contract because `DataFusion` cannot execute a fallback physical sort for the `:` operator.
-14. The first exact filter subset is now admitted:
+14. Predicate algebra over the admitted leaf subset is now exact:
+    - `AND`, `OR`, and `NOT`
     - `id =`, `id !=`, `id IN (...)`, `id NOT IN (...)`
-    - same-field equality `OR` chains normalized to `IN`
     - vector-column `IS NULL` / `IS NOT NULL`
-    - indexed scalar `payload:<path>` comparisons, `IN`, `NOT IN`, and non-negated `BETWEEN`
-15. Physical filter pushdown now absorbs the admitted subset so `FilterExec` does not remain above `QdrantScanExec`.
+    - indexed scalar `payload:<path>` comparisons, `IN`, `NOT IN`, `BETWEEN`, and `NOT BETWEEN`
+15. Physical filter pushdown now absorbs the admitted predicate algebra so `FilterExec` does not remain above `QdrantScanExec`.
 16. Payload filter literals are coerced by indexed payload field type because `DataFusion`’s physical `payload:<path>` expressions surface generic scalar literals such as `Utf8("10")`.
 17. The root `README.md`, repo notes, and tracker docs describe only the admitted baseline.
 18. Detailed capability-expansion planning now has an explicit semantic inventory in `docs/QDRANT_COMPATIBILITY_MATRIX.md`.
@@ -70,9 +70,8 @@ Current branch reality:
    - duplicate-boundary pagination requires accumulated boundary-ID exclusion
    - datetime `order_value` currently returns integer microseconds
 8. The admitted SQL bridge for that runtime path is currently `payload:<path>` only, and it is treated as exact on the validated runtime contract because fallback physical execution of `:` is not available.
-9. The admitted exact filter bridge is currently anchored on `payload:<path>` for indexed scalar fields only, plus same-field equality `OR` chains that can be normalized exactly to `IN`.
+9. The admitted exact filter bridge is now a real predicate algebra over the current admitted leaves, not just conjunctive leaf pushdown.
 10. Distributed-ordering behavior is still intentionally deferred before claiming broader payload-key sort exactness.
 11. The next capability round is now planned semantically rather than endpoint-by-endpoint:
-    - predicate algebra first
     - aggregate-like exploration next
     - retrieval relations after that

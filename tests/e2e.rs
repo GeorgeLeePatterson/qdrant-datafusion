@@ -819,6 +819,29 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(or_ids, vec![1, 3]);
 
+        let boolean_batches = ctx
+            .sql(
+                "SELECT id FROM vectors WHERE (payload:tag = 'red' OR id = '2') AND NOT \
+                 payload:rank > 20 ORDER BY id",
+            )
+            .await?
+            .collect()
+            .await?;
+        let boolean_ids = boolean_batches
+            .iter()
+            .flat_map(|batch| {
+                batch
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .expect("id string array")
+                    .iter()
+                    .map(|value| value.expect("non-null id").parse::<u64>().expect("numeric id"))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(boolean_ids, vec![2]);
+
         Ok(())
     }
 
