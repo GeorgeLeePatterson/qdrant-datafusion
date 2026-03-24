@@ -38,11 +38,14 @@ canonical carrier; missing values are not imputed during scan.
 - exact `COUNT(*)` pushdown over a single `Qdrant` source through the crate's session/planner helper
 - exact top-facet grouped-count pushdown over one keyword `payload:<path>` field through the crate's session/planner helper
 - heterogeneous named-vector scans with top-level nullable vector columns
+- exact SQL null semantics for `payload:<path>`:
+  - `IS NULL` means missing or explicit null
+  - `IS NOT NULL` means present and non-null
 
 ## Not Yet Admitted
 
 - write support or `INSERT INTO`
-- payload null/empty semantics, text, geo, nested, and count-oriented payload predicates
+- payload empty semantics, text, geo, nested, and count-oriented payload predicates
 - broader payload-key SQL `ORDER BY` pushdown beyond the admitted `payload:<path>` subset
 - broader aggregate/grouped SQL beyond the admitted keyword-facet subset
 - `Qdrant`-specific UDFs, UDAFs, or UDTFs

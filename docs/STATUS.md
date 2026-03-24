@@ -42,13 +42,17 @@ Current branch reality:
     - it reuses the existing provider-owned predicate algebra for admitted exact filters
 19. The root `README.md`, repo notes, and tracker docs describe only the admitted baseline.
 20. Detailed capability-expansion planning now has an explicit semantic inventory in `docs/QDRANT_COMPATIBILITY_MATRIX.md`.
-21. Payload null / empty semantics are still intentionally deferred.
+21. Payload-null runtime semantics are now validated; payload-empty SQL semantics are still intentionally deferred.
 22. On March 24, 2026, live `Qdrant 1.17.0` tests through `qdrant-client 1.17.0` validated the runtime contract:
     - explicit payload `NULL` written via point upsert is preserved
     - explicit payload `NULL` written via `set_payload` is preserved
     - `is_null` matches explicit null only
     - `is_empty` matches explicit null plus missing
-23. Payload-null predicates are no longer blocked on runtime uncertainty; the remaining work is settling the SQL semantics cleanly.
+23. SQL null semantics for `payload:<path>` are now admitted exactly:
+    - `IS NULL` means missing or explicit null
+    - `IS NOT NULL` means present and non-null
+    - the current lowering excludes empty arrays from SQL null by composing `is_null`, `is_empty`, and `values_count`
+24. Payload-empty semantics are still intentionally deferred.
 
 ## Current Code Ownership
 

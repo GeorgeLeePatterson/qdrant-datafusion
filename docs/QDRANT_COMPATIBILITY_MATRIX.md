@@ -57,9 +57,9 @@ This matrix is derived from:
 | Row restriction | `Match Except` | `Condition::matches(!MatchValue::...)` | `NOT IN (...)` | `Current` | Admitted for the current exact predicate algebra. |
 | Row restriction | same-field equality disjunction | normalized to `IN` | `a = 1 OR a = 2` | `Current` | Admitted as an optimization inside the broader exact boolean predicate algebra. |
 | Row restriction | general `OR` | `should` | boolean predicate normalization | `Current` | Admitted exactly over the current leaf subset. Unsupported branches still reject cleanly. |
-| Row restriction | general `NOT` | `must_not` | boolean predicate normalization | `Current` | Admitted exactly over the current leaf subset. Payload null / empty semantics are still deferred. |
-| Row restriction | `is_null` | field condition | payload null semantics | `Next` | Runtime contract is now validated on `Qdrant 1.17.0` through `qdrant-client 1.17.0`: it matches explicit null only. SQL surface is still deferred. |
-| Row restriction | `is_empty` | field condition | payload empty / missing semantics | `Next` | Runtime contract is now validated: it matches explicit null plus missing. SQL surface is still deferred. |
+| Row restriction | general `NOT` | `must_not` | boolean predicate normalization | `Current` | Admitted exactly over the current leaf subset. Payload-empty semantics are still deferred. |
+| Row restriction | `is_null` | field condition | payload null semantics | `Current` | SQL `payload:<path> IS NULL` is now admitted exactly as missing or explicit null. Backend lowering composes `is_null` with missing-only detection. |
+| Row restriction | `is_empty` | field condition | payload empty / missing semantics | `Next` | Runtime contract is now validated, but SQL empty semantics are still deferred. |
 | Row restriction | `values_count` | field condition | cardinality predicates | `Later` | Good fit semantically, but depends on payload shape policy. |
 | Row restriction | nested object filter | nested condition | correlated payload-array predicates | `Later` | Important, but it is not equivalent to dotted-path conjunctions. Needs explicit SQL semantics. |
 | Row restriction | geo radius / bbox / polygon | geo conditions | geo predicates / functions | `Later` | Natural fit for SQL functions or typed expressions, but not first-wave. |
@@ -165,11 +165,11 @@ This remains the strongest next implementation focus.
 
 ### P0.5: explicit payload null / empty semantics
 
-This remains important. The runtime contract is now validated, but the SQL surface is still unsettled.
+This remains important, but the scope is now payload empty semantics rather than payload null semantics.
 
-1. model `is_null` explicitly as “matches explicit null only”
-2. model `is_empty` explicitly as “matches explicit null plus missing”
-3. keep missing-vs-null-vs-empty semantics explicit instead of guessing
+1. model `is_empty` explicitly without overloading SQL null semantics
+2. keep missing-vs-null-vs-empty semantics explicit instead of guessing
+3. avoid conflating SQL null with backend empty-container predicates
 
 ### P1: add aggregate-like exploration that composes over filters
 
@@ -208,7 +208,7 @@ Only after the first retrieval relation exists:
 ## Recommended Implementation Order
 
 1. settle whether the next grouped/exploration step is broader facet semantics or a separate aggregate-like relation
-2. settle explicit payload null / empty semantics
+2. settle explicit payload empty semantics
 3. design the first retrieval relation and its score contract
 4. implement nearest retrieval
 5. layer retrieval modifiers and secondary retrieval operators on top

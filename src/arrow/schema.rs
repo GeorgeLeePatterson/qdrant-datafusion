@@ -156,7 +156,7 @@ fn push_unique_field(
 pub fn collection_to_arrow_schema(collection: &str, config: &CollectionConfig) -> Result<Schema> {
     let mut fields = vec![
         Field::new(ID_FIELD_NAME, DataType::Utf8, false),
-        Field::new(PAYLOAD_FIELD_NAME, DataType::Utf8, false),
+        Field::new(PAYLOAD_FIELD_NAME, DataType::Utf8, true),
     ];
     let mut seen = fields.iter().map(|field| field.name().clone()).collect::<HashSet<_>>();
 

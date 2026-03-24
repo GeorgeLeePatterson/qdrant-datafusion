@@ -16,7 +16,7 @@ use datafusion::physical_expr::utils::{
     split_conjunction as split_physical_conjunction, split_disjunction,
 };
 use prost_types::Timestamp;
-use qdrant_client::qdrant::{Condition, DatetimeRange, Filter, PointId, Range};
+use qdrant_client::qdrant::{Condition, DatetimeRange, Filter, PointId, Range, ValuesCount};
 
 use super::{QdrantPayloadField, QdrantPayloadPath, QdrantPayloadSchema, logical_payload_path};
 use crate::arrow::schema::{
@@ -37,6 +37,9 @@ enum QdrantFilterValue {
 enum QdrantPredicate {
     IdIn(Vec<PointId>),
     HasVector(String),
+    PayloadIsNull(QdrantPayloadPath),
+    PayloadIsEmpty(QdrantPayloadPath),
+    PayloadExists(QdrantPayloadPath),
     PayloadEq {
         field: QdrantPayloadPath,
         value: QdrantFilterValue,
@@ -77,6 +80,12 @@ impl QdrantPredicate {
         match self {
             Self::IdIn(ids) => Condition::has_id(ids.clone()),
             Self::HasVector(name) => Condition::has_vector(name.clone()),
+            Self::PayloadIsNull(field) => Condition::is_null(field.key()),
+            Self::PayloadIsEmpty(field) => Condition::is_empty(field.key()),
+            Self::PayloadExists(field) => Condition::values_count(field.key(), ValuesCount {
+                gte: Some(0),
+                ..Default::default()
+            }),
             Self::PayloadEq { field, value } => eq_condition(field, value),
             Self::PayloadIn { field, values } => in_condition(field, values),
             Self::PayloadRange { field, lower, upper } => {
@@ -264,13 +273,17 @@ fn exact_expr(
             QdrantFieldRef::Vector(name) => Some(QdrantFilterExpr::not(
                 QdrantFilterExpr::Predicate(QdrantPredicate::HasVector(name)),
             )),
-            QdrantFieldRef::Id | QdrantFieldRef::Payload(_) => None,
+            QdrantFieldRef::Payload(field) => Some(payload_sql_null_expr(field)),
+            QdrantFieldRef::Id => None,
         },
         Expr::IsNotNull(expr) => match field_ref(base_schema, expr)? {
             QdrantFieldRef::Vector(name) => {
                 Some(QdrantFilterExpr::Predicate(QdrantPredicate::HasVector(name)))
             }
-            QdrantFieldRef::Id | QdrantFieldRef::Payload(_) => None,
+            QdrantFieldRef::Payload(field) => {
+                Some(QdrantFilterExpr::not(payload_sql_null_expr(field)))
+            }
+            QdrantFieldRef::Id => None,
         },
         Expr::Between(Between { expr, negated, low, high }) => {
             let QdrantFieldRef::Payload(field) = field_ref(base_schema, expr)? else {
@@ -341,7 +354,8 @@ fn exact_physical_expr(
             QdrantFieldRef::Vector(name) => Some(QdrantFilterExpr::not(
                 QdrantFilterExpr::Predicate(QdrantPredicate::HasVector(name)),
             )),
-            QdrantFieldRef::Id | QdrantFieldRef::Payload(_) => None,
+            QdrantFieldRef::Payload(field) => Some(payload_sql_null_expr(field)),
+            QdrantFieldRef::Id => None,
         };
     }
     if let Some(expr) = expr.as_any().downcast_ref::<IsNotNullExpr>() {
@@ -349,10 +363,26 @@ fn exact_physical_expr(
             QdrantFieldRef::Vector(name) => {
                 Some(QdrantFilterExpr::Predicate(QdrantPredicate::HasVector(name)))
             }
-            QdrantFieldRef::Id | QdrantFieldRef::Payload(_) => None,
+            QdrantFieldRef::Payload(field) => {
+                Some(QdrantFilterExpr::not(payload_sql_null_expr(field)))
+            }
+            QdrantFieldRef::Id => None,
         };
     }
     None
+}
+
+fn payload_sql_null_expr(field: QdrantPayloadPath) -> QdrantFilterExpr {
+    let missing = QdrantFilterExpr::and([
+        QdrantFilterExpr::Predicate(QdrantPredicate::PayloadIsEmpty(field.clone())),
+        QdrantFilterExpr::not(QdrantFilterExpr::Predicate(QdrantPredicate::PayloadExists(
+            field.clone(),
+        ))),
+    ]);
+    QdrantFilterExpr::or([
+        QdrantFilterExpr::Predicate(QdrantPredicate::PayloadIsNull(field)),
+        missing,
+    ])
 }
 
 fn filter_expr_from_refs(
@@ -836,8 +866,8 @@ mod tests {
     use datafusion::logical_expr::{BinaryExpr, Expr, Operator};
     use datafusion::physical_expr::PhysicalExpr;
     use datafusion::physical_expr::expressions::{
-        BinaryExpr as PhysicalBinaryExpr, Column as PhysicalColumn, Literal as PhysicalLiteral,
-        NotExpr,
+        BinaryExpr as PhysicalBinaryExpr, Column as PhysicalColumn, IsNullExpr,
+        Literal as PhysicalLiteral, NotExpr,
     };
     use qdrant_client::qdrant::{
         IntegerIndexParams, KeywordIndexParams, PayloadSchemaInfo, PayloadSchemaType,
@@ -942,6 +972,16 @@ mod tests {
                 ))),
             )),
         ));
+        assert!(QdrantFilters::supports_exact(
+            &schema,
+            &payload_schema,
+            &Expr::IsNull(Box::new(payload_path("remark"))),
+        ));
+        assert!(QdrantFilters::supports_exact(
+            &schema,
+            &payload_schema,
+            &Expr::IsNotNull(Box::new(payload_path("remark"))),
+        ));
         assert!(!QdrantFilters::supports_exact(
             &schema,
             &payload_schema,
@@ -1018,6 +1058,12 @@ mod tests {
         assert_eq!(filters.len(), 2);
         let filter = filters.to_filter().expect("qdrant filter");
         assert_eq!(filter.must_not.len(), 1);
+
+        let payload_null = Arc::new(IsNullExpr::new(physical_payload_path("remark")));
+        let (filters, support) =
+            QdrantFilters::default().pushdown_physical(&schema, &payload_schema, &[payload_null]);
+        assert_eq!(support, vec![true]);
+        assert!(filters.to_filter().is_some());
     }
 
     #[test]

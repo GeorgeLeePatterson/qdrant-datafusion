@@ -90,7 +90,14 @@ Use it to resume work without replaying the full repository history.
       - explicit payload `NULL` written via `set_payload` is preserved
       - `is_null` matches explicit null only
       - `is_empty` matches explicit null plus missing
-    - payload null / empty SQL semantics remain deferred, but they are no longer blocked on runtime uncertainty
+    - payload empty SQL semantics remain deferred, but they are no longer blocked on runtime uncertainty
+21. `Q-024`: SQL null semantics for `payload:<path>` are now admitted exactly.
+    - `payload:<path> IS NULL` means missing or explicit null
+    - `payload:<path> IS NOT NULL` means present and non-null
+    - the current lowering is exact on the validated runtime contract:
+      - explicit null uses `is_null`
+      - missing-only uses `is_empty AND NOT values_count >= 0`
+      - empty arrays are therefore not conflated with SQL null
 ## Next
 
 1. The detailed planning inventory for the next expansion round now lives in `docs/QDRANT_COMPATIBILITY_MATRIX.md`.
@@ -99,13 +106,9 @@ Use it to resume work without replaying the full repository history.
    - explicit output contracts for aggregate-like `Qdrant` exploration surfaces beyond exact `COUNT(*)` and top-facet grouped counts
    - determine whether the next grouped slice is broader facet semantics or a separate aggregate-like relation
 4. `Q-020`: Extend the predicate algebra only where the SQL semantics are explicit.
-   - payload null / empty semantics
+   - payload empty semantics
    - text, geo, nested, and count-oriented predicates
-5. Model explicit payload null / empty SQL semantics now that the runtime contract is known.
-   - `is_null` matches explicit null only
-   - `is_empty` matches explicit null plus missing
-   - keep missing-vs-null-vs-empty semantics explicit instead of guessing
-6. Continue mapping the pushdown model onto `DataFusion`’s own idioms where broader traversal is required.
+5. Continue mapping the pushdown model onto `DataFusion`’s own idioms where broader traversal is required.
    - `TreeNode` visitors / rewriters instead of ad hoc recursion
    - `LogicalPlan` expression and subquery helpers before project-local traversal
    - exact admission of broader filter families and aggregate-like shapes instead of ad hoc expression splitting

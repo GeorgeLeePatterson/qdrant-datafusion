@@ -48,8 +48,11 @@ Last updated: 2026-03-23
     - admitted exact leaves are:
       - `id =`, `id !=`, `id IN (...)`, `id NOT IN (...)`
       - vector-column `IS NULL` / `IS NOT NULL`
+      - `payload:<path> IS NULL` / `IS NOT NULL` with SQL semantics:
+        - `IS NULL` means missing or explicit null
+        - `IS NOT NULL` means present and non-null
       - indexed scalar `payload:<path>` comparisons, `IN`, `NOT IN`, `BETWEEN`, and `NOT BETWEEN`
-    - payload null / empty semantics, text, geo, nested, and count-oriented predicates remain deferred until those SQL contracts are explicit
+    - payload empty semantics, text, geo, nested, and count-oriented predicates remain deferred until those SQL contracts are explicit
 21. Physical filter pushdown must absorb the admitted exact subset, not just logical filter pushdown declarations.
     - `supports_filters_pushdown` alone is not sufficient on the current `DataFusion` revision
     - `QdrantScanExec` must absorb supported physical predicates so `FilterExec` disappears from the final plan
