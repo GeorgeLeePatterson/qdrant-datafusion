@@ -98,6 +98,15 @@ Use it to resume work without replaying the full repository history.
       - explicit null uses `is_null`
       - missing-only uses `is_empty AND NOT values_count >= 0`
       - empty arrays are therefore not conflated with SQL null
+22. `Q-025`: Planner-layer subtree replacement now flows through a unified `Qdrant` relation-pushdown analyzer scaffold.
+    - current recognizers remain modular
+    - current explicit planner classifications are:
+      - source class: single-source `Qdrant`
+      - topology class: unary relation change
+      - composition class: atomic
+    - current admitted replacement kinds remain:
+      - exact single-source `COUNT(*)`
+      - exact single-source keyword facet grouped counts
 ## Next
 
 1. The detailed planning inventory for the next expansion round now lives in `docs/QDRANT_COMPATIBILITY_MATRIX.md`.
@@ -112,6 +121,10 @@ Use it to resume work without replaying the full repository history.
    - `TreeNode` visitors / rewriters instead of ad hoc recursion
    - `LogicalPlan` expression and subquery helpers before project-local traversal
    - exact admission of broader filter families and aggregate-like shapes instead of ad hoc expression splitting
+6. Extend the planner scaffold from atomic single-source relation replacement toward broader island classification.
+   - source sets
+   - topology classes
+   - composition classes such as mergeable / batchable / coordinated / local-compose / invalid
 
 ## Needed
 

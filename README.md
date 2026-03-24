@@ -37,6 +37,8 @@ canonical carrier; missing values are not imputed during scan.
 - indexed scalar `payload:<path>` comparisons, `IN`, `NOT IN`, `BETWEEN`, and `NOT BETWEEN`
 - exact `COUNT(*)` pushdown over a single `Qdrant` source through the crate's session/planner helper
 - exact top-facet grouped-count pushdown over one keyword `payload:<path>` field through the crate's session/planner helper
+- a unified relation-pushdown analyzer scaffold now owns the admitted planner-layer subtree
+  replacements instead of relying on separate analyzer-rule ownership by convention
 - heterogeneous named-vector scans with top-level nullable vector columns
 - exact SQL null semantics for `payload:<path>`:
   - `IS NULL` means missing or explicit null

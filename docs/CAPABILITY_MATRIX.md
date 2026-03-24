@@ -43,7 +43,7 @@ This file is the canonical scope and sufficiency map for `qdrant-datafusion`.
 | Writes | `INSERT INTO` | Partial | The provider now fails explicitly instead of panicking, but write support is not admitted. |
 | SQL-native `Qdrant` capability surface | search / recommend / discover / fusion / grouped query forms | Missing | Not yet admitted in a stable SQL form. |
 | UDF/UDAF/UDTF surface | `Qdrant`-specific SQL helpers | Missing | No crate-local SQL helpers are intentionally exposed yet. |
-| Planner integration | query rewriting / tree visitors / custom planning | Partial | A narrow analyzer / extension-planner slice is now admitted for exact single-source `COUNT(*)`; broader planner-layer capability expansion is still deferred. |
+| Planner integration | query rewriting / tree visitors / custom planning | Partial | A narrow unified relation-pushdown analyzer / extension-planner slice now owns exact single-source `COUNT(*)` and exact keyword-facet grouped-count replacement. Broader planner-layer capability expansion is still deferred. |
 | Validation | end-to-end scan tests on current baseline | Implemented | Integration tests cover canonical carriers, nullable heterogeneous scans, non-truncated full scans, and raw ordered-scroll runtime contracts. |
 | Documentation | public docs aligned with current tree | Implemented | Root README, tracker docs, and repository notes describe the admitted baseline only. |
 

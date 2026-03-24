@@ -13,7 +13,7 @@ use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_planner::{DefaultPhysicalPlanner, ExtensionPlanner, PhysicalPlanner};
 use datafusion::prelude::{DataFrame, SQLOptions, SessionContext};
 
-use crate::analyzer::{QdrantCountPushdown, QdrantFacetPushdown};
+use crate::analyzer::QdrantRelationPushdown;
 use crate::context::planner::QdrantExtensionPlanner;
 
 pub fn prepare_session_context(ctx: SessionContext) -> SessionContext {
@@ -22,10 +22,7 @@ pub fn prepare_session_context(ctx: SessionContext) -> SessionContext {
     let type_coercion = TypeCoercion::default();
     let mut pos =
         analyzer_rules.iter().position(|rule| rule.name() == type_coercion.name()).unwrap_or(0);
-    for rule in [
-        Arc::new(QdrantFacetPushdown) as Arc<dyn AnalyzerRule + Send + Sync>,
-        Arc::new(QdrantCountPushdown) as Arc<dyn AnalyzerRule + Send + Sync>,
-    ] {
+    for rule in [Arc::new(QdrantRelationPushdown) as Arc<dyn AnalyzerRule + Send + Sync>] {
         if analyzer_rules.iter().any(|existing| existing.name() == rule.name()) {
             continue;
         }

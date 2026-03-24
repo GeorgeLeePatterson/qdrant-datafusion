@@ -53,6 +53,7 @@ Current branch reality:
     - `IS NOT NULL` means present and non-null
     - the current lowering excludes empty arrays from SQL null by composing `is_null`, `is_empty`, and `values_count`
 24. Payload-empty semantics are still intentionally deferred.
+25. Planner-layer subtree replacement now uses a unified relation-pushdown analyzer scaffold for the admitted `Qdrant` relation replacements instead of separate analyzer-rule ownership by convention.
 
 ## Current Code Ownership
 
@@ -75,8 +76,8 @@ Current branch reality:
    - integration coverage for the admitted scan baseline and the first exact aggregate-like slices
 6. `src/context.rs`, `src/context/planner.rs`, `src/context/plan_node.rs`
    - narrow session / analyzer / extension-planner support for exact `COUNT(*)` and keyword-facet pushdown
-7. `src/analyzer.rs`, `src/analyzer/common.rs`, `src/analyzer/count_pushdown.rs`, `src/analyzer/facet_pushdown.rs`
-   - exact aggregate-like plan admission for single-source `Qdrant` counts and the first keyword-facet grouped-count subset
+7. `src/analyzer.rs`, `src/analyzer/common.rs`, `src/analyzer/relation_pushdown.rs`, `src/analyzer/count_pushdown.rs`, `src/analyzer/facet_pushdown.rs`
+   - unified relation-pushdown analyzer scaffold plus modular recognizers for exact single-source `Qdrant` counts and the first keyword-facet grouped-count subset
 
 ## Operational Notes
 

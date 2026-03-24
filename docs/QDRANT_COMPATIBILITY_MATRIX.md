@@ -214,3 +214,23 @@ Only after the first retrieval relation exists:
 5. layer retrieval modifiers and secondary retrieval operators on top
 
 That order is the most compositional one currently available.
+
+## Planner Note
+
+The current planner structure now has an explicit subtree-replacement scaffold for admitted
+`Qdrant` relations:
+
+1. source class
+2. topology class
+3. composition class
+4. relation recognizer
+
+The currently admitted planner subset is still intentionally narrow:
+
+1. source class: single-source `Qdrant`
+2. topology class: unary relation change
+3. composition class: atomic
+4. relation kinds: exact `COUNT(*)` and the first keyword-facet grouped-count subset
+
+Future expansion should widen those axes explicitly rather than adding planner-layer endpoint
+features one by one.

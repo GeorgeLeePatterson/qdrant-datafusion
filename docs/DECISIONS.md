@@ -85,6 +85,15 @@ Last updated: 2026-03-23
     - exact admitted filters may still participate through the existing predicate algebra
     - this path also requires the `Qdrant` session/planner helper rather than plain `SessionContext`
     - broader grouped SQL remains deferred because `Qdrant` facet denotes top-N grouped counts, not unconstrained SQL grouping
+27. Planner-layer subtree replacement should be owned by one `Qdrant` relation-pushdown analyzer scaffold rather than by independent analyzer rules alone.
+    - separate recognizers may remain modular
+    - current admitted planner classifications are:
+      - source class: single-source `Qdrant`
+      - topology class: unary relation change
+      - composition class: atomic
+    - current admitted replacement kinds are:
+      - exact single-source `COUNT(*)`
+      - exact single-source keyword facet grouped counts
 
 ## Execution Ordering
 

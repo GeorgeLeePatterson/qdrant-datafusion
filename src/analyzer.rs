@@ -1,6 +1,6 @@
 mod common;
 mod count_pushdown;
 mod facet_pushdown;
+mod relation_pushdown;
 
-pub(crate) use count_pushdown::QdrantCountPushdown;
-pub(crate) use facet_pushdown::QdrantFacetPushdown;
+pub(crate) use relation_pushdown::QdrantRelationPushdown;

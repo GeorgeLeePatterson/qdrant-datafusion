@@ -1,37 +1,14 @@
 use std::sync::Arc;
 
-use datafusion::common::tree_node::Transformed;
 use datafusion::common::{Result, ScalarValue};
-use datafusion::logical_expr::{Expr, Extension, LogicalPlan};
-use datafusion::optimizer::AnalyzerRule;
+use datafusion::logical_expr::{Expr, LogicalPlan};
 
 use super::common::{count_star_like, qdrant_source};
 use crate::context::plan_node::{QdrantFacetNode, QdrantFacetOutput};
 use crate::pushdown::{QdrantFilters, QdrantPayloadField, logical_payload_path};
 
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct QdrantFacetPushdown;
-
-impl AnalyzerRule for QdrantFacetPushdown {
-    fn analyze(
-        &self,
-        plan: LogicalPlan,
-        _config: &datafusion::common::config::ConfigOptions,
-    ) -> Result<LogicalPlan> {
-        plan.transform_up_with_subqueries(|plan| {
-            let Some(node) = facet_node(&plan)? else {
-                return Ok(Transformed::no(plan));
-            };
-            Ok(Transformed::yes(LogicalPlan::Extension(Extension { node: Arc::new(node) })))
-        })
-        .map(|transformed| transformed.data)
-    }
-
-    fn name(&self) -> &'static str { "qdrant_facet_pushdown" }
-}
-
-fn facet_node(plan: &LogicalPlan) -> Result<Option<QdrantFacetNode>> {
-    let (schema, mut output_exprs, plan) = match plan {
+pub(super) fn facet_node(plan: &LogicalPlan) -> Result<Option<QdrantFacetNode>> {
+    let (schema, mut output_exprs, plan): (_, Option<&[Expr]>, _) = match plan {
         LogicalPlan::Projection(projection) => (
             Arc::clone(&projection.schema),
             Some(projection.expr.as_slice()),
