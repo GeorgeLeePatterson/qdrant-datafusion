@@ -39,6 +39,9 @@ canonical carrier; missing values are not imputed during scan.
 - exact top-facet grouped-count pushdown over one keyword `payload:<path>` field through the crate's session/planner helper
 - a unified relation-pushdown analyzer scaffold now owns the admitted planner-layer subtree
   replacements instead of relying on separate analyzer-rule ownership by convention
+  - the scaffold now classifies subtree source, topology, and composition explicitly as the
+    basis for later island expansion
+  - it now also distinguishes exact-self kernels from local shells around extracted child kernels
 - heterogeneous named-vector scans with top-level nullable vector columns
 - exact SQL null semantics for `payload:<path>`:
   - `IS NULL` means missing or explicit null
@@ -50,6 +53,8 @@ canonical carrier; missing values are not imputed during scan.
 - payload empty semantics, text, geo, nested, and count-oriented payload predicates
 - broader payload-key SQL `ORDER BY` pushdown beyond the admitted `payload:<path>` subset
 - broader aggregate/grouped SQL beyond the admitted keyword-facet subset
+- projection-time `payload:<path>` execution outside an admitted `Qdrant` kernel in the prepared
+  session/planner path
 - `Qdrant`-specific UDFs, UDAFs, or UDTFs
 - SQL-native search / recommend / discover / fusion semantics
 - broader planner rewrites beyond the narrow exact `COUNT(*)` / facet slices

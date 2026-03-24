@@ -1,6 +1,6 @@
 # Qdrant Compatibility Matrix
 
-Last updated: 2026-03-23
+Last updated: 2026-03-24
 
 ## Purpose
 
@@ -225,12 +225,36 @@ The current planner structure now has an explicit subtree-replacement scaffold f
 3. composition class
 4. relation recognizer
 
-The currently admitted planner subset is still intentionally narrow:
+The scaffold now classifies a broader internal space:
 
-1. source class: single-source `Qdrant`
-2. topology class: unary relation change
-3. composition class: atomic
-4. relation kinds: exact `COUNT(*)` and the first keyword-facet grouped-count subset
+1. source class:
+   - `none`
+   - `single-source Qdrant`
+   - `multi-source Qdrant`
+   - `mixed`
+2. topology class:
+   - `leaf`
+   - `unary chain`
+   - `unary relation change`
+   - `multi-branch`
+3. composition class:
+   - `atomic`
+   - `mergeable`
+   - `batchable`
+   - `coordinated`
+   - `local-compose`
+   - `invalid`
+4. kernel placement:
+   - `none`
+   - `exact-self`
+   - `exact-child`
+   - `exact-children`
+
+The currently admitted replacement subset is still intentionally narrower:
+
+1. exact single-source atomic `Qdrant` relations only
+2. relation kinds: exact `COUNT(*)` and the first keyword-facet grouped-count subset
+3. the first explicit invalid planner surface is projection-time `payload:<path>` access in the prepared session/planner path when no admitted exact kernel owns that expression
 
 Future expansion should widen those axes explicitly rather than adding planner-layer endpoint
 features one by one.

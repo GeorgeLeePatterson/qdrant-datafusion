@@ -54,6 +54,14 @@ Current branch reality:
     - the current lowering excludes empty arrays from SQL null by composing `is_null`, `is_empty`, and `values_count`
 24. Payload-empty semantics are still intentionally deferred.
 25. Planner-layer subtree replacement now uses a unified relation-pushdown analyzer scaffold for the admitted `Qdrant` relation replacements instead of separate analyzer-rule ownership by convention.
+26. The planner scaffold now derives broader subtree classes explicitly before relation recognition.
+    - source class: `none`, `single-source Qdrant`, `multi-source Qdrant`, `mixed`
+    - topology class: `leaf`, `unary chain`, `unary relation change`, `multi-branch`
+    - composition class: `atomic`, `mergeable`, `batchable`, `coordinated`, `local-compose`, `invalid`
+    - kernel placement: `none`, `exact-self`, `exact-child`, `exact-children`
+    - current admitted replacements still remain exact single-source atomic `Qdrant` relations only
+27. The planner scaffold now distinguishes exact-self kernels from local shells around extracted child kernels.
+    - the first explicit invalid planner surface is projection-time `payload:<path>` access in the prepared session/planner path when no admitted exact kernel owns that expression
 
 ## Current Code Ownership
 
@@ -77,7 +85,7 @@ Current branch reality:
 6. `src/context.rs`, `src/context/planner.rs`, `src/context/plan_node.rs`
    - narrow session / analyzer / extension-planner support for exact `COUNT(*)` and keyword-facet pushdown
 7. `src/analyzer.rs`, `src/analyzer/common.rs`, `src/analyzer/relation_pushdown.rs`, `src/analyzer/count_pushdown.rs`, `src/analyzer/facet_pushdown.rs`
-   - unified relation-pushdown analyzer scaffold plus modular recognizers for exact single-source `Qdrant` counts and the first keyword-facet grouped-count subset
+   - unified relation-pushdown analyzer scaffold with explicit subtree source / topology / composition / kernel-placement classification, modular recognizers for exact single-source `Qdrant` counts and the first keyword-facet grouped-count subset, and the first narrow invalid-surface rejection
 
 ## Operational Notes
 
@@ -100,3 +108,7 @@ Current branch reality:
 11. The next capability round is now planned semantically rather than endpoint-by-endpoint:
     - broader aggregate-like exploration beyond the first keyword-facet slice
     - retrieval relations after that
+12. Planner expansion should now build on the explicit subtree classifier rather than adding recognizers in isolation:
+    - broader source-set ownership
+    - richer composition classes such as mergeable / invalid
+    - maximal exact kernel extraction inside larger `Qdrant` regions

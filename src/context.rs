@@ -20,14 +20,11 @@ pub fn prepare_session_context(ctx: SessionContext) -> SessionContext {
     let state = ctx.state();
     let mut analyzer_rules = state.analyzer().rules.clone();
     let type_coercion = TypeCoercion::default();
-    let mut pos =
+    let pos =
         analyzer_rules.iter().position(|rule| rule.name() == type_coercion.name()).unwrap_or(0);
-    for rule in [Arc::new(QdrantRelationPushdown) as Arc<dyn AnalyzerRule + Send + Sync>] {
-        if analyzer_rules.iter().any(|existing| existing.name() == rule.name()) {
-            continue;
-        }
+    let rule: Arc<dyn AnalyzerRule + Send + Sync> = Arc::new(QdrantRelationPushdown);
+    if !analyzer_rules.iter().any(|existing| existing.name() == rule.name()) {
         analyzer_rules.insert(pos, rule);
-        pos += 1;
     }
     SessionContext::new_with_state(
         ctx.into_state_builder()

@@ -1,6 +1,6 @@
 # Locked Decisions
 
-Last updated: 2026-03-23
+Last updated: 2026-03-24
 
 ## Core Constraints
 
@@ -87,13 +87,16 @@ Last updated: 2026-03-23
     - broader grouped SQL remains deferred because `Qdrant` facet denotes top-N grouped counts, not unconstrained SQL grouping
 27. Planner-layer subtree replacement should be owned by one `Qdrant` relation-pushdown analyzer scaffold rather than by independent analyzer rules alone.
     - separate recognizers may remain modular
-    - current admitted planner classifications are:
-      - source class: single-source `Qdrant`
-      - topology class: unary relation change
-      - composition class: atomic
+    - the scaffold now derives broader internal subtree classifications:
+      - source class: `none`, `single-source Qdrant`, `multi-source Qdrant`, `mixed`
+      - topology class: `leaf`, `unary chain`, `unary relation change`, `multi-branch`
+      - composition class: `atomic`, `mergeable`, `batchable`, `coordinated`, `local-compose`, `invalid`
+      - kernel placement: `none`, `exact-self`, `exact-child`, `exact-children`
+    - current admitted replacement ownership is still intentionally narrower than the full classifier space
     - current admitted replacement kinds are:
       - exact single-source `COUNT(*)`
       - exact single-source keyword facet grouped counts
+    - the first explicit invalid planner surface is projection-time `payload:<path>` access in the prepared session/planner path when no admitted exact `Qdrant` kernel owns that expression
 
 ## Execution Ordering
 

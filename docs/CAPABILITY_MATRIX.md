@@ -1,6 +1,6 @@
 # Capability Matrix
 
-Last updated: 2026-03-23
+Last updated: 2026-03-24
 
 ## Purpose
 
@@ -26,7 +26,7 @@ This file is the canonical scope and sufficiency map for `qdrant-datafusion`.
 | Projection pushdown | requested vectors and payload only | Implemented | Projected-schema-driven selectors now classify vector fields from Arrow contract metadata, not field names alone. |
 | Limit pushdown | SQL `LIMIT` to `Qdrant` | Implemented | Limit is enforced at the paginated scroll boundary. |
 | Pushdown architecture | provider-owned pushdown model | Implemented | `src/pushdown.rs` now owns the scan contract for projection, payload access, filters, ordering, limit, and continuation. |
-| DataFusion integration | DataFusion-native traversal / rewrite strategy | Partial | Physical sort/filter pushdown is explicit, and narrow analyzer / extension-planner slices now exist for exact `COUNT(*)` and exact keyword-facet pushdown. Broader traversal / rewrite work is still pending. |
+| DataFusion integration | DataFusion-native traversal / rewrite strategy | Partial | Physical sort/filter pushdown is explicit, and a unified relation-pushdown analyzer scaffold now derives subtree source / topology / composition plus exact-kernel placement before trying the current exact `COUNT(*)` and exact keyword-facet replacements. Broader traversal / rewrite work is still pending. |
 | Ordering pushdown | exact `ORDER BY id ASC` pushdown | Implemented | Qdrant’s existing ID-ordered scroll path is now admitted as an exact physical sort pushdown case. |
 | Ordering pushdown | payload-key `ORDER BY payload:<path>` subset | Implemented | The provider now admits a single-key `payload:<path>` sort subset for indexed integer / float / datetime payload fields and lowers it into ordered `scroll` as an exact physical sort pushdown on the currently validated runtime contract. |
 | Ordered continuation | duplicate-boundary ordered pagination contract | Partial | Single-node ordered continuation is validated and implemented through `start_from` plus accumulated boundary-ID exclusion; distributed exactness is still deferred. |
@@ -43,7 +43,7 @@ This file is the canonical scope and sufficiency map for `qdrant-datafusion`.
 | Writes | `INSERT INTO` | Partial | The provider now fails explicitly instead of panicking, but write support is not admitted. |
 | SQL-native `Qdrant` capability surface | search / recommend / discover / fusion / grouped query forms | Missing | Not yet admitted in a stable SQL form. |
 | UDF/UDAF/UDTF surface | `Qdrant`-specific SQL helpers | Missing | No crate-local SQL helpers are intentionally exposed yet. |
-| Planner integration | query rewriting / tree visitors / custom planning | Partial | A narrow unified relation-pushdown analyzer / extension-planner slice now owns exact single-source `COUNT(*)` and exact keyword-facet grouped-count replacement. Broader planner-layer capability expansion is still deferred. |
+| Planner integration | query rewriting / tree visitors / custom planning | Partial | A unified relation-pushdown analyzer / extension-planner scaffold now owns the current exact single-source `COUNT(*)` and exact keyword-facet grouped-count replacement path, classifies subtree source / topology / composition plus exact-kernel placement explicitly for later island expansion, and now rejects projection-time `payload:<path>` surfaces in the prepared session/planner path when no admitted exact kernel can own them. Broader planner-layer capability expansion is still deferred. |
 | Validation | end-to-end scan tests on current baseline | Implemented | Integration tests cover canonical carriers, nullable heterogeneous scans, non-truncated full scans, and raw ordered-scroll runtime contracts. |
 | Documentation | public docs aligned with current tree | Implemented | Root README, tracker docs, and repository notes describe the admitted baseline only. |
 

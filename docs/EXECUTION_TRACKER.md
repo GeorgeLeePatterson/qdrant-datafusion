@@ -100,13 +100,35 @@ Use it to resume work without replaying the full repository history.
       - empty arrays are therefore not conflated with SQL null
 22. `Q-025`: Planner-layer subtree replacement now flows through a unified `Qdrant` relation-pushdown analyzer scaffold.
     - current recognizers remain modular
-    - current explicit planner classifications are:
-      - source class: single-source `Qdrant`
-      - topology class: unary relation change
-      - composition class: atomic
     - current admitted replacement kinds remain:
       - exact single-source `COUNT(*)`
       - exact single-source keyword facet grouped counts
+23. `Q-026`: The unified relation-pushdown scaffold now derives broader subtree classification explicitly before relation recognition.
+    - source class:
+      - `none`
+      - `single-source Qdrant`
+      - `multi-source Qdrant`
+      - `mixed`
+    - topology class:
+      - `leaf`
+      - `unary chain`
+      - `unary relation change`
+      - `multi-branch`
+    - composition class:
+      - `atomic`
+      - `batchable`
+      - `coordinated`
+      - `local-compose`
+    - current admitted replacements still only fire for exact single-source atomic `Qdrant` relations
+24. `Q-027`: The planner scaffold is now exact-kernel aware inside broader `Qdrant` regions.
+    - subtree status now tracks kernel placement explicitly:
+      - `none`
+      - `exact-self`
+      - `exact-child`
+      - `exact-children`
+    - local shells around extracted child kernels are now classified separately from atomic exact kernels
+    - the first explicit invalid planner surface is now rejected early:
+      - projection-time `payload:<path>` access in the prepared session/planner path when no admitted exact `Qdrant` kernel owns that expression
 ## Next
 
 1. The detailed planning inventory for the next expansion round now lives in `docs/QDRANT_COMPATIBILITY_MATRIX.md`.
@@ -121,10 +143,10 @@ Use it to resume work without replaying the full repository history.
    - `TreeNode` visitors / rewriters instead of ad hoc recursion
    - `LogicalPlan` expression and subquery helpers before project-local traversal
    - exact admission of broader filter families and aggregate-like shapes instead of ad hoc expression splitting
-6. Extend the planner scaffold from atomic single-source relation replacement toward broader island classification.
-   - source sets
-   - topology classes
-   - composition classes such as mergeable / batchable / coordinated / local-compose / invalid
+6. Extend the planner scaffold beyond the current explicit classifier set toward richer island composition and kernel extraction.
+   - source-set ownership over larger plan regions
+   - make `mergeable` and broader `invalid` detection real planning states instead of mostly reserved scaffold
+   - maximal exact kernel extraction inside broader `Qdrant`-sourced regions
 
 ## Needed
 
