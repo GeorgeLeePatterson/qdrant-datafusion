@@ -92,6 +92,14 @@ e2e_test!(
 );
 
 #[cfg(feature = "test-utils")]
+e2e_test!(
+    qdrant_raw_payload_null_contracts,
+    tests::test_qdrant_raw_payload_null_contracts,
+    TRACING_DIRECTIVES,
+    None
+);
+
+#[cfg(feature = "test-utils")]
 mod tests {
     use std::collections::BTreeSet;
     use std::sync::Arc;
@@ -110,9 +118,9 @@ mod tests {
         Condition, CreateCollectionBuilder, CreateFieldIndexCollectionBuilder, Direction, Distance,
         FieldType, Filter, FloatIndexParamsBuilder, MultiVectorComparator, MultiVectorConfig,
         NamedVectors, OrderByBuilder, PointStruct, RetrievedPoint, ScrollPointsBuilder,
-        SparseVectorParamsBuilder, SparseVectorsConfigBuilder, UpsertPointsBuilder, Vector,
-        VectorParamsBuilder, VectorsConfigBuilder, order_value, payload_index_params, point_id,
-        start_from,
+        SetPayloadPointsBuilder, SparseVectorParamsBuilder, SparseVectorsConfigBuilder,
+        UpsertPointsBuilder, Value, Vector, VectorParamsBuilder, VectorsConfigBuilder, order_value,
+        payload_index_params, point_id, start_from,
     };
     use qdrant_datafusion::arrow::schema::{
         dense_vector_width, is_multi_vector_field, is_sparse_vector_field, multivector_width,
@@ -166,11 +174,7 @@ mod tests {
         Ok(())
     }
 
-    fn scalar_point(
-        id: u64,
-        field_name: &str,
-        value: impl Into<qdrant_client::qdrant::Value>,
-    ) -> PointStruct {
+    fn scalar_point(id: u64, field_name: &str, value: impl Into<Value>) -> PointStruct {
         let mut payload = qdrant_client::Payload::new();
         payload.insert(field_name, value);
         PointStruct::new(id, Vector::new_dense(vec![0.0]), payload)
@@ -1269,6 +1273,103 @@ mod tests {
                 .expect_err("integer order_by should reject indices without range support");
         let message = error.to_string();
         assert!(message.contains("range") || message.contains("order_by"), "{message}");
+
+        Ok(())
+    }
+
+    pub(super) async fn test_qdrant_raw_payload_null_contracts(
+        c: Arc<QdrantContainer>,
+    ) -> Result<()> {
+        let client = create_qdrant_client(&c)?;
+        let collection_name = "test_payload_null_contracts";
+        create_scalar_collection(&client, collection_name).await?;
+        create_payload_index(
+            &client,
+            collection_name,
+            "remark",
+            FieldType::Keyword,
+            qdrant_client::qdrant::KeywordIndexParamsBuilder::default().build(),
+        )
+        .await?;
+
+        let mut payload1 = qdrant_client::Payload::new();
+        payload1.insert("remark", serde_json::Value::Null);
+        let mut payload3 = qdrant_client::Payload::new();
+        payload3.insert("remark", "ready");
+
+        let points = vec![
+            PointStruct::new(1, Vector::new_dense(vec![0.0]), payload1),
+            PointStruct::new(2, Vector::new_dense(vec![0.0]), qdrant_client::Payload::new()),
+            PointStruct::new(3, Vector::new_dense(vec![0.0]), payload3),
+            PointStruct::new(4, Vector::new_dense(vec![0.0]), qdrant_client::Payload::new()),
+        ];
+        drop(client.upsert_points(UpsertPointsBuilder::new(collection_name, points)).await?);
+
+        let mut payload4 = qdrant_client::Payload::new();
+        payload4.insert("remark", serde_json::Value::Null);
+        drop(
+            client
+                .set_payload(
+                    SetPayloadPointsBuilder::new(collection_name, payload4)
+                        .points_selector([4_u64])
+                        .wait(true),
+                )
+                .await?,
+        );
+
+        let all = client
+            .scroll(
+                ScrollPointsBuilder::new(collection_name)
+                    .limit(10)
+                    .with_payload(true)
+                    .with_vectors(false),
+            )
+            .await?;
+        let all_ids = all.result.iter().map(point_num).collect::<Vec<_>>();
+        assert_eq!(all_ids, vec![1, 2, 3, 4]);
+        assert!(all.result[0].try_get("remark").is_some_and(Value::is_null));
+        assert!(all.result[1].try_get("remark").is_none());
+        assert_eq!(
+            all.result[2].try_get("remark").and_then(|value| value.as_str().map(String::as_str)),
+            Some("ready")
+        );
+        assert!(all.result[3].try_get("remark").is_some_and(Value::is_null));
+
+        let is_null = client
+            .scroll(
+                ScrollPointsBuilder::new(collection_name)
+                    .limit(10)
+                    .with_payload(true)
+                    .with_vectors(false)
+                    .filter(Filter::all([Condition::is_null("remark")])),
+            )
+            .await?;
+        let is_null_ids = is_null.result.iter().map(point_num).collect::<Vec<_>>();
+        assert_eq!(is_null_ids, vec![1, 4]);
+
+        let is_empty = client
+            .scroll(
+                ScrollPointsBuilder::new(collection_name)
+                    .limit(10)
+                    .with_payload(true)
+                    .with_vectors(false)
+                    .filter(Filter::all([Condition::is_empty("remark")])),
+            )
+            .await?;
+        let is_empty_ids = is_empty.result.iter().map(point_num).collect::<Vec<_>>();
+        assert_eq!(is_empty_ids, vec![1, 2, 4]);
+
+        let not_null = client
+            .scroll(
+                ScrollPointsBuilder::new(collection_name)
+                    .limit(10)
+                    .with_payload(true)
+                    .with_vectors(false)
+                    .filter(Filter::must_not([Condition::is_null("remark")])),
+            )
+            .await?;
+        let not_null_ids = not_null.result.iter().map(point_num).collect::<Vec<_>>();
+        assert_eq!(not_null_ids, vec![2, 3]);
 
         Ok(())
     }

@@ -1,6 +1,6 @@
 # Execution Tracker
 
-Last updated: 2026-03-23
+Last updated: 2026-03-24
 
 ## Purpose
 
@@ -84,7 +84,13 @@ Use it to resume work without replaying the full repository history.
     - the execution path lowers into `Qdrant`’s native `facet` API
     - admitted exact filters still reuse the existing provider-owned predicate algebra
     - broader grouped SQL remains deferred because `Qdrant` facet denotes top-N grouped counts, not unconstrained SQL grouping
-
+20. `Q-023`: Payload null / empty runtime behavior is now validated directly against the target dependency line.
+    - on March 24, 2026, live `Qdrant 1.17.0` tests through `qdrant-client 1.17.0` confirmed:
+      - explicit payload `NULL` written via point upsert is preserved
+      - explicit payload `NULL` written via `set_payload` is preserved
+      - `is_null` matches explicit null only
+      - `is_empty` matches explicit null plus missing
+    - payload null / empty SQL semantics remain deferred, but they are no longer blocked on runtime uncertainty
 ## Next
 
 1. The detailed planning inventory for the next expansion round now lives in `docs/QDRANT_COMPATIBILITY_MATRIX.md`.
@@ -93,9 +99,13 @@ Use it to resume work without replaying the full repository history.
    - explicit output contracts for aggregate-like `Qdrant` exploration surfaces beyond exact `COUNT(*)` and top-facet grouped counts
    - determine whether the next grouped slice is broader facet semantics or a separate aggregate-like relation
 4. `Q-020`: Extend the predicate algebra only where the SQL semantics are explicit.
-   - payload `is_null` / `is_empty`
+   - payload null / empty semantics
    - text, geo, nested, and count-oriented predicates
-5. Continue mapping the pushdown model onto `DataFusion`’s own idioms where broader traversal is required.
+5. Model explicit payload null / empty SQL semantics now that the runtime contract is known.
+   - `is_null` matches explicit null only
+   - `is_empty` matches explicit null plus missing
+   - keep missing-vs-null-vs-empty semantics explicit instead of guessing
+6. Continue mapping the pushdown model onto `DataFusion`’s own idioms where broader traversal is required.
    - `TreeNode` visitors / rewriters instead of ad hoc recursion
    - `LogicalPlan` expression and subquery helpers before project-local traversal
    - exact admission of broader filter families and aggregate-like shapes instead of ad hoc expression splitting

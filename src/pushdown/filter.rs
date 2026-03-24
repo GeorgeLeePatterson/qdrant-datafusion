@@ -264,13 +264,13 @@ fn exact_expr(
             QdrantFieldRef::Vector(name) => Some(QdrantFilterExpr::not(
                 QdrantFilterExpr::Predicate(QdrantPredicate::HasVector(name)),
             )),
-            _ => None,
+            QdrantFieldRef::Id | QdrantFieldRef::Payload(_) => None,
         },
         Expr::IsNotNull(expr) => match field_ref(base_schema, expr)? {
             QdrantFieldRef::Vector(name) => {
                 Some(QdrantFilterExpr::Predicate(QdrantPredicate::HasVector(name)))
             }
-            _ => None,
+            QdrantFieldRef::Id | QdrantFieldRef::Payload(_) => None,
         },
         Expr::Between(Between { expr, negated, low, high }) => {
             let QdrantFieldRef::Payload(field) = field_ref(base_schema, expr)? else {
@@ -341,7 +341,7 @@ fn exact_physical_expr(
             QdrantFieldRef::Vector(name) => Some(QdrantFilterExpr::not(
                 QdrantFilterExpr::Predicate(QdrantPredicate::HasVector(name)),
             )),
-            _ => None,
+            QdrantFieldRef::Id | QdrantFieldRef::Payload(_) => None,
         };
     }
     if let Some(expr) = expr.as_any().downcast_ref::<IsNotNullExpr>() {
@@ -349,7 +349,7 @@ fn exact_physical_expr(
             QdrantFieldRef::Vector(name) => {
                 Some(QdrantFilterExpr::Predicate(QdrantPredicate::HasVector(name)))
             }
-            _ => None,
+            QdrantFieldRef::Id | QdrantFieldRef::Payload(_) => None,
         };
     }
     None
@@ -955,13 +955,13 @@ mod tests {
 
     #[test]
     fn supports_exact_id_and_vector_filters() {
-        let schema = schema(vec![
+        let vector_schema = schema(vec![
             Field::new(ID_FIELD_NAME, DataType::Utf8, false),
             Field::new("image", DataType::new_fixed_size_list(DataType::Float32, 3, false), true),
         ]);
 
         assert!(QdrantFilters::supports_exact(
-            &schema,
+            &vector_schema,
             &QdrantPayloadSchema::default(),
             &Expr::InList(InList::new(
                 Box::new(Expr::Column(Column::from_name(ID_FIELD_NAME))),
@@ -973,19 +973,19 @@ mod tests {
             )),
         ));
         assert!(QdrantFilters::supports_exact(
-            &schema,
+            &vector_schema,
             &QdrantPayloadSchema::default(),
             &Expr::IsNull(Box::new(Expr::Column(Column::from_name("image")))),
         ));
         assert!(QdrantFilters::supports_exact(
-            &schema,
+            &vector_schema,
             &QdrantPayloadSchema::default(),
             &Expr::Not(Box::new(Expr::IsNotNull(Box::new(Expr::Column(Column::from_name(
                 "image",
             )))))),
         ));
         assert!(!QdrantFilters::supports_exact(
-            &schema,
+            &vector_schema,
             &QdrantPayloadSchema::default(),
             &Expr::IsNull(Box::new(Expr::Column(Column::from_name(UNNAMED_VECTOR_FIELD_NAME)))),
         ));
