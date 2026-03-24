@@ -106,6 +106,9 @@ Last updated: 2026-03-24
     - same-collection raw `UNION DISTINCT` over exact filters is also now an admitted executable
       `mergeable` case because duplicate elimination removes the overlap hazard present in
       `UNION ALL`
+    - same-collection raw `INTERSECT DISTINCT` and `EXCEPT DISTINCT` over exact filters are now
+      also admitted executable `mergeable` cases; for raw full-row scan/filter branches they lower
+      to conjunction and left-minus-right filter algebra respectively
     - redundant `DISTINCT` over a raw full-row `Qdrant` scan is now dropped because row identity
       already includes unique `id`
 

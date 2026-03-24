@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
-use datafusion::common::{Result, plan_err};
+use datafusion::common::{NullEquality, Result, ScalarValue, plan_err};
 use datafusion::datasource::{provider_as_source, source_as_provider};
 use datafusion::logical_expr::utils::{conjunction, disjunction};
-use datafusion::logical_expr::{Extension, LogicalPlan, LogicalPlanBuilder};
+use datafusion::logical_expr::{Extension, JoinType, LogicalPlan, LogicalPlanBuilder};
 use datafusion::optimizer::AnalyzerRule;
 use qdrant_client::qdrant::PointId;
 use qdrant_client::qdrant::point_id::PointIdOptions;
@@ -92,6 +92,16 @@ struct RawQdrantUnion {
     branch_ids:     Vec<Option<Vec<PointId>>>,
 }
 
+struct RawQdrantSetJoin {
+    collection:     String,
+    client:         Arc<qdrant_client::Qdrant>,
+    schema:         datafusion::arrow::datatypes::SchemaRef,
+    payload_schema: Arc<crate::pushdown::QdrantPayloadSchema>,
+    left_filter:    Option<datafusion::logical_expr::Expr>,
+    right_filter:   Option<datafusion::logical_expr::Expr>,
+    join_type:      JoinType,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct QdrantRelationPushdown;
 
@@ -108,6 +118,11 @@ impl AnalyzerRule for QdrantRelationPushdown {
             }
             if let Some(distinct_input) = redundant_raw_qdrant_distinct_plan(&plan) {
                 return Ok(Transformed::yes(distinct_input));
+            }
+            if status.class.composition == QdrantCompositionClass::Mergeable
+                && let Some(merged) = mergeable_set_join_plan(&plan)?
+            {
+                return Ok(Transformed::yes(merged));
             }
             if status.class.composition == QdrantCompositionClass::Mergeable
                 && let Some(merged) = mergeable_union_plan(&plan)?
@@ -244,6 +259,9 @@ fn composition_class(
     }
     if kernel == QdrantKernelClass::ExactSelf {
         return Ok(QdrantCompositionClass::Atomic);
+    }
+    if mergeable_raw_set_join(plan) {
+        return Ok(QdrantCompositionClass::Mergeable);
     }
     if mergeable_raw_union_distinct(plan)? {
         return Ok(QdrantCompositionClass::Mergeable);
@@ -424,6 +442,74 @@ fn mergeable_raw_union_distinct(plan: &LogicalPlan) -> Result<bool> {
     raw_qdrant_union(input.as_ref()).map(|union| union.is_some())
 }
 
+fn raw_qdrant_set_join(plan: &LogicalPlan) -> Option<RawQdrantSetJoin> {
+    let LogicalPlan::Join(join) = plan else {
+        return None;
+    };
+    if join.filter.is_some()
+        || join.null_aware
+        || join.null_equality != NullEquality::NullEqualsNull
+        || !matches!(join.join_type, JoinType::LeftSemi | JoinType::LeftAnti)
+        || !full_row_join_keys(join)
+    {
+        return None;
+    }
+    let left_source = raw_qdrant_set_branch_source(join.left.as_ref())?;
+    let right_source = raw_qdrant_set_branch_source(join.right.as_ref())?;
+    if left_source.collection != right_source.collection {
+        return None;
+    }
+    if !left_source.filters.iter().all(|filter| {
+        QdrantFilters::supports_exact(&left_source.schema, &left_source.payload_schema, filter)
+    }) || !right_source.filters.iter().all(|filter| {
+        QdrantFilters::supports_exact(&right_source.schema, &right_source.payload_schema, filter)
+    }) {
+        return None;
+    }
+    Some(RawQdrantSetJoin {
+        collection:     left_source.collection,
+        client:         left_source.client,
+        schema:         left_source.schema,
+        payload_schema: left_source.payload_schema,
+        left_filter:    conjunction(left_source.filters),
+        right_filter:   conjunction(right_source.filters),
+        join_type:      join.join_type,
+    })
+}
+
+fn mergeable_raw_set_join(plan: &LogicalPlan) -> bool { raw_qdrant_set_join(plan).is_some() }
+
+fn raw_qdrant_set_branch_source(plan: &LogicalPlan) -> Option<super::common::QdrantSource> {
+    let mut plan = plan;
+    loop {
+        match plan {
+            LogicalPlan::SubqueryAlias(alias) => {
+                plan = alias.input.as_ref();
+            }
+            LogicalPlan::Distinct(datafusion::logical_expr::Distinct::All(input)) => {
+                plan = input.as_ref();
+            }
+            _ => return qdrant_source(plan),
+        }
+    }
+}
+
+fn full_row_join_keys(join: &datafusion::logical_expr::logical_plan::Join) -> bool {
+    let left_fields = join.left.schema().fields();
+    let right_fields = join.right.schema().fields();
+    join.on.len() == left_fields.len()
+        && left_fields.len() == right_fields.len()
+        && join.on.iter().zip(left_fields.iter().zip(right_fields.iter())).all(
+            |((left, right), (left_field, right_field))| match (left, right) {
+                (
+                    datafusion::logical_expr::Expr::Column(left),
+                    datafusion::logical_expr::Expr::Column(right),
+                ) => left.name == *left_field.name() && right.name == *right_field.name(),
+                _ => false,
+            },
+        )
+}
+
 fn point_id_sets_are_disjoint(id_sets: &[Vec<PointId>]) -> bool {
     let mut seen = vec![];
     for ids in id_sets {
@@ -493,6 +579,45 @@ fn merged_branch_filter(
         return None;
     }
     disjunction(branches.iter().flatten().cloned())
+}
+
+fn mergeable_set_join_plan(plan: &LogicalPlan) -> Result<Option<LogicalPlan>> {
+    let Some(join) = raw_qdrant_set_join(plan) else {
+        return Ok(None);
+    };
+    let filter = match join.join_type {
+        JoinType::LeftSemi => {
+            conjunction([join.left_filter, join.right_filter].into_iter().flatten())
+        }
+        JoinType::LeftAnti => except_filter(join.left_filter, join.right_filter),
+        _ => return Ok(None),
+    };
+    let provider = Arc::new(QdrantTableProvider::new_for_planner(
+        join.collection.clone(),
+        join.client,
+        join.schema,
+        join.payload_schema,
+    ));
+    let builder = LogicalPlanBuilder::scan(join.collection, provider_as_source(provider), None)?;
+    match filter {
+        Some(filter) => builder.filter(filter)?.build().map(Some),
+        None => builder.build().map(Some),
+    }
+}
+
+fn except_filter(
+    left: Option<datafusion::logical_expr::Expr>,
+    right: Option<datafusion::logical_expr::Expr>,
+) -> Option<datafusion::logical_expr::Expr> {
+    match (left, right) {
+        (_, None) => {
+            Some(datafusion::logical_expr::Expr::Literal(ScalarValue::Boolean(Some(false)), None))
+        }
+        (None, Some(right)) => Some(datafusion::logical_expr::Expr::Not(Box::new(right))),
+        (Some(left), Some(right)) => {
+            conjunction([left, datafusion::logical_expr::Expr::Not(Box::new(right))])
+        }
+    }
 }
 
 fn redundant_raw_qdrant_distinct_plan(plan: &LogicalPlan) -> Option<LogicalPlan> {
@@ -733,6 +858,40 @@ mod tests {
     }
 
     #[test]
+    fn subtree_classifies_same_collection_raw_intersect_as_mergeable() {
+        let intersect = LogicalPlanBuilder::intersect(
+            raw_filtered_scan_plan("vectors", "row-1"),
+            raw_filtered_scan_plan("vectors", "row-1"),
+            false,
+        )
+        .expect("intersect");
+        let class = subtree_class(&intersect).expect("subtree class");
+        assert_eq!(class, QdrantSubtreeClass {
+            source:      QdrantSourceClass::MultiQdrant,
+            topology:    QdrantTopologyClass::MultiBranch,
+            composition: QdrantCompositionClass::Mergeable,
+            kernel:      QdrantKernelClass::None,
+        });
+    }
+
+    #[test]
+    fn subtree_classifies_same_collection_raw_except_as_mergeable() {
+        let except = LogicalPlanBuilder::except(
+            raw_filtered_scan_plan("vectors", "row-1"),
+            raw_filtered_scan_plan("vectors", "row-2"),
+            false,
+        )
+        .expect("except");
+        let class = subtree_class(&except).expect("subtree class");
+        assert_eq!(class, QdrantSubtreeClass {
+            source:      QdrantSourceClass::MultiQdrant,
+            topology:    QdrantTopologyClass::MultiBranch,
+            composition: QdrantCompositionClass::Mergeable,
+            kernel:      QdrantKernelClass::None,
+        });
+    }
+
+    #[test]
     fn subtree_classifies_non_qdrant_projection_as_local_compose_unary_chain() {
         let projection = LogicalPlanBuilder::values(vec![vec![lit(1_i64)]])
             .expect("values")
@@ -826,6 +985,48 @@ mod tests {
             .expect("union distinct plan");
         let analyzed = QdrantRelationPushdown
             .analyze(union, &ConfigOptions::default())
+            .expect("analyzed plan");
+
+        assert!(matches!(analyzed, LogicalPlan::Filter(_)));
+        assert_eq!(subtree_class(&analyzed).expect("subtree class"), QdrantSubtreeClass {
+            source:      QdrantSourceClass::SingleQdrant,
+            topology:    QdrantTopologyClass::UnaryChain,
+            composition: QdrantCompositionClass::Atomic,
+            kernel:      QdrantKernelClass::None,
+        });
+    }
+
+    #[test]
+    fn analyzer_rewrites_raw_intersect_to_single_filtered_scan() {
+        let intersect = LogicalPlanBuilder::intersect(
+            raw_filtered_scan_plan("vectors", "row-1"),
+            raw_filtered_scan_plan("vectors", "row-1"),
+            true,
+        )
+        .expect("intersect");
+        let analyzed = QdrantRelationPushdown
+            .analyze(intersect, &ConfigOptions::default())
+            .expect("analyzed plan");
+
+        assert!(matches!(analyzed, LogicalPlan::Filter(_)));
+        assert_eq!(subtree_class(&analyzed).expect("subtree class"), QdrantSubtreeClass {
+            source:      QdrantSourceClass::SingleQdrant,
+            topology:    QdrantTopologyClass::UnaryChain,
+            composition: QdrantCompositionClass::Atomic,
+            kernel:      QdrantKernelClass::None,
+        });
+    }
+
+    #[test]
+    fn analyzer_rewrites_raw_except_to_single_filtered_scan() {
+        let except = LogicalPlanBuilder::except(
+            raw_filtered_scan_plan("vectors", "row-1"),
+            raw_filtered_scan_plan("vectors", "row-2"),
+            true,
+        )
+        .expect("except");
+        let analyzed = QdrantRelationPushdown
+            .analyze(except, &ConfigOptions::default())
             .expect("analyzed plan");
 
         assert!(matches!(analyzed, LogicalPlan::Filter(_)));

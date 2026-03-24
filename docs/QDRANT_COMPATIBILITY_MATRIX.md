@@ -261,7 +261,10 @@ The currently admitted replacement subset is still intentionally narrower:
    than remaining classifier-only
 6. raw same-collection `UNION DISTINCT` over exact filters is now the second executable
    `mergeable` case because duplicate elimination is already part of the SQL semantics
-7. redundant `DISTINCT` over raw full-row `Qdrant` scans is now dropped when the row identity
+7. raw same-collection `INTERSECT DISTINCT` and `EXCEPT DISTINCT` over exact filters are now
+   executable `mergeable` cases too; for raw full-row branches they lower to conjunction and
+   left-minus-right filter algebra respectively
+8. redundant `DISTINCT` over raw full-row `Qdrant` scans is now dropped when the row identity
    still includes unique `id`
 
 Future expansion should widen those axes explicitly rather than adding planner-layer endpoint

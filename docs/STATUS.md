@@ -71,7 +71,12 @@ Current branch reality:
 30. Raw same-collection `UNION DISTINCT` over exact filters is now the second executable `mergeable` case.
     - overlap between branches is admitted because duplicate elimination is already part of the SQL semantics
     - the analyzer rewrites that subtree to a single filtered scan too
-31. Redundant `DISTINCT` over raw full-row `Qdrant` scans is now dropped.
+31. Raw same-collection `INTERSECT DISTINCT` and `EXCEPT DISTINCT` over exact filters are now executable `mergeable` cases too.
+    - DataFusion lowers these through `LeftSemi` / `LeftAnti` joins over raw full-row branches
+    - the analyzer sees through only the planner-generated alias and redundant left-side `DISTINCT` wrappers for that exact set-operator shape
+    - `INTERSECT DISTINCT` lowers to conjunction over the admitted exact branch filters
+    - `EXCEPT DISTINCT` lowers to left-minus-right filter algebra over the admitted exact branch filters
+32. Redundant `DISTINCT` over raw full-row `Qdrant` scans is now dropped.
     - this is admitted only for raw scan/filter chains where the full row identity still includes unique `id`
     - projected `DISTINCT` remains a separate semantic case
 

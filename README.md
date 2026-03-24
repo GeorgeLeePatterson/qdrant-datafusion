@@ -46,7 +46,9 @@ canonical carrier; missing values are not imputed during scan.
     - same-collection raw `UNION ALL` branches only when exact filters imply pairwise-disjoint
       finite point-ID bounds
     - same-collection raw `UNION DISTINCT` branches over exact filters
-    - both currently rewrite to a single filtered scan
+    - same-collection raw `INTERSECT DISTINCT` branches over exact filters
+    - same-collection raw `EXCEPT DISTINCT` branches over exact filters
+    - all currently rewrite to a single filtered scan
   - redundant `DISTINCT` over a raw full-row `Qdrant` scan is now dropped because row identity
     already includes unique `id`
 - heterogeneous named-vector scans with top-level nullable vector columns
