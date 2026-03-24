@@ -129,6 +129,22 @@ Use it to resume work without replaying the full repository history.
     - local shells around extracted child kernels are now classified separately from atomic exact kernels
     - the first explicit invalid planner surface is now rejected early:
       - projection-time `payload:<path>` access in the prepared session/planner path when no admitted exact `Qdrant` kernel owns that expression
+25. `Q-028`: The planner scaffold now has a first concrete `mergeable` multi-branch state.
+    - the admitted case is intentionally narrow:
+      - same raw `Qdrant` collection on every branch
+      - exact filters only
+      - every branch filter implies a finite point-ID upper bound
+      - those branch point-ID bounds are pairwise disjoint
+    - same-collection raw `UNION ALL` alone is not treated as mergeable because overlapping branches would collapse duplicate rows
+26. `Q-029`: The first `mergeable` multi-branch case is now executable.
+    - a provably disjoint same-collection raw `UNION ALL` now rewrites to a single filtered scan
+    - this is the first planner extraction step that turns a multi-branch `Qdrant` region into one scan-local kernel instead of only classifying it
+27. `Q-030`: Raw same-collection `UNION DISTINCT` over exact filters is now admitted as the second executable `mergeable` case.
+    - overlap between branches is allowed because duplicate elimination is already part of the SQL semantics
+    - the analyzer now rewrites that subtree to a single filtered scan as well
+28. `Q-031`: Redundant `DISTINCT` over raw full-row `Qdrant` scans is now dropped.
+    - this is admitted only for raw scan/filter chains where the full row identity still includes unique `id`
+    - projected `DISTINCT` remains a separate semantic case
 ## Next
 
 1. The detailed planning inventory for the next expansion round now lives in `docs/QDRANT_COMPATIBILITY_MATRIX.md`.
@@ -145,8 +161,9 @@ Use it to resume work without replaying the full repository history.
    - exact admission of broader filter families and aggregate-like shapes instead of ad hoc expression splitting
 6. Extend the planner scaffold beyond the current explicit classifier set toward richer island composition and kernel extraction.
    - source-set ownership over larger plan regions
-   - make `mergeable` and broader `invalid` detection real planning states instead of mostly reserved scaffold
-   - maximal exact kernel extraction inside broader `Qdrant`-sourced regions
+   - widen `mergeable` only with explicit algebraic proofs such as disjointness or duplicate-elimination semantics, not collection identity alone
+   - broaden `invalid` detection carefully as more remote-only surfaces are introduced
+   - maximal exact kernel extraction inside broader `Qdrant`-sourced regions beyond the first raw-union, union-distinct, and raw-distinct collapses
 
 ## Needed
 

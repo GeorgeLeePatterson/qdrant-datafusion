@@ -255,6 +255,14 @@ The currently admitted replacement subset is still intentionally narrower:
 1. exact single-source atomic `Qdrant` relations only
 2. relation kinds: exact `COUNT(*)` and the first keyword-facet grouped-count subset
 3. the first explicit invalid planner surface is projection-time `payload:<path>` access in the prepared session/planner path when no admitted exact kernel owns that expression
+4. the first explicit `mergeable` multi-branch state is same-collection raw `UNION ALL`
+   branches only when exact filters imply pairwise-disjoint finite point-ID bounds
+5. that first `mergeable` case is now executable and rewrites to a single filtered scan rather
+   than remaining classifier-only
+6. raw same-collection `UNION DISTINCT` over exact filters is now the second executable
+   `mergeable` case because duplicate elimination is already part of the SQL semantics
+7. redundant `DISTINCT` over raw full-row `Qdrant` scans is now dropped when the row identity
+   still includes unique `id`
 
 Future expansion should widen those axes explicitly rather than adding planner-layer endpoint
 features one by one.

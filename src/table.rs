@@ -168,6 +168,29 @@ impl QdrantTableProvider {
     pub(crate) fn collection(&self) -> &str { self.table.table() }
 
     pub(crate) fn payload_schema(&self) -> &Arc<QdrantPayloadSchema> { &self.payload_schema }
+
+    pub(crate) fn new_for_planner(
+        collection: String,
+        client: Arc<Qdrant>,
+        schema: SchemaRef,
+        payload_schema: Arc<QdrantPayloadSchema>,
+    ) -> Self {
+        Self { table: TableReference::bare(collection), client, schema, payload_schema }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_test(
+        table: &str,
+        schema: Schema,
+        payload_schema: QdrantPayloadSchema,
+    ) -> Self {
+        Self::new_for_planner(
+            table.to_owned(),
+            Arc::new(Qdrant::from_url("http://localhost:6334").build().expect("client")),
+            Arc::new(schema),
+            Arc::new(payload_schema),
+        )
+    }
 }
 
 #[async_trait::async_trait]

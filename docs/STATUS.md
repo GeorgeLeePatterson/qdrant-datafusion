@@ -62,6 +62,18 @@ Current branch reality:
     - current admitted replacements still remain exact single-source atomic `Qdrant` relations only
 27. The planner scaffold now distinguishes exact-self kernels from local shells around extracted child kernels.
     - the first explicit invalid planner surface is projection-time `payload:<path>` access in the prepared session/planner path when no admitted exact kernel owns that expression
+28. The planner scaffold now has a first concrete `mergeable` multi-branch state.
+    - same-collection raw `UNION ALL` branches are only classified as `mergeable` when exact filters imply pairwise-disjoint finite point-ID bounds
+    - overlapping same-collection branches remain `local-compose`
+29. That first `mergeable` case is now executable.
+    - a provably disjoint same-collection raw `UNION ALL` rewrites to a single filtered scan
+    - this is the first multi-branch `Qdrant` kernel extraction beyond classifier-only planner state
+30. Raw same-collection `UNION DISTINCT` over exact filters is now the second executable `mergeable` case.
+    - overlap between branches is admitted because duplicate elimination is already part of the SQL semantics
+    - the analyzer rewrites that subtree to a single filtered scan too
+31. Redundant `DISTINCT` over raw full-row `Qdrant` scans is now dropped.
+    - this is admitted only for raw scan/filter chains where the full row identity still includes unique `id`
+    - projected `DISTINCT` remains a separate semantic case
 
 ## Current Code Ownership
 
@@ -110,5 +122,5 @@ Current branch reality:
     - retrieval relations after that
 12. Planner expansion should now build on the explicit subtree classifier rather than adding recognizers in isolation:
     - broader source-set ownership
-    - richer composition classes such as mergeable / invalid
-    - maximal exact kernel extraction inside larger `Qdrant` regions
+    - richer composition classes beyond the first sound `mergeable` proof case
+    - maximal exact kernel extraction inside larger `Qdrant` regions beyond the first raw-union, union-distinct, and raw-distinct collapses

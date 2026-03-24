@@ -224,6 +224,10 @@ impl QdrantFilters {
         }
     }
 
+    pub(crate) fn possible_point_ids(&self) -> Option<Vec<PointId>> {
+        possible_point_ids_from_exprs(&self.exprs)
+    }
+
     fn push(&mut self, expr: QdrantFilterExpr) {
         for expr in expr.into_and_parts() {
             if !self.exprs.contains(&expr) {
@@ -537,6 +541,49 @@ fn disjunction_predicate(exprs: &[QdrantFilterExpr]) -> Option<QdrantPredicate> 
             Some(QdrantPredicate::PayloadIn { field, values })
         }
         _ => None,
+    }
+}
+
+fn possible_point_ids_from_exprs(exprs: &[QdrantFilterExpr]) -> Option<Vec<PointId>> {
+    let mut ids = None::<Vec<PointId>>;
+    for expr in exprs {
+        let Some(next_ids) = possible_point_ids(expr) else {
+            continue;
+        };
+        ids = Some(match ids {
+            None => next_ids,
+            Some(ids) => intersect_point_ids(ids, &next_ids),
+        });
+    }
+    ids
+}
+
+fn possible_point_ids(expr: &QdrantFilterExpr) -> Option<Vec<PointId>> {
+    match expr {
+        QdrantFilterExpr::Predicate(QdrantPredicate::IdIn(ids)) => Some(ids.clone()),
+        QdrantFilterExpr::Predicate(_) | QdrantFilterExpr::Not(_) => None,
+        QdrantFilterExpr::And(exprs) => possible_point_ids_from_exprs(exprs),
+        QdrantFilterExpr::Or(exprs) => {
+            let mut ids = vec![];
+            for expr in exprs {
+                let next_ids = possible_point_ids(expr)?;
+                extend_unique_point_ids(&mut ids, next_ids);
+            }
+            Some(ids)
+        }
+    }
+}
+
+fn intersect_point_ids(mut left: Vec<PointId>, right: &[PointId]) -> Vec<PointId> {
+    left.retain(|id| right.contains(id));
+    left
+}
+
+fn extend_unique_point_ids(ids: &mut Vec<PointId>, next_ids: Vec<PointId>) {
+    for id in next_ids {
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
     }
 }
 
@@ -1088,5 +1135,49 @@ mod tests {
             QdrantFilters::default().pushdown_physical(&schema, &payload_schema(), &[filter]);
 
         assert_eq!(support, vec![false]);
+    }
+
+    #[test]
+    fn possible_point_ids_tracks_finite_id_upper_bounds() {
+        let schema = schema(vec![
+            Field::new(ID_FIELD_NAME, DataType::Utf8, false),
+            Field::new(PAYLOAD_FIELD_NAME, DataType::Utf8, true),
+        ]);
+        let filters = QdrantFilters::try_new(&schema, &payload_schema(), &[Expr::BinaryExpr(
+            BinaryExpr::new(
+                Box::new(Expr::InList(InList::new(
+                    Box::new(Expr::Column(Column::from_name(ID_FIELD_NAME))),
+                    vec![
+                        Expr::Literal(ScalarValue::Utf8(Some("1".to_owned())), None),
+                        Expr::Literal(ScalarValue::Utf8(Some("2".to_owned())), None),
+                    ],
+                    false,
+                ))),
+                Operator::And,
+                Box::new(Expr::BinaryExpr(BinaryExpr::new(
+                    Box::new(payload_path("tag")),
+                    Operator::Eq,
+                    Box::new(Expr::Literal(ScalarValue::Utf8(Some("blue".to_owned())), None)),
+                ))),
+            ),
+        )])
+        .expect("filters");
+        let ids = filters.possible_point_ids().expect("point ids");
+        assert_eq!(ids.len(), 2);
+    }
+
+    #[test]
+    fn possible_point_ids_rejects_unbounded_not_branch() {
+        let schema = schema(vec![Field::new(ID_FIELD_NAME, DataType::Utf8, false)]);
+        let filters =
+            QdrantFilters::try_new(&schema, &QdrantPayloadSchema::default(), &[Expr::Not(
+                Box::new(Expr::BinaryExpr(BinaryExpr::new(
+                    Box::new(Expr::Column(Column::from_name(ID_FIELD_NAME))),
+                    Operator::Eq,
+                    Box::new(Expr::Literal(ScalarValue::Utf8(Some("1".to_owned())), None)),
+                ))),
+            )])
+            .expect("filters");
+        assert!(filters.possible_point_ids().is_none());
     }
 }

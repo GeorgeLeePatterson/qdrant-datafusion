@@ -97,6 +97,17 @@ Last updated: 2026-03-24
       - exact single-source `COUNT(*)`
       - exact single-source keyword facet grouped counts
     - the first explicit invalid planner surface is projection-time `payload:<path>` access in the prepared session/planner path when no admitted exact `Qdrant` kernel owns that expression
+    - the first explicit `mergeable` multi-branch state is same-collection raw `UNION ALL`
+      branches only when exact filters imply pairwise-disjoint finite point-ID bounds; same
+      collection alone is not sufficient because duplicate preservation is part of `UNION ALL`
+      semantics
+    - that first `mergeable` case is now executable: it rewrites to a single filtered scan rather
+      than remaining a classifier-only state
+    - same-collection raw `UNION DISTINCT` over exact filters is also now an admitted executable
+      `mergeable` case because duplicate elimination removes the overlap hazard present in
+      `UNION ALL`
+    - redundant `DISTINCT` over a raw full-row `Qdrant` scan is now dropped because row identity
+      already includes unique `id`
 
 ## Execution Ordering
 

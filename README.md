@@ -42,6 +42,13 @@ canonical carrier; missing values are not imputed during scan.
   - the scaffold now classifies subtree source, topology, and composition explicitly as the
     basis for later island expansion
   - it now also distinguishes exact-self kernels from local shells around extracted child kernels
+  - the first concrete `mergeable` multi-branch states are now executable:
+    - same-collection raw `UNION ALL` branches only when exact filters imply pairwise-disjoint
+      finite point-ID bounds
+    - same-collection raw `UNION DISTINCT` branches over exact filters
+    - both currently rewrite to a single filtered scan
+  - redundant `DISTINCT` over a raw full-row `Qdrant` scan is now dropped because row identity
+    already includes unique `id`
 - heterogeneous named-vector scans with top-level nullable vector columns
 - exact SQL null semantics for `payload:<path>`:
   - `IS NULL` means missing or explicit null
