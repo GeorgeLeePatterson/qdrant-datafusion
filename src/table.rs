@@ -1,44 +1,24 @@
 //! `DataFusion` `TableProvider` implementation for `Qdrant` vector database collections.
-use std::any::Any;
+mod exec;
+mod provider;
+mod scroll;
+
 use std::sync::Arc;
 
-use datafusion::arrow::array::RecordBatch;
-use datafusion::arrow::datatypes::*;
-use datafusion::catalog::{Session, TableProvider};
-use datafusion::common::exec_err;
-use datafusion::common::tree_node::TreeNodeRecursion;
-use datafusion::config::ConfigOptions;
-use datafusion::datasource::TableType;
-use datafusion::error::{DataFusionError, Result as DataFusionResult};
-use datafusion::execution::{SendableRecordBatchStream, TaskContext};
-use datafusion::logical_expr::TableProviderFilterPushDown;
-use datafusion::logical_expr::dml::InsertOp;
-use datafusion::physical_expr::PhysicalExpr;
-use datafusion::physical_expr::expressions::{BinaryExpr, Column, Literal};
+use arrow_schema::SchemaRef;
+use datafusion::arrow::datatypes::Schema;
+use datafusion::physical_expr::PhysicalSortExpr;
+use datafusion::physical_expr::expressions::Column;
+use datafusion::physical_plan::PlanProperties;
 use datafusion::physical_plan::execution_plan::Boundedness;
-use datafusion::physical_plan::expressions::PhysicalSortExpr;
-use datafusion::physical_plan::filter_pushdown::{
-    ChildPushdownResult, FilterPushdownPhase, FilterPushdownPropagation, PushedDown,
-};
-use datafusion::physical_plan::{
-    DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, SortOrderPushdownResult,
-};
-use datafusion::prelude::Expr;
 use datafusion::sql::TableReference;
 use qdrant_client::Qdrant;
-use qdrant_client::qdrant::{
-    Condition, Direction, Filter, OrderByBuilder, RetrievedPoint, ScrollPointsBuilder,
-    VectorsSelector, order_value, start_from,
-};
 
-use crate::arrow::deserialize::QdrantRecordBatchBuilder;
-use crate::arrow::schema::{ID_FIELD_NAME, PAYLOAD_FIELD_NAME, collection_to_arrow_schema};
+use crate::arrow::schema::{ID_FIELD_NAME, collection_to_arrow_schema};
 use crate::error::{Error, Result};
-use crate::pushdown::{
-    QdrantContinuation, QdrantFilters, QdrantOrderValue, QdrantOrderedContinuation, QdrantOrdering,
-    QdrantPayloadSchema, QdrantPayloadSelector, QdrantScanSpec, QdrantVectorSelector,
-};
-use crate::stream::QdrantQueryStream;
+use crate::pushdown::{QdrantOrdering, QdrantPayloadSchema, QdrantScanSpec};
+
+const SCAN_PAGE_SIZE: usize = 1024;
 
 /// `DataFusion` `TableProvider` implementation for `Qdrant` vector database collections.
 ///
@@ -104,51 +84,12 @@ pub struct QdrantTableProvider {
     payload_schema: Arc<QdrantPayloadSchema>,
 }
 
-impl std::fmt::Debug for QdrantTableProvider {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("QdrantTableProvider")
-            .field("table", &self.table)
-            .field("client", &"Qdrant")
-            .field("schema", &self.schema)
-            .field("payload_schema", &self.payload_schema)
-            .finish()
-    }
-}
-
 impl QdrantTableProvider {
-    /// Create a new `QdrantTableProvider` for the specified `Qdrant` collection.
-    ///
-    /// This constructor connects to the `Qdrant` collection, analyzes its schema, and creates
-    /// a DataFusion-compatible table provider. The schema is built by examining the collection's
-    /// vector configuration and creating appropriate Arrow fields for all vector types.
-    ///
-    /// # Arguments
-    /// * `client` - Connected `Qdrant` client instance
-    /// * `collection` - Name of the `Qdrant` collection to provide access to
-    ///
-    /// # Returns
-    /// A configured `QdrantTableProvider` ready for SQL queries.
+    /// Creates a table provider by introspecting a Qdrant collection.
     ///
     /// # Errors
-    /// Returns an error if:
-    /// - The collection does not exist or is inaccessible
-    /// - The collection configuration cannot be retrieved
-    /// - The collection has an unsupported schema configuration
-    ///
-    /// # Examples
-    /// ```rust,ignore
-    /// use qdrant_datafusion::prelude::*;
-    /// use qdrant_client::Qdrant;
-    ///
-    /// # async fn example() -> Result<()> {
-    /// let client = Qdrant::from_url("http://localhost:6334")
-    ///     .api_key("optional-api-key")
-    ///     .build()?;
-    ///
-    /// let table_provider = QdrantTableProvider::try_new(client, "embeddings").await?;
-    /// # Ok(())
-    /// # }
-    /// ```
+    /// Returns an error if the collection metadata cannot be fetched or cannot
+    /// be translated into the admitted Arrow schema contract.
     pub async fn try_new(client: Qdrant, collection: &str) -> Result<Self> {
         let info = client.collection_info(collection).await?;
         let info = info.result.ok_or(Error::MissingCollectionInfo(collection.into()))?;
@@ -193,62 +134,6 @@ impl QdrantTableProvider {
     }
 }
 
-#[async_trait::async_trait]
-impl TableProvider for QdrantTableProvider {
-    fn as_any(&self) -> &dyn Any { self }
-
-    fn schema(&self) -> SchemaRef { Arc::clone(&self.schema) }
-
-    fn table_type(&self) -> TableType { TableType::Base }
-
-    fn supports_filters_pushdown(
-        &self,
-        filters: &[&Expr],
-    ) -> DataFusionResult<Vec<TableProviderFilterPushDown>> {
-        Ok(filters
-            .iter()
-            .map(|filter| {
-                if QdrantFilters::supports_exact(&self.schema, &self.payload_schema, filter) {
-                    TableProviderFilterPushDown::Exact
-                } else {
-                    TableProviderFilterPushDown::Unsupported
-                }
-            })
-            .collect())
-    }
-
-    async fn scan(
-        &self,
-        _state: &dyn Session,
-        projection: Option<&Vec<usize>>,
-        filters: &[Expr],
-        limit: Option<usize>,
-    ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
-        let pushdown = Arc::new(QdrantScanSpec::try_new(
-            &self.schema,
-            &self.payload_schema,
-            projection,
-            filters,
-            limit,
-        )?);
-        Ok(Arc::new(QdrantScanExec::new(
-            Arc::clone(&self.client),
-            self.table.table().to_string(),
-            pushdown,
-            Arc::clone(&self.payload_schema),
-        )))
-    }
-
-    async fn insert_into(
-        &self,
-        _state: &dyn Session,
-        _input: Arc<dyn ExecutionPlan>,
-        _insert_op: InsertOp,
-    ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
-        exec_err!("INSERT INTO is not supported for Qdrant tables")
-    }
-}
-
 /// `DataFusion` `ExecutionPlan` implementation for scanning Qdrant collections.
 ///
 /// This is the physical execution plan node that actually performs queries against `Qdrant`.
@@ -273,19 +158,8 @@ pub struct QdrantScanExec {
     properties:     Arc<PlanProperties>,
 }
 
-impl std::fmt::Debug for QdrantScanExec {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("QdrantScanExec")
-            .field("client", &"Qdrant")
-            .field("collection", &self.collection)
-            .field("pushdown", &self.pushdown)
-            .field("payload_schema", &self.payload_schema)
-            .finish_non_exhaustive()
-    }
-}
-
 impl QdrantScanExec {
-    fn new(
+    pub(super) fn new(
         client: Arc<Qdrant>,
         collection: String,
         pushdown: Arc<QdrantScanSpec>,
@@ -311,347 +185,62 @@ impl QdrantScanExec {
     }
 }
 
-const SCAN_PAGE_SIZE: usize = 1024;
-
-#[derive(Clone)]
-struct QdrantScrollState {
-    client:       Arc<Qdrant>,
-    collection:   String,
-    pushdown:     Arc<QdrantScanSpec>,
-    remaining:    Option<usize>,
-    continuation: QdrantContinuation,
-}
-
-impl QdrantOrderValue {
-    fn start_from(self) -> start_from::Value {
-        match self {
-            Self::Integer(value) => start_from::Value::Integer(value),
-            Self::Float(value) => start_from::Value::Float(value),
-        }
+impl std::fmt::Debug for QdrantTableProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("QdrantTableProvider")
+            .field("table", &self.table)
+            .field("client", &"Qdrant")
+            .field("schema", &self.schema)
+            .field("payload_schema", &self.payload_schema)
+            .finish()
     }
 }
 
-impl QdrantOrderedContinuation {
-    fn next(mut self, points: &[RetrievedPoint]) -> DataFusionResult<Self> {
-        let Some(last_point) = points.last() else {
-            return Ok(self);
-        };
-        let last_value =
-            match last_point.order_value.as_ref().and_then(|value| value.variant.as_ref()) {
-                Some(order_value::Variant::Int(value)) => QdrantOrderValue::Integer(*value),
-                Some(order_value::Variant::Float(value)) => QdrantOrderValue::Float(*value),
-                None => return exec_err!("ordered row missing order value"),
-            };
-        let mut page_boundary_ids = vec![];
-        for point in points.iter().rev() {
-            let point_value =
-                match point.order_value.as_ref().and_then(|value| value.variant.as_ref()) {
-                    Some(order_value::Variant::Int(value)) => QdrantOrderValue::Integer(*value),
-                    Some(order_value::Variant::Float(value)) => QdrantOrderValue::Float(*value),
-                    None => return exec_err!("ordered row missing order value"),
-                };
-            if point_value != last_value {
-                break;
-            }
-            page_boundary_ids.push(
-                point
-                    .id
-                    .clone()
-                    .ok_or_else(|| DataFusionError::Execution("ordered row missing id".into()))?,
-            );
-        }
-        page_boundary_ids.reverse();
-        if self.start_from.as_ref() == Some(&last_value) {
-            self.boundary_ids.extend(page_boundary_ids);
-        } else {
-            self.boundary_ids = page_boundary_ids;
-        }
-        self.start_from = Some(last_value);
-        Ok(self)
-    }
-}
-
-impl QdrantScrollState {
-    async fn execute_page(self) -> DataFusionResult<Option<(RecordBatch, Option<Self>)>> {
-        let Self { client, collection, pushdown, remaining, continuation } = self;
-
-        if remaining == Some(0) {
-            return Ok(None);
-        }
-
-        let page_limit =
-            remaining.map_or(SCAN_PAGE_SIZE, |remaining| remaining.min(SCAN_PAGE_SIZE));
-        let page_limit = u32::try_from(page_limit).expect("scan page size fits in u32");
-        let mut request = ScrollPointsBuilder::new(&collection)
-            .limit(page_limit)
-            .with_payload(matches!(pushdown.payload, QdrantPayloadSelector::Full));
-        let mut filter = pushdown.filters.to_filter();
-        let mut ordered = None;
-        match &pushdown.vectors {
-            QdrantVectorSelector::None => request = request.with_vectors(false),
-            QdrantVectorSelector::All => request = request.with_vectors(true),
-            QdrantVectorSelector::Named(names) => {
-                request = request.with_vectors(VectorsSelector { names: names.clone() });
-            }
-        }
-        match continuation {
-            QdrantContinuation::Offset(Some(offset)) => request = request.offset(offset),
-            QdrantContinuation::Offset(None) => {}
-            QdrantContinuation::Ordered(next) => {
-                let mut order_by = OrderByBuilder::new(&next.ordering.field).direction(
-                    if next.ordering.descending {
-                        Direction::Desc as i32
-                    } else {
-                        Direction::Asc as i32
-                    },
-                );
-                if let Some(start_from) = next.start_from {
-                    order_by = order_by.start_from(start_from.start_from());
-                }
-                request = request.order_by(order_by);
-                if !next.boundary_ids.is_empty() {
-                    filter
-                        .get_or_insert_with(Filter::default)
-                        .must_not
-                        .push(Condition::has_id(next.boundary_ids.clone()));
-                }
-                ordered = Some(next);
-            }
-        }
-        if let Some(filter) = filter {
-            request = request.filter(filter);
-        }
-
-        let response = client
-            .scroll(request)
-            .await
-            .map_err(|error| DataFusionError::External(Box::new(error)))?;
-        let qdrant_client::qdrant::ScrollResponse { result, next_page_offset, .. } = response;
-
-        if result.is_empty() {
-            return Ok(None);
-        }
-
-        if ordered.is_some() && next_page_offset.is_some() {
-            return exec_err!("ordered scroll returned id offset");
-        }
-        let ordered = ordered.map(|ordered| ordered.next(&result)).transpose()?;
-        let point_count = result.len();
-        let mut builder = QdrantRecordBatchBuilder::new(Arc::clone(&pushdown.schema), point_count)?;
-        for point in result {
-            builder.append_retrieved_point(point)?;
-        }
-        let batch = builder.finish()?;
-        let remaining = remaining.map(|remaining| remaining.saturating_sub(point_count));
-
-        let next_state = match (remaining, ordered, next_page_offset) {
-            (Some(0), _, _) | (_, None, None) => None,
-            (remaining, Some(ordered), _) => Some(Self {
-                client,
-                collection,
-                pushdown,
-                remaining,
-                continuation: QdrantContinuation::Ordered(ordered),
-            }),
-            (remaining, None, Some(offset)) => Some(Self {
-                client,
-                collection,
-                pushdown,
-                remaining,
-                continuation: QdrantContinuation::Offset(Some(offset)),
-            }),
-        };
-
-        Ok(Some((batch, next_state)))
-    }
-}
-
-impl ExecutionPlan for QdrantScanExec {
-    fn name(&self) -> &'static str { "QdrantScanExec" }
-
-    fn as_any(&self) -> &dyn Any { self }
-
-    fn properties(&self) -> &Arc<PlanProperties> { &self.properties }
-
-    fn apply_expressions(
-        &self,
-        _f: &mut dyn FnMut(&dyn PhysicalExpr) -> DataFusionResult<TreeNodeRecursion>,
-    ) -> DataFusionResult<TreeNodeRecursion> {
-        Ok(TreeNodeRecursion::Continue)
-    }
-
-    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> { vec![] }
-
-    fn with_new_children(
-        self: Arc<Self>,
-        _children: Vec<Arc<dyn ExecutionPlan>>,
-    ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
-        Ok(self)
-    }
-
-    fn try_pushdown_sort(
-        &self,
-        order: &[PhysicalSortExpr],
-    ) -> DataFusionResult<SortOrderPushdownResult<Arc<dyn ExecutionPlan>>> {
-        let [sort] = order else {
-            return Ok(SortOrderPushdownResult::Unsupported);
-        };
-        if let Some(column) = sort.expr.as_any().downcast_ref::<Column>() {
-            if column.name() != ID_FIELD_NAME || sort.options.descending {
-                return Ok(SortOrderPushdownResult::Unsupported);
-            }
-            return Ok(SortOrderPushdownResult::Exact { inner: Arc::new(self.clone()) });
-        }
-        let Some(expr) = sort.expr.as_any().downcast_ref::<BinaryExpr>() else {
-            return Ok(SortOrderPushdownResult::Unsupported);
-        };
-        if *expr.op() != datafusion::logical_expr::Operator::Colon {
-            return Ok(SortOrderPushdownResult::Unsupported);
-        }
-        let Some(column) = expr.left().as_any().downcast_ref::<Column>() else {
-            return Ok(SortOrderPushdownResult::Unsupported);
-        };
-        if column.name() != PAYLOAD_FIELD_NAME {
-            return Ok(SortOrderPushdownResult::Unsupported);
-        }
-        let Some(path) = expr.right().as_any().downcast_ref::<Literal>().and_then(|literal| {
-            match literal.value() {
-                datafusion::common::ScalarValue::Utf8(Some(path)) => Some(path),
-                _ => None,
-            }
-        }) else {
-            return Ok(SortOrderPushdownResult::Unsupported);
-        };
-        let Some(ordering) = self.payload_schema.ordering_for(path, sort.options.descending) else {
-            return Ok(SortOrderPushdownResult::Unsupported);
-        };
-        let mut pushdown = (*self.pushdown).clone();
-        pushdown.ordering = QdrantOrdering::ByPayload(ordering);
-        Ok(SortOrderPushdownResult::Exact {
-            inner: Arc::new(Self::new(
-                Arc::clone(&self.client),
-                self.collection.clone(),
-                Arc::new(pushdown),
-                Arc::clone(&self.payload_schema),
-            )),
-        })
-    }
-
-    fn handle_child_pushdown_result(
-        &self,
-        phase: FilterPushdownPhase,
-        child_pushdown_result: ChildPushdownResult,
-        _config: &ConfigOptions,
-    ) -> DataFusionResult<FilterPushdownPropagation<Arc<dyn ExecutionPlan>>> {
-        if phase != FilterPushdownPhase::Pre {
-            return Ok(FilterPushdownPropagation::all_unsupported(child_pushdown_result));
-        }
-        let parent_filters = child_pushdown_result
-            .parent_filters
-            .iter()
-            .map(|filter| Arc::clone(&filter.filter))
-            .collect::<Vec<_>>();
-        let (filters, support) = self.pushdown.filters.pushdown_physical(
-            &self.pushdown.schema,
-            &self.payload_schema,
-            &parent_filters,
-        );
-        let support = support
-            .into_iter()
-            .map(|supported| if supported { PushedDown::Yes } else { PushedDown::No })
-            .collect::<Vec<_>>();
-        let propagation = FilterPushdownPropagation::with_parent_pushdown_result(support);
-        if filters == self.pushdown.filters {
-            return Ok(propagation);
-        }
-        let mut pushdown = (*self.pushdown).clone();
-        pushdown.filters = filters;
-        Ok(propagation.with_updated_node(Arc::new(Self::new(
-            Arc::clone(&self.client),
-            self.collection.clone(),
-            Arc::new(pushdown),
-            Arc::clone(&self.payload_schema),
-        ))))
-    }
-
-    fn execute(
-        &self,
-        _partition: usize,
-        _context: Arc<TaskContext>,
-    ) -> DataFusionResult<SendableRecordBatchStream> {
-        let state = Some(QdrantScrollState {
-            client:       Arc::clone(&self.client),
-            collection:   self.collection.clone(),
-            pushdown:     Arc::clone(&self.pushdown),
-            remaining:    self.pushdown.limit,
-            continuation: self.pushdown.initial_continuation(),
-        });
-        let inner = Box::pin(futures_util::stream::try_unfold(state, |state| async move {
-            let Some(state) = state else {
-                return Ok(None);
-            };
-            state.execute_page().await
-        }));
-        let stream = QdrantQueryStream::new(Arc::clone(&self.pushdown.schema), inner);
-        Ok(Box::pin(stream))
-    }
-}
-
-impl DisplayAs for QdrantScanExec {
-    fn fmt_as(&self, t: DisplayFormatType, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match t {
-            DisplayFormatType::Default | DisplayFormatType::Verbose => {
-                write!(f, "QdrantScanExec: collection={}", self.collection)?;
-                match &self.pushdown.ordering {
-                    QdrantOrdering::ById => {}
-                    QdrantOrdering::ByPayload(ordering) => {
-                        write!(f, ", order_by={}", ordering.field)?;
-                        if ordering.descending {
-                            write!(f, " DESC")?;
-                        }
-                    }
-                }
-                if let Some(projection) = &self.pushdown.projection {
-                    write!(f, ", projected_columns={}", projection.len())?;
-                }
-                if !self.pushdown.filters.is_empty() {
-                    write!(f, ", pushed_filters={}", self.pushdown.filters.len())?;
-                }
-                if let Some(limit) = self.pushdown.limit {
-                    write!(f, ", limit={limit}")?;
-                }
-                Ok(())
-            }
-            DisplayFormatType::TreeRender => {
-                write!(f, "QdrantScanExec: collection={}", self.collection)
-            }
-        }
+impl std::fmt::Debug for QdrantScanExec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("QdrantScanExec")
+            .field("client", &"Qdrant")
+            .field("collection", &self.collection)
+            .field("pushdown", &self.pushdown)
+            .field("payload_schema", &self.payload_schema)
+            .finish_non_exhaustive()
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use datafusion::arrow::compute::SortOptions;
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::common::{Column as ExprColumn, ScalarValue};
+    use datafusion::datasource::TableProvider;
     use datafusion::logical_expr::{BinaryExpr, Expr, LogicalPlan, Operator};
     use datafusion::physical_expr::expressions::{
         BinaryExpr as PhysicalBinaryExpr, Column, Literal,
     };
     use datafusion::physical_plan::coop::CooperativeExec;
+    use datafusion::physical_plan::expressions::PhysicalSortExpr;
     use datafusion::physical_plan::filter::FilterExec;
     use datafusion::physical_plan::projection::ProjectionExec;
     use datafusion::physical_plan::repartition::RepartitionExec;
-    use datafusion::physical_plan::{SortOrderPushdownResult, displayable};
+    use datafusion::physical_plan::{ExecutionPlan, SortOrderPushdownResult, displayable};
     use datafusion::prelude::SessionContext;
     use futures_util::FutureExt;
+    use qdrant_client::Qdrant;
     use qdrant_client::qdrant::{
-        IntegerIndexParams, OrderValue, PayloadSchemaInfo, PointId, point_id,
+        IntegerIndexParams, OrderValue, PayloadSchemaInfo, PointId, RetrievedPoint, order_value,
+        point_id,
     };
 
     use super::*;
     use crate::arrow::schema::{ID_FIELD_NAME, PAYLOAD_FIELD_NAME};
     use crate::context::QdrantSessionContext;
     use crate::context::plan_node::{QdrantCountExec, QdrantFacetExec};
+    use crate::pushdown::{
+        QdrantOrderValue, QdrantOrderedContinuation, QdrantOrdering, QdrantPayloadSchema,
+        QdrantVectorSelector,
+    };
 
     fn test_provider(schema: Schema) -> QdrantTableProvider {
         QdrantTableProvider {

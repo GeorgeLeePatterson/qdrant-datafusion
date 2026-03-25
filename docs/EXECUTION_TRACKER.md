@@ -150,6 +150,10 @@ Use it to resume work without replaying the full repository history.
 29. `Q-032`: Redundant `DISTINCT` over raw full-row `Qdrant` scans is now dropped.
     - this is admitted only for raw scan/filter chains where the full row identity still includes unique `id`
     - projected `DISTINCT` remains a separate semantic case
+30. `Q-033`: Mergeable child-kernel extraction is now explicitly validated as compositional.
+    - a nested same-collection set-algebra region can collapse to one scan-local kernel first
+    - exact `COUNT(*)` and exact keyword-facet grouped counts can still replace the larger parent
+      subtree after that child rewrite in the same bottom-up analyzer pass
 ## Next
 
 1. The detailed planning inventory for the next expansion round now lives in `docs/QDRANT_COMPATIBILITY_MATRIX.md`.

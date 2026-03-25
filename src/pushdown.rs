@@ -1,3 +1,5 @@
+pub(crate) mod filter;
+
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -8,14 +10,47 @@ use datafusion::logical_expr::expr::BinaryExpr;
 use datafusion::logical_expr::{Expr, Operator};
 use qdrant_client::qdrant::{PayloadSchemaInfo, PayloadSchemaType, PointId, payload_index_params};
 
+use self::filter::value::{
+    boolean_scalar, float_scalar, integer_scalar, string_scalar, timestamp_scalar,
+};
+use self::filter::{QdrantFilterValue, QdrantFilters};
 use crate::arrow::schema::{
     PAYLOAD_FIELD_NAME, UNNAMED_VECTOR_FIELD_NAME, dense_vector_width, is_multi_vector_field,
     is_sparse_vector_field,
 };
 
-mod filter;
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct QdrantPayloadSchema {
+    fields: HashMap<String, QdrantPayloadField>,
+}
 
-pub(crate) use filter::QdrantFilters;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum QdrantPayloadField {
+    Keyword,
+    Integer { range: bool },
+    Float,
+    Bool,
+    Datetime,
+    Uuid,
+}
+
+impl QdrantPayloadField {
+    pub(crate) fn into_filter_value(self, literal: &ScalarValue) -> Option<QdrantFilterValue> {
+        match self {
+            QdrantPayloadField::Keyword | QdrantPayloadField::Uuid => {
+                Some(QdrantFilterValue::String(string_scalar(literal)?))
+            }
+            QdrantPayloadField::Integer { .. } => {
+                Some(QdrantFilterValue::Integer(integer_scalar(literal)?))
+            }
+            QdrantPayloadField::Float => Some(QdrantFilterValue::Float(float_scalar(literal)?)),
+            QdrantPayloadField::Bool => Some(QdrantFilterValue::Bool(boolean_scalar(literal)?)),
+            QdrantPayloadField::Datetime => {
+                Some(QdrantFilterValue::Datetime(timestamp_scalar(literal)?))
+            }
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum QdrantVectorSelector {
@@ -51,21 +86,49 @@ impl QdrantPayloadPath {
     pub(crate) fn new(path: String) -> Option<Self> { (!path.is_empty()).then_some(Self { path }) }
 
     pub(crate) fn key(&self) -> &str { &self.path }
+
+    pub(crate) fn from_logical_expr(expr: &Expr) -> Option<Self> {
+        match expr {
+            Expr::BinaryExpr(BinaryExpr { left, op: Operator::Colon, right }) => {
+                let Expr::Column(column) = left.as_ref() else {
+                    return None;
+                };
+                if column.name != PAYLOAD_FIELD_NAME {
+                    return None;
+                }
+                match right.as_ref() {
+                    Expr::Literal(
+                        ScalarValue::Utf8(Some(path)) | ScalarValue::LargeUtf8(Some(path)),
+                        _,
+                    ) => Self::new(path.clone()),
+                    _ => None,
+                }
+            }
+            Expr::Alias(alias) => Self::from_logical_expr(&alias.expr),
+            _ => None,
+        }
+    }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum QdrantPayloadField {
-    Keyword,
-    Integer { range: bool },
-    Float,
-    Bool,
-    Datetime,
-    Uuid,
-}
+impl QdrantPayloadSchema {
+    pub(crate) fn ordering_for(
+        &self,
+        field: &str,
+        descending: bool,
+    ) -> Option<QdrantPayloadOrdering> {
+        match self.fields.get(field) {
+            Some(
+                QdrantPayloadField::Integer { range: true }
+                | QdrantPayloadField::Float
+                | QdrantPayloadField::Datetime,
+            ) => Some(QdrantPayloadOrdering { field: field.to_owned(), descending }),
+            _ => None,
+        }
+    }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct QdrantPayloadSchema {
-    fields: HashMap<String, QdrantPayloadField>,
+    pub(crate) fn field(&self, field: &str) -> Option<QdrantPayloadField> {
+        self.fields.get(field).copied()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -195,49 +258,6 @@ impl From<HashMap<String, PayloadSchemaInfo>> for QdrantPayloadSchema {
             })
             .collect();
         Self { fields }
-    }
-}
-
-impl QdrantPayloadSchema {
-    pub(crate) fn ordering_for(
-        &self,
-        field: &str,
-        descending: bool,
-    ) -> Option<QdrantPayloadOrdering> {
-        match self.fields.get(field) {
-            Some(
-                QdrantPayloadField::Integer { range: true }
-                | QdrantPayloadField::Float
-                | QdrantPayloadField::Datetime,
-            ) => Some(QdrantPayloadOrdering { field: field.to_owned(), descending }),
-            _ => None,
-        }
-    }
-
-    pub(crate) fn field(&self, field: &str) -> Option<QdrantPayloadField> {
-        self.fields.get(field).copied()
-    }
-}
-
-pub(crate) fn logical_payload_path(expr: &Expr) -> Option<QdrantPayloadPath> {
-    match expr {
-        Expr::BinaryExpr(BinaryExpr { left, op: Operator::Colon, right }) => {
-            let Expr::Column(column) = left.as_ref() else {
-                return None;
-            };
-            if column.name != PAYLOAD_FIELD_NAME {
-                return None;
-            }
-            match right.as_ref() {
-                Expr::Literal(
-                    ScalarValue::Utf8(Some(path)) | ScalarValue::LargeUtf8(Some(path)),
-                    _,
-                ) => QdrantPayloadPath::new(path.clone()),
-                _ => None,
-            }
-        }
-        Expr::Alias(alias) => logical_payload_path(&alias.expr),
-        _ => None,
     }
 }
 

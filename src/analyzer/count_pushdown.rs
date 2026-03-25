@@ -5,7 +5,7 @@ use datafusion::logical_expr::LogicalPlan;
 
 use super::common::{count_star_like, qdrant_source};
 use crate::context::plan_node::QdrantCountNode;
-use crate::pushdown::QdrantFilters;
+use crate::pushdown::filter::QdrantFilters;
 
 pub(super) fn count_node(plan: &LogicalPlan) -> Result<Option<QdrantCountNode>> {
     let LogicalPlan::Aggregate(aggregate) = plan else {

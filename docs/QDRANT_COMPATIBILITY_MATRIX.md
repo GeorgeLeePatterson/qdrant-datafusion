@@ -266,6 +266,9 @@ The currently admitted replacement subset is still intentionally narrower:
    left-minus-right filter algebra respectively
 8. redundant `DISTINCT` over raw full-row `Qdrant` scans is now dropped when the row identity
    still includes unique `id`
+9. those mergeable child kernels are now explicitly validated as compositional:
+   exact `COUNT(*)` and the first keyword-facet grouped-count relation can still claim the larger
+   parent subtree after the child region collapses in the same analyzer pass
 
 Future expansion should widen those axes explicitly rather than adding planner-layer endpoint
 features one by one.

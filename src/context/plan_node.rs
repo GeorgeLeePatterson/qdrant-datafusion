@@ -15,7 +15,8 @@ use futures_util::stream;
 use qdrant_client::Qdrant;
 use qdrant_client::qdrant::{CountPointsBuilder, FacetCountsBuilder, facet_value};
 
-use crate::pushdown::{QdrantFilters, QdrantPayloadPath};
+use crate::pushdown::QdrantPayloadPath;
+use crate::pushdown::filter::QdrantFilters;
 
 pub(crate) const QDRANT_COUNT_NODE_NAME: &str = "QdrantCountNode";
 pub(crate) const QDRANT_FACET_NODE_NAME: &str = "QdrantFacetNode";

@@ -49,6 +49,9 @@ canonical carrier; missing values are not imputed during scan.
     - same-collection raw `INTERSECT DISTINCT` branches over exact filters
     - same-collection raw `EXCEPT DISTINCT` branches over exact filters
     - all currently rewrite to a single filtered scan
+  - those extracted child kernels now also compose upward in the same analyzer pass:
+    - exact `COUNT(*)` and exact keyword-facet grouped counts can still replace the larger parent
+      subtree after a mergeable child region collapses to one scan-local kernel
   - redundant `DISTINCT` over a raw full-row `Qdrant` scan is now dropped because row identity
     already includes unique `id`
 - heterogeneous named-vector scans with top-level nullable vector columns
