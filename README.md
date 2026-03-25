@@ -62,11 +62,12 @@ canonical carrier; missing values are not imputed during scan.
 - exact SQL null semantics for `payload:<path>`:
   - `IS NULL` means missing or explicit null
   - `IS NOT NULL` means present and non-null
+  - empty scalar values remain ordinary non-null SQL values, for example `payload:<path> = ''`
 
 ## Not Yet Admitted
 
 - write support or `INSERT INTO`
-- payload empty semantics, text, geo, nested, and count-oriented payload predicates
+- payload empty-container/cardinality semantics, text, geo, nested, and count-oriented payload predicates
 - broader payload-key SQL `ORDER BY` pushdown beyond the admitted `payload:<path>` subset
 - broader aggregate/grouped SQL beyond the admitted scalar-facet subset
 - projection-time `payload:<path>` execution outside an admitted `Qdrant` kernel in the prepared

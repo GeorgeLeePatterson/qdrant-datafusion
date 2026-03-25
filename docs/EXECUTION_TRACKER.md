@@ -164,6 +164,11 @@ Use it to resume work without replaying the full repository history.
     - integer payload metadata now distinguishes `lookup` from `range`, so integer `=` / `IN` pushdown no longer overstates range-only integer indexes
     - live collection introspection on the current runtime line now preserves integer lookup/range metadata well enough to admit integer facet pushdown on the same exact contract
     - this keeps the broadened facet slice exact on the current planner/runtime contract without pretending typed payload projection is already admitted
+32. `Q-035`: Payload-empty SQL semantics are now narrowed to the standard SQL subset that the current bridge can state honestly.
+    - scalar empty values do not get a dedicated backend-shaped predicate
+    - empty strings remain ordinary non-null values and are expressed through normal equality, for example `payload:<path> = ''`
+    - current tests now prove that empty strings stay distinct from `payload:<path> IS NULL`
+    - empty-container/cardinality semantics remain deferred until typed payload access is admitted more broadly
 ## Next
 
 1. The detailed planning inventory for the next expansion round now lives in `docs/QDRANT_COMPATIBILITY_MATRIX.md`.
@@ -172,7 +177,7 @@ Use it to resume work without replaying the full repository history.
    - explicit output contracts for aggregate-like `Qdrant` exploration surfaces beyond exact `COUNT(*)` and the current scalar-facet grouped counts
    - determine whether the next grouped slice is broader facet semantics or a separate aggregate-like relation
 4. `Q-020`: Extend the predicate algebra only where the SQL semantics are explicit.
-   - payload empty semantics
+   - payload empty-container/cardinality semantics
    - text, geo, nested, and count-oriented predicates
 5. Continue mapping the pushdown model onto `DataFusion`’s own idioms where broader traversal is required.
    - `TreeNode` visitors / rewriters instead of ad hoc recursion

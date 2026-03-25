@@ -45,6 +45,14 @@ e2e_test!(
 
 #[cfg(feature = "test-utils")]
 e2e_test!(
+    table_provider_distinguishes_empty_string_from_null,
+    tests::test_table_provider_distinguishes_empty_string_from_null,
+    TRACING_DIRECTIVES,
+    None
+);
+
+#[cfg(feature = "test-utils")]
+e2e_test!(
     table_provider_pushes_down_count_star,
     tests::test_table_provider_pushes_down_count_star,
     TRACING_DIRECTIVES,
@@ -1094,6 +1102,103 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert_eq!(not_null_ids, vec![3]);
+
+        Ok(())
+    }
+
+    pub(super) async fn test_table_provider_distinguishes_empty_string_from_null(
+        c: Arc<QdrantContainer>,
+    ) -> Result<()> {
+        let client = create_qdrant_client(&c)?;
+        let collection_name = "test_payload_empty_scalar_semantics";
+        create_scalar_collection(&client, collection_name).await?;
+        create_payload_index(
+            &client,
+            collection_name,
+            "tag",
+            FieldType::Keyword,
+            qdrant_client::qdrant::KeywordIndexParamsBuilder::default().build(),
+        )
+        .await?;
+
+        let mut payload1 = qdrant_client::Payload::new();
+        payload1.insert("tag", "");
+        let mut payload3 = qdrant_client::Payload::new();
+        payload3.insert("tag", "blue");
+        let mut payload4 = qdrant_client::Payload::new();
+        payload4.insert("tag", serde_json::Value::Null);
+
+        let points = vec![
+            PointStruct::new(1, Vector::new_dense(vec![0.0]), payload1),
+            PointStruct::new(2, Vector::new_dense(vec![0.0]), qdrant_client::Payload::new()),
+            PointStruct::new(3, Vector::new_dense(vec![0.0]), payload3),
+            PointStruct::new(4, Vector::new_dense(vec![0.0]), payload4),
+        ];
+        drop(client.upsert_points(UpsertPointsBuilder::new(collection_name, points)).await?);
+
+        let table_provider = QdrantTableProvider::try_new(client.clone(), collection_name).await?;
+        let ctx = SessionContext::new();
+        drop(ctx.register_table("vectors", Arc::new(table_provider))?);
+
+        let empty_batches = ctx
+            .sql("SELECT id FROM vectors WHERE payload:tag = '' ORDER BY id")
+            .await?
+            .collect()
+            .await?;
+        let empty_ids = empty_batches
+            .iter()
+            .flat_map(|batch| {
+                batch
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .expect("id string array")
+                    .iter()
+                    .map(|value| value.expect("non-null id").parse::<u64>().expect("numeric id"))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(empty_ids, vec![1]);
+
+        let null_batches = ctx
+            .sql("SELECT id FROM vectors WHERE payload:tag IS NULL ORDER BY id")
+            .await?
+            .collect()
+            .await?;
+        let null_ids = null_batches
+            .iter()
+            .flat_map(|batch| {
+                batch
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .expect("id string array")
+                    .iter()
+                    .map(|value| value.expect("non-null id").parse::<u64>().expect("numeric id"))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(null_ids, vec![2, 4]);
+
+        let not_null_batches = ctx
+            .sql("SELECT id FROM vectors WHERE payload:tag IS NOT NULL ORDER BY id")
+            .await?
+            .collect()
+            .await?;
+        let not_null_ids = not_null_batches
+            .iter()
+            .flat_map(|batch| {
+                batch
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .expect("id string array")
+                    .iter()
+                    .map(|value| value.expect("non-null id").parse::<u64>().expect("numeric id"))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(not_null_ids, vec![1, 3]);
 
         Ok(())
     }

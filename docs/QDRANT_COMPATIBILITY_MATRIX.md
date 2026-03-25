@@ -59,7 +59,7 @@ This matrix is derived from:
 | Row restriction | general `OR` | `should` | boolean predicate normalization | `Current` | Admitted exactly over the current leaf subset. Unsupported branches still reject cleanly. |
 | Row restriction | general `NOT` | `must_not` | boolean predicate normalization | `Current` | Admitted exactly over the current leaf subset. Payload-empty semantics are still deferred. |
 | Row restriction | `is_null` | field condition | payload null semantics | `Current` | SQL `payload:<path> IS NULL` is now admitted exactly as missing or explicit null. Backend lowering composes `is_null` with missing-only detection. |
-| Row restriction | `is_empty` | field condition | payload empty / missing semantics | `Next` | Runtime contract is now validated more precisely: `is_empty` matches missing, explicit null, and `[]`, but not empty strings or empty objects on the current runtime line. SQL empty semantics are still deferred. |
+| Row restriction | `is_empty` | field condition | payload empty / missing semantics | `Partial` | Runtime contract is now validated more precisely: `is_empty` matches missing, explicit null, and `[]`, but not empty strings or empty objects on the current runtime line. The current SQL bridge now settles the scalar case by keeping empty strings on ordinary equality semantics, while dedicated empty-container/cardinality semantics remain deferred. |
 | Row restriction | `values_count` | field condition | cardinality predicates | `Later` | Good fit semantically, but depends on payload shape policy. |
 | Row restriction | nested object filter | nested condition | correlated payload-array predicates | `Later` | Important, but it is not equivalent to dotted-path conjunctions. Needs explicit SQL semantics. |
 | Row restriction | geo radius / bbox / polygon | geo conditions | geo predicates / functions | `Later` | Natural fit for SQL functions or typed expressions, but not first-wave. |
@@ -165,9 +165,9 @@ This remains the strongest next implementation focus.
 
 ### P0.5: explicit payload null / empty semantics
 
-This remains important, but the scope is now payload empty semantics rather than payload null semantics.
+This remains important, but the scope is now empty-container/cardinality semantics rather than payload null semantics or scalar empty-string handling.
 
-1. model `is_empty` explicitly without overloading SQL null semantics
+1. keep empty-container semantics explicit without overloading SQL null semantics
 2. keep missing-vs-null-vs-empty semantics explicit instead of guessing
 3. avoid conflating SQL null with backend empty-container predicates
 

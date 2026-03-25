@@ -56,7 +56,10 @@ Current branch reality:
     - `IS NULL` means missing or explicit null
     - `IS NOT NULL` means present and non-null
     - the current lowering excludes empty arrays from SQL null by composing `is_null`, `is_empty`, and `values_count`
-24. Payload-empty semantics are still intentionally deferred.
+24. Payload-empty SQL semantics are now narrowed to the standard SQL subset that the current bridge can state honestly.
+    - empty strings remain ordinary non-null values and are expressed through normal equality, for example `payload:<path> = ''`
+    - current tests now prove that empty strings stay distinct from `payload:<path> IS NULL`
+    - empty-container/cardinality semantics are still intentionally deferred
 25. Planner-layer subtree replacement now uses a unified relation-pushdown analyzer scaffold for the admitted `Qdrant` relation replacements instead of separate analyzer-rule ownership by convention.
 26. The planner scaffold now derives broader subtree classes explicitly before relation recognition.
     - source class: `none`, `single-source Qdrant`, `multi-source Qdrant`, `mixed`
@@ -123,7 +126,7 @@ Current branch reality:
 1. Prefer clean reimplementation over porting code from the old spike branch.
 2. Remove deprecated `qdrant-client` paths instead of preserving fallback behavior.
 3. Preserve truthful nullability at the scan boundary; do not impute missing vectors during scan.
-4. The next step is still not ad hoc implementation. It is the remaining pushdown-first SQL-bridge work tracked as `Q-017`, `M-002`, and `Q-020`.
+4. The next step is still not ad hoc implementation. It is the remaining pushdown-first SQL-bridge work tracked as `Q-017`, `M-002`, and the narrowed empty-container/cardinality part of `Q-020`.
 5. That next phase is explicitly anchored on `DataFusion`’s own idioms:
    - `TreeNode` traversal / rewriting
    - `LogicalPlan` expression and subquery helpers

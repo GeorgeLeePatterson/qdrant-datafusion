@@ -401,6 +401,15 @@ mod tests {
         assert!(QdrantFilters::supports_exact(
             &schema,
             &payload_schema,
+            &Expr::BinaryExpr(BinaryExpr::new(
+                Box::new(payload_path("tag")),
+                Operator::Eq,
+                Box::new(Expr::Literal(ScalarValue::Utf8(Some(String::new())), None)),
+            )),
+        ));
+        assert!(QdrantFilters::supports_exact(
+            &schema,
+            &payload_schema,
             &Expr::Not(Box::new(Expr::BinaryExpr(BinaryExpr::new(
                 Box::new(payload_path("tag")),
                 Operator::Eq,
