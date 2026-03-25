@@ -9,12 +9,11 @@ use qdrant_client::qdrant::{
     VectorsSelector, order_value, start_from,
 };
 
-use super::SCAN_PAGE_SIZE;
-use crate::arrow::deserialize::QdrantRecordBatchBuilder;
-use crate::pushdown::{
+use super::{
     QdrantContinuation, QdrantOrderValue, QdrantOrderedContinuation, QdrantPayloadSelector,
-    QdrantScanSpec, QdrantVectorSelector,
+    QdrantScanSpec, QdrantVectorSelector, SCAN_PAGE_SIZE,
 };
+use crate::arrow::deserialize::QdrantRecordBatchBuilder;
 
 #[derive(Clone)]
 pub(super) struct QdrantScrollState {

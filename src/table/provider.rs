@@ -11,8 +11,7 @@ use datafusion::logical_expr::dml::InsertOp;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::Expr;
 
-use super::{QdrantScanExec, QdrantTableProvider};
-use crate::pushdown::QdrantScanSpec;
+use super::{QdrantScanExec, QdrantScanSpec, QdrantTableProvider};
 use crate::pushdown::filter::QdrantFilters;
 
 #[async_trait::async_trait]

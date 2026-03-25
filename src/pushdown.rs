@@ -1,23 +1,17 @@
 pub(crate) mod filter;
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
-use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::ScalarValue;
-use datafusion::error::Result as DataFusionResult;
 use datafusion::logical_expr::expr::BinaryExpr;
 use datafusion::logical_expr::{Expr, Operator};
-use qdrant_client::qdrant::{PayloadSchemaInfo, PayloadSchemaType, PointId, payload_index_params};
+use qdrant_client::qdrant::{PayloadSchemaInfo, PayloadSchemaType, payload_index_params};
 
+use self::filter::QdrantFilterValue;
 use self::filter::value::{
     boolean_scalar, float_scalar, integer_scalar, string_scalar, timestamp_scalar,
 };
-use self::filter::{QdrantFilterValue, QdrantFilters};
-use crate::arrow::schema::{
-    PAYLOAD_FIELD_NAME, UNNAMED_VECTOR_FIELD_NAME, dense_vector_width, is_multi_vector_field,
-    is_sparse_vector_field,
-};
+use crate::arrow::schema::PAYLOAD_FIELD_NAME;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct QdrantPayloadSchema {
@@ -50,31 +44,6 @@ impl QdrantPayloadField {
             }
         }
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum QdrantVectorSelector {
-    None,
-    All,
-    Named(Vec<String>),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum QdrantPayloadSelector {
-    None,
-    Full,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) enum QdrantOrdering {
-    ById,
-    ByPayload(QdrantPayloadOrdering),
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct QdrantPayloadOrdering {
-    pub(crate) field:      String,
-    pub(crate) descending: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -111,112 +80,8 @@ impl QdrantPayloadPath {
 }
 
 impl QdrantPayloadSchema {
-    pub(crate) fn ordering_for(
-        &self,
-        field: &str,
-        descending: bool,
-    ) -> Option<QdrantPayloadOrdering> {
-        match self.fields.get(field) {
-            Some(
-                QdrantPayloadField::Integer { range: true }
-                | QdrantPayloadField::Float
-                | QdrantPayloadField::Datetime,
-            ) => Some(QdrantPayloadOrdering { field: field.to_owned(), descending }),
-            _ => None,
-        }
-    }
-
     pub(crate) fn field(&self, field: &str) -> Option<QdrantPayloadField> {
         self.fields.get(field).copied()
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) enum QdrantOrderValue {
-    Integer(i64),
-    Float(f64),
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) enum QdrantContinuation {
-    Offset(Option<PointId>),
-    Ordered(QdrantOrderedContinuation),
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct QdrantOrderedContinuation {
-    pub(crate) ordering:     QdrantPayloadOrdering,
-    pub(crate) start_from:   Option<QdrantOrderValue>,
-    pub(crate) boundary_ids: Vec<PointId>,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct QdrantScanSpec {
-    pub(crate) schema:     SchemaRef,
-    pub(crate) projection: Option<Vec<usize>>,
-    pub(crate) vectors:    QdrantVectorSelector,
-    pub(crate) payload:    QdrantPayloadSelector,
-    pub(crate) filters:    QdrantFilters,
-    pub(crate) ordering:   QdrantOrdering,
-    pub(crate) limit:      Option<usize>,
-}
-
-impl QdrantScanSpec {
-    pub(crate) fn try_new(
-        base_schema: &SchemaRef,
-        payload_schema: &QdrantPayloadSchema,
-        projection: Option<&Vec<usize>>,
-        filters: &[Expr],
-        limit: Option<usize>,
-    ) -> DataFusionResult<Self> {
-        let schema = match projection {
-            Some(indices) if !indices.is_empty() => Arc::new(base_schema.project(indices)?),
-            _ => Arc::clone(base_schema),
-        };
-        let vector_names = schema
-            .fields()
-            .iter()
-            .filter(|field| {
-                dense_vector_width(field).is_some()
-                    || is_multi_vector_field(field)
-                    || is_sparse_vector_field(field)
-            })
-            .map(|field| field.name().clone())
-            .collect::<Vec<_>>();
-        let vectors = if vector_names.is_empty() {
-            QdrantVectorSelector::None
-        } else if vector_names.len() == 1 && vector_names[0] == UNNAMED_VECTOR_FIELD_NAME {
-            QdrantVectorSelector::All
-        } else {
-            QdrantVectorSelector::Named(vector_names)
-        };
-        let payload = if schema.fields().iter().any(|field| field.name() == PAYLOAD_FIELD_NAME) {
-            QdrantPayloadSelector::Full
-        } else {
-            QdrantPayloadSelector::None
-        };
-        Ok(Self {
-            schema,
-            projection: projection.cloned(),
-            vectors,
-            payload,
-            filters: QdrantFilters::try_new(base_schema, payload_schema, filters)?,
-            ordering: QdrantOrdering::ById,
-            limit,
-        })
-    }
-
-    pub(crate) fn initial_continuation(&self) -> QdrantContinuation {
-        match &self.ordering {
-            QdrantOrdering::ById => QdrantContinuation::Offset(None),
-            QdrantOrdering::ByPayload(ordering) => {
-                QdrantContinuation::Ordered(QdrantOrderedContinuation {
-                    ordering:     ordering.clone(),
-                    start_from:   None,
-                    boundary_ids: vec![],
-                })
-            }
-        }
     }
 }
 
@@ -263,81 +128,12 @@ impl From<HashMap<String, PayloadSchemaInfo>> for QdrantPayloadSchema {
 
 #[cfg(test)]
 mod tests {
-    use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use qdrant_client::qdrant::{
         BoolIndexParams, FloatIndexParams, IntegerIndexParams, KeywordIndexParams, UuidIndexParams,
     };
 
     use super::*;
-    use crate::arrow::schema::ID_FIELD_NAME;
-
-    fn schema(fields: Vec<Field>) -> SchemaRef { Arc::new(Schema::new(fields)) }
-
-    #[test]
-    fn scan_spec_uses_all_for_unnamed_vector_contract() {
-        let schema = schema(vec![
-            Field::new(ID_FIELD_NAME, DataType::Utf8, false),
-            Field::new(
-                UNNAMED_VECTOR_FIELD_NAME,
-                DataType::new_fixed_size_list(DataType::Float32, 3, false),
-                true,
-            ),
-        ]);
-
-        let spec =
-            QdrantScanSpec::try_new(&schema, &QdrantPayloadSchema::default(), None, &[], None)
-                .expect("scan spec");
-
-        assert_eq!(spec.vectors, QdrantVectorSelector::All);
-    }
-
-    #[test]
-    fn scan_spec_ignores_non_vector_columns() {
-        let schema = schema(vec![
-            Field::new(ID_FIELD_NAME, DataType::Utf8, false),
-            Field::new("score", DataType::Float32, true),
-            Field::new(
-                "embedding",
-                DataType::new_fixed_size_list(DataType::Float32, 3, false),
-                true,
-            ),
-        ]);
-
-        let spec =
-            QdrantScanSpec::try_new(&schema, &QdrantPayloadSchema::default(), None, &[], None)
-                .expect("scan spec");
-
-        assert_eq!(spec.vectors, QdrantVectorSelector::Named(vec!["embedding".to_owned()]),);
-    }
-
-    #[test]
-    fn scan_spec_tracks_projection_payload_limit_and_continuation() {
-        let schema = schema(vec![
-            Field::new(ID_FIELD_NAME, DataType::Utf8, false),
-            Field::new(PAYLOAD_FIELD_NAME, DataType::Utf8, true),
-            Field::new(
-                "embedding",
-                DataType::new_fixed_size_list(DataType::Float32, 3, false),
-                true,
-            ),
-        ]);
-
-        let projection = vec![1, 2];
-        let spec = QdrantScanSpec::try_new(
-            &schema,
-            &QdrantPayloadSchema::default(),
-            Some(&projection),
-            &[],
-            Some(7),
-        )
-        .expect("scan spec");
-
-        assert_eq!(spec.projection, Some(projection));
-        assert_eq!(spec.payload, QdrantPayloadSelector::Full);
-        assert_eq!(spec.limit, Some(7));
-        assert_eq!(spec.filters.len(), 0);
-        assert_eq!(spec.initial_continuation(), QdrantContinuation::Offset(None));
-    }
+    use crate::table::pushdown::QdrantPayloadOrdering;
 
     #[test]
     fn payload_schema_keeps_filterable_and_orderable_scalar_indexes() {

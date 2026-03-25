@@ -15,10 +15,9 @@ use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, SortOrderPushdownResult,
 };
 
-use super::QdrantScanExec;
 use super::scroll::QdrantScrollState;
+use super::{QdrantOrdering, QdrantScanExec};
 use crate::arrow::schema::{ID_FIELD_NAME, PAYLOAD_FIELD_NAME};
-use crate::pushdown::QdrantOrdering;
 use crate::stream::QdrantQueryStream;
 
 impl ExecutionPlan for QdrantScanExec {

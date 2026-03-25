@@ -1,6 +1,7 @@
 //! `DataFusion` `TableProvider` implementation for `Qdrant` vector database collections.
 mod exec;
 mod provider;
+pub(crate) mod pushdown;
 mod scroll;
 
 use std::sync::Arc;
@@ -14,9 +15,13 @@ use datafusion::physical_plan::execution_plan::Boundedness;
 use datafusion::sql::TableReference;
 use qdrant_client::Qdrant;
 
+pub(crate) use self::pushdown::{
+    QdrantContinuation, QdrantOrderValue, QdrantOrderedContinuation, QdrantOrdering,
+    QdrantPayloadSelector, QdrantScanSpec, QdrantVectorSelector,
+};
 use crate::arrow::schema::{ID_FIELD_NAME, collection_to_arrow_schema};
 use crate::error::{Error, Result};
-use crate::pushdown::{QdrantOrdering, QdrantPayloadSchema, QdrantScanSpec};
+use crate::pushdown::QdrantPayloadSchema;
 
 const SCAN_PAGE_SIZE: usize = 1024;
 
@@ -237,10 +242,8 @@ mod tests {
     use crate::arrow::schema::{ID_FIELD_NAME, PAYLOAD_FIELD_NAME};
     use crate::context::QdrantSessionContext;
     use crate::context::plan_node::{QdrantCountExec, QdrantFacetExec};
-    use crate::pushdown::{
-        QdrantOrderValue, QdrantOrderedContinuation, QdrantOrdering, QdrantPayloadSchema,
-        QdrantVectorSelector,
-    };
+    use crate::pushdown::QdrantPayloadSchema;
+    use crate::table::pushdown::QdrantPayloadOrdering;
 
     fn test_provider(schema: Schema) -> QdrantTableProvider {
         QdrantTableProvider {
@@ -386,6 +389,35 @@ mod tests {
     }
 
     #[test]
+    fn scan_tracks_projection_payload_limit_and_continuation() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(ID_FIELD_NAME, DataType::Utf8, false),
+            Field::new(PAYLOAD_FIELD_NAME, DataType::Utf8, true),
+            Field::new(
+                "embedding",
+                DataType::new_fixed_size_list(DataType::Float32, 3, false),
+                true,
+            ),
+        ]));
+
+        let projection = vec![1, 2];
+        let spec = QdrantScanSpec::try_new(
+            &schema,
+            &QdrantPayloadSchema::default(),
+            Some(&projection),
+            &[],
+            Some(7),
+        )
+        .expect("scan spec");
+
+        assert_eq!(spec.projection, Some(projection));
+        assert_eq!(spec.payload, QdrantPayloadSelector::Full);
+        assert_eq!(spec.limit, Some(7));
+        assert_eq!(spec.filters.len(), 0);
+        assert_eq!(spec.initial_continuation(), QdrantContinuation::Offset(None));
+    }
+
+    #[test]
     fn sort_pushdown_is_exact_for_id_ascending() {
         let scan = scan_exec(&test_provider(Schema::new(vec![Field::new(
             ID_FIELD_NAME,
@@ -476,7 +508,7 @@ mod tests {
 
         assert_eq!(
             pushed.pushdown.ordering,
-            QdrantOrdering::ByPayload(crate::pushdown::QdrantPayloadOrdering {
+            QdrantOrdering::ByPayload(QdrantPayloadOrdering {
                 field:      "rank".to_owned(),
                 descending: false,
             }),
@@ -612,7 +644,7 @@ mod tests {
         assert!(!display.contains("SortExec"), "{display}");
         assert_eq!(
             scan.pushdown.ordering,
-            QdrantOrdering::ByPayload(crate::pushdown::QdrantPayloadOrdering {
+            QdrantOrdering::ByPayload(QdrantPayloadOrdering {
                 field:      "rank".to_owned(),
                 descending: false,
             }),
@@ -996,7 +1028,7 @@ mod tests {
     #[test]
     fn ordered_continuation_accumulates_duplicate_boundary_ids() {
         let ordered = QdrantOrderedContinuation {
-            ordering:     crate::pushdown::QdrantPayloadOrdering {
+            ordering:     QdrantPayloadOrdering {
                 field:      "rank".to_owned(),
                 descending: false,
             },
@@ -1019,7 +1051,7 @@ mod tests {
     #[test]
     fn ordered_continuation_resets_boundary_ids_for_new_boundary() {
         let ordered = QdrantOrderedContinuation {
-            ordering:     crate::pushdown::QdrantPayloadOrdering {
+            ordering:     QdrantPayloadOrdering {
                 field:      "rank".to_owned(),
                 descending: false,
             },
