@@ -3,7 +3,7 @@ use std::sync::Arc;
 use datafusion::common::Result;
 use datafusion::logical_expr::LogicalPlan;
 
-use super::common::{count_star_like, qdrant_source};
+use super::common::{QdrantSource, count_star_like};
 use crate::context::plan_node::QdrantCountNode;
 use crate::pushdown::filter::QdrantFilters;
 
@@ -18,7 +18,7 @@ pub(super) fn count_node(plan: &LogicalPlan) -> Result<Option<QdrantCountNode>> 
         return Ok(None);
     }
 
-    let Some(source) = qdrant_source(aggregate.input.as_ref()) else {
+    let Some(source) = QdrantSource::from_plan(aggregate.input.as_ref()) else {
         return Ok(None);
     };
     if !source

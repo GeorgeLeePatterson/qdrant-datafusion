@@ -17,6 +17,33 @@ pub(crate) struct QdrantSource {
     pub(crate) filters:        Vec<Expr>,
 }
 
+impl QdrantSource {
+    pub(crate) fn from_plan(plan: &LogicalPlan) -> Option<Self> {
+        let mut filters = vec![];
+        let mut plan = plan;
+        loop {
+            match plan {
+                LogicalPlan::Filter(filter) => {
+                    filters.push(filter.predicate.clone());
+                    plan = filter.input.as_ref();
+                }
+                LogicalPlan::TableScan(scan) => {
+                    let provider = source_as_provider(&scan.source).ok()?;
+                    let provider = provider.as_any().downcast_ref::<QdrantTableProvider>()?;
+                    return Some(Self {
+                        client: Arc::clone(provider.client()),
+                        collection: provider.collection().to_owned(),
+                        schema: provider.schema(),
+                        payload_schema: Arc::clone(provider.payload_schema()),
+                        filters,
+                    });
+                }
+                _ => return None,
+            }
+        }
+    }
+}
+
 pub(crate) fn count_star_like(expr: &Expr) -> bool {
     match expr {
         Expr::Alias(Alias { expr, .. }) => count_star_like(expr),
@@ -29,31 +56,6 @@ pub(crate) fn count_star_like(expr: &Expr) -> bool {
                 && matches!(params.args.as_slice(), [Expr::Literal(value, _)] if count_like_literal(value))
         }
         _ => false,
-    }
-}
-
-pub(crate) fn qdrant_source(plan: &LogicalPlan) -> Option<QdrantSource> {
-    let mut filters = vec![];
-    let mut plan = plan;
-    loop {
-        match plan {
-            LogicalPlan::Filter(filter) => {
-                filters.push(filter.predicate.clone());
-                plan = filter.input.as_ref();
-            }
-            LogicalPlan::TableScan(scan) => {
-                let provider = source_as_provider(&scan.source).ok()?;
-                let provider = provider.as_any().downcast_ref::<QdrantTableProvider>()?;
-                return Some(QdrantSource {
-                    client: Arc::clone(provider.client()),
-                    collection: provider.collection().to_owned(),
-                    schema: provider.schema(),
-                    payload_schema: Arc::clone(provider.payload_schema()),
-                    filters,
-                });
-            }
-            _ => return None,
-        }
     }
 }
 

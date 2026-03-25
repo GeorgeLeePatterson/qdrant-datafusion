@@ -3,166 +3,177 @@ use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::datasource::source_as_provider;
 use datafusion::logical_expr::LogicalPlan;
 
-use super::extract::exact_self_candidate;
 use super::{
     QDRANT_COUNT_NODE_NAME, QDRANT_FACET_NODE_NAME, QdrantCompositionClass, QdrantKernelClass,
     QdrantSourceClass, QdrantSubtreeClass, QdrantSubtreeStatus, QdrantTableProvider,
-    QdrantTopologyClass, mergeable,
+    QdrantTopologyClass,
 };
 use crate::pushdown::QdrantPayloadPath;
 
-pub(super) fn subtree_status(plan: &LogicalPlan) -> Result<QdrantSubtreeStatus> {
-    let candidate = exact_self_candidate(plan)?;
-    let source = source_class(plan);
-    let topology = topology_class(plan);
-    let kernel = kernel_class(plan, candidate.is_some());
-    let composition = composition_class(plan, source, topology, kernel)?;
-    let class = QdrantSubtreeClass { source, topology, composition, kernel };
-    let candidate = if class.source == QdrantSourceClass::SingleQdrant
-        && class.composition == QdrantCompositionClass::Atomic
-    {
-        candidate
-    } else {
-        None
-    };
-    Ok(QdrantSubtreeStatus { class, candidate })
-}
-
-pub(super) fn topology_class(plan: &LogicalPlan) -> QdrantTopologyClass {
-    match plan {
-        LogicalPlan::TableScan(_)
-        | LogicalPlan::EmptyRelation(_)
-        | LogicalPlan::Values(_)
-        | LogicalPlan::DescribeTable(_)
-        | LogicalPlan::Extension(_) => QdrantTopologyClass::Leaf,
-        LogicalPlan::Aggregate(_) | LogicalPlan::Distinct(_) => {
-            QdrantTopologyClass::UnaryRelationChange
-        }
-        _ if plan.inputs().len() > 1 => QdrantTopologyClass::MultiBranch,
-        _ => QdrantTopologyClass::UnaryChain,
-    }
-}
-
-fn source_class(plan: &LogicalPlan) -> QdrantSourceClass {
-    match plan {
-        LogicalPlan::TableScan(scan) => {
-            let Ok(provider) = source_as_provider(&scan.source) else {
-                return QdrantSourceClass::None;
-            };
-            if provider.as_any().is::<QdrantTableProvider>() {
-                QdrantSourceClass::SingleQdrant
-            } else {
-                QdrantSourceClass::None
-            }
-        }
-        LogicalPlan::Extension(extension)
-            if matches!(extension.node.name(), QDRANT_COUNT_NODE_NAME | QDRANT_FACET_NODE_NAME) =>
+impl QdrantSubtreeStatus {
+    pub(super) fn of(plan: &LogicalPlan) -> Result<Self> {
+        let candidate = super::QdrantRelationCandidate::from_plan(plan)?;
+        let source = QdrantSourceClass::of(plan);
+        let topology = QdrantTopologyClass::of(plan);
+        let kernel = QdrantKernelClass::of(plan, candidate.is_some());
+        let composition = QdrantCompositionClass::of(plan, source, topology, kernel)?;
+        let class = QdrantSubtreeClass { source, topology, composition, kernel };
+        let candidate = if class.source == QdrantSourceClass::SingleQdrant
+            && class.composition == QdrantCompositionClass::Atomic
         {
-            QdrantSourceClass::SingleQdrant
-        }
-        _ => combine_sources(plan.inputs().into_iter().map(source_class)),
+            candidate
+        } else {
+            None
+        };
+        Ok(Self { class, candidate })
     }
 }
 
-fn composition_class(
-    plan: &LogicalPlan,
-    source: QdrantSourceClass,
-    topology: QdrantTopologyClass,
-    kernel: QdrantKernelClass,
-) -> Result<QdrantCompositionClass> {
-    if invalid_payload_access_surface(plan, source, kernel)? {
-        return Ok(QdrantCompositionClass::Invalid);
-    }
-    if kernel == QdrantKernelClass::ExactSelf {
-        return Ok(QdrantCompositionClass::Atomic);
-    }
-    if mergeable::raw_set_join(plan) {
-        return Ok(QdrantCompositionClass::Mergeable);
-    }
-    if mergeable::raw_union_distinct(plan)? {
-        return Ok(QdrantCompositionClass::Mergeable);
-    }
-    if matches!(plan, LogicalPlan::Union(_)) {
-        return Ok(match kernel {
-            QdrantKernelClass::ExactChild | QdrantKernelClass::ExactChildren => {
-                QdrantCompositionClass::Batchable
+impl QdrantSourceClass {
+    pub(super) fn of(plan: &LogicalPlan) -> Self {
+        match plan {
+            LogicalPlan::TableScan(scan) => {
+                let Ok(provider) = source_as_provider(&scan.source) else {
+                    return Self::None;
+                };
+                if provider.as_any().is::<QdrantTableProvider>() {
+                    Self::SingleQdrant
+                } else {
+                    Self::None
+                }
             }
-            QdrantKernelClass::None if mergeable::raw_union(plan)? => {
-                QdrantCompositionClass::Mergeable
-            }
-            _ => QdrantCompositionClass::LocalCompose,
-        });
-    }
-    Ok(match (source, topology, kernel) {
-        (
-            QdrantSourceClass::SingleQdrant,
-            QdrantTopologyClass::Leaf
-            | QdrantTopologyClass::UnaryChain
-            | QdrantTopologyClass::UnaryRelationChange,
-            QdrantKernelClass::None,
-        ) => QdrantCompositionClass::Atomic,
-        (
-            QdrantSourceClass::MultiQdrant,
-            QdrantTopologyClass::Leaf
-            | QdrantTopologyClass::UnaryChain
-            | QdrantTopologyClass::UnaryRelationChange,
-            QdrantKernelClass::None,
-        ) => QdrantCompositionClass::Coordinated,
-        (QdrantSourceClass::SingleQdrant | QdrantSourceClass::MultiQdrant, _, _) => {
-            QdrantCompositionClass::LocalCompose
-        }
-        _ => QdrantCompositionClass::LocalCompose,
-    })
-}
-
-fn kernel_class(plan: &LogicalPlan, exact_self: bool) -> QdrantKernelClass {
-    if exact_self
-        || matches!(
-            plan,
             LogicalPlan::Extension(extension)
-                if matches!(extension.node.name(), QDRANT_COUNT_NODE_NAME | QDRANT_FACET_NODE_NAME)
-        )
-    {
-        return QdrantKernelClass::ExactSelf;
-    }
-    combine_kernels(plan.inputs().into_iter().map(|child| kernel_class(child, false)))
-}
-
-fn combine_sources(sources: impl IntoIterator<Item = QdrantSourceClass>) -> QdrantSourceClass {
-    let mut qdrant_count = 0_u8;
-    let mut has_other = false;
-    for source in sources {
-        match source {
-            QdrantSourceClass::None => {}
-            QdrantSourceClass::SingleQdrant => qdrant_count = qdrant_count.saturating_add(1),
-            QdrantSourceClass::MultiQdrant => qdrant_count = qdrant_count.saturating_add(2),
-            QdrantSourceClass::Mixed => {
-                qdrant_count = qdrant_count.saturating_add(1);
-                has_other = true;
+                if matches!(
+                    extension.node.name(),
+                    QDRANT_COUNT_NODE_NAME | QDRANT_FACET_NODE_NAME
+                ) =>
+            {
+                Self::SingleQdrant
             }
+            _ => Self::combine(plan.inputs().into_iter().map(Self::of)),
         }
     }
-    match (qdrant_count, has_other) {
-        (0, false) => QdrantSourceClass::None,
-        (1, false) => QdrantSourceClass::SingleQdrant,
-        (_, false) => QdrantSourceClass::MultiQdrant,
-        _ => QdrantSourceClass::Mixed,
+
+    fn combine(sources: impl IntoIterator<Item = Self>) -> Self {
+        let mut qdrant_count = 0_u8;
+        let mut has_other = false;
+        for source in sources {
+            match source {
+                Self::None => {}
+                Self::SingleQdrant => qdrant_count = qdrant_count.saturating_add(1),
+                Self::MultiQdrant => qdrant_count = qdrant_count.saturating_add(2),
+                Self::Mixed => {
+                    qdrant_count = qdrant_count.saturating_add(1);
+                    has_other = true;
+                }
+            }
+        }
+        match (qdrant_count, has_other) {
+            (0, false) => Self::None,
+            (1, false) => Self::SingleQdrant,
+            (_, false) => Self::MultiQdrant,
+            _ => Self::Mixed,
+        }
     }
 }
 
-fn combine_kernels(kernels: impl IntoIterator<Item = QdrantKernelClass>) -> QdrantKernelClass {
-    let kernel_count = kernels
-        .into_iter()
-        .map(|kernel| match kernel {
-            QdrantKernelClass::None => 0_u8,
-            QdrantKernelClass::ExactSelf | QdrantKernelClass::ExactChild => 1_u8,
-            QdrantKernelClass::ExactChildren => 2_u8,
+impl QdrantTopologyClass {
+    pub(super) fn of(plan: &LogicalPlan) -> Self {
+        match plan {
+            LogicalPlan::TableScan(_)
+            | LogicalPlan::EmptyRelation(_)
+            | LogicalPlan::Values(_)
+            | LogicalPlan::DescribeTable(_)
+            | LogicalPlan::Extension(_) => Self::Leaf,
+            LogicalPlan::Aggregate(_) | LogicalPlan::Distinct(_) => Self::UnaryRelationChange,
+            _ if plan.inputs().len() > 1 => Self::MultiBranch,
+            _ => Self::UnaryChain,
+        }
+    }
+}
+
+impl QdrantKernelClass {
+    pub(super) fn of(plan: &LogicalPlan, exact_self: bool) -> Self {
+        if exact_self
+            || matches!(
+                plan,
+                LogicalPlan::Extension(extension)
+                    if matches!(extension.node.name(), QDRANT_COUNT_NODE_NAME | QDRANT_FACET_NODE_NAME)
+            )
+        {
+            return Self::ExactSelf;
+        }
+        Self::combine(plan.inputs().into_iter().map(|child| Self::of(child, false)))
+    }
+
+    fn combine(kernels: impl IntoIterator<Item = Self>) -> Self {
+        let kernel_count = kernels
+            .into_iter()
+            .map(|kernel| match kernel {
+                Self::None => 0_u8,
+                Self::ExactSelf | Self::ExactChild => 1_u8,
+                Self::ExactChildren => 2_u8,
+            })
+            .fold(0_u8, u8::saturating_add);
+        match kernel_count {
+            0 => Self::None,
+            1 => Self::ExactChild,
+            _ => Self::ExactChildren,
+        }
+    }
+}
+
+impl QdrantCompositionClass {
+    pub(super) fn of(
+        plan: &LogicalPlan,
+        source: QdrantSourceClass,
+        topology: QdrantTopologyClass,
+        kernel: QdrantKernelClass,
+    ) -> Result<Self> {
+        if invalid_payload_access_surface(plan, source, kernel)? {
+            return Ok(Self::Invalid);
+        }
+        if kernel == QdrantKernelClass::ExactSelf {
+            return Ok(Self::Atomic);
+        }
+        if super::RawQdrantSetJoin::from_plan(plan).is_some() {
+            return Ok(Self::Mergeable);
+        }
+        if super::RawQdrantUnion::from_distinct_plan(plan)?.is_some() {
+            return Ok(Self::Mergeable);
+        }
+        if matches!(plan, LogicalPlan::Union(_)) {
+            return Ok(match kernel {
+                QdrantKernelClass::ExactChild | QdrantKernelClass::ExactChildren => Self::Batchable,
+                QdrantKernelClass::None
+                    if super::RawQdrantUnion::from_plan(plan)?
+                        .is_some_and(|union| union.can_union_all_merge()) =>
+                {
+                    Self::Mergeable
+                }
+                _ => Self::LocalCompose,
+            });
+        }
+        Ok(match (source, topology, kernel) {
+            (
+                QdrantSourceClass::SingleQdrant,
+                QdrantTopologyClass::Leaf
+                | QdrantTopologyClass::UnaryChain
+                | QdrantTopologyClass::UnaryRelationChange,
+                QdrantKernelClass::None,
+            ) => Self::Atomic,
+            (
+                QdrantSourceClass::MultiQdrant,
+                QdrantTopologyClass::Leaf
+                | QdrantTopologyClass::UnaryChain
+                | QdrantTopologyClass::UnaryRelationChange,
+                QdrantKernelClass::None,
+            ) => Self::Coordinated,
+            (QdrantSourceClass::SingleQdrant | QdrantSourceClass::MultiQdrant, _, _) => {
+                Self::LocalCompose
+            }
+            _ => Self::LocalCompose,
         })
-        .fold(0_u8, u8::saturating_add);
-    match kernel_count {
-        0 => QdrantKernelClass::None,
-        1 => QdrantKernelClass::ExactChild,
-        _ => QdrantKernelClass::ExactChildren,
     }
 }
 

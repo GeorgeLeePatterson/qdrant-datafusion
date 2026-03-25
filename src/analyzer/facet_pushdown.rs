@@ -3,7 +3,7 @@ use std::sync::Arc;
 use datafusion::common::{Result, ScalarValue};
 use datafusion::logical_expr::{Expr, LogicalPlan};
 
-use super::common::{count_star_like, qdrant_source};
+use super::common::{QdrantSource, count_star_like};
 use crate::context::plan_node::{QdrantFacetNode, QdrantFacetOutput};
 use crate::pushdown::filter::QdrantFilters;
 use crate::pushdown::{QdrantPayloadField, QdrantPayloadPath};
@@ -58,7 +58,7 @@ pub(super) fn facet_node(plan: &LogicalPlan) -> Result<Option<QdrantFacetNode>> 
     let Some(field) = QdrantPayloadPath::from_logical_expr(&aggregate.group_expr[0]) else {
         return Ok(None);
     };
-    let Some(source) = qdrant_source(aggregate.input.as_ref()) else {
+    let Some(source) = QdrantSource::from_plan(aggregate.input.as_ref()) else {
         return Ok(None);
     };
     if source.payload_schema.field(field.key()) != Some(QdrantPayloadField::Keyword) {

@@ -4,14 +4,13 @@ mod mergeable;
 
 use std::sync::Arc;
 
-use classify::{subtree_status, topology_class};
 use datafusion::common::tree_node::Transformed;
 use datafusion::common::{Result, plan_err};
 use datafusion::logical_expr::{Extension, JoinType, LogicalPlan};
 use datafusion::optimizer::AnalyzerRule;
 use qdrant_client::qdrant::PointId;
 
-use self::mergeable::{redundant_raw_qdrant_distinct_plan, set_join_plan, union_plan};
+use self::mergeable::redundant_raw_qdrant_distinct_plan;
 use crate::context::plan_node::{
     QDRANT_COUNT_NODE_NAME, QDRANT_FACET_NODE_NAME, QdrantCountNode, QdrantFacetNode,
 };
@@ -28,7 +27,7 @@ impl AnalyzerRule for QdrantRelationPushdown {
         _config: &datafusion::common::config::ConfigOptions,
     ) -> Result<LogicalPlan> {
         plan.transform_up_with_subqueries(|plan| {
-            let status = subtree_status(&plan)?;
+            let status = QdrantSubtreeStatus::of(&plan)?;
             if let Some(candidate) = status.candidate {
                 return Ok(Transformed::yes(candidate.into_plan()));
             }
@@ -36,12 +35,21 @@ impl AnalyzerRule for QdrantRelationPushdown {
                 return Ok(Transformed::yes(distinct_input));
             }
             if status.class.composition == QdrantCompositionClass::Mergeable
-                && let Some(merged) = set_join_plan(&plan)?
+                && let Some(merged) = RawQdrantSetJoin::from_plan(&plan)
+                    .map(RawQdrantSetJoin::merged_plan)
+                    .transpose()?
             {
                 return Ok(Transformed::yes(merged));
             }
             if status.class.composition == QdrantCompositionClass::Mergeable
-                && let Some(merged) = union_plan(&plan)?
+                && let Some(merged) = RawQdrantUnion::from_distinct_plan(&plan)?
+                    .map(|union| union.merged_plan(false))
+                    .transpose()?
+                    .flatten()
+                    .or(RawQdrantUnion::from_plan(&plan)?
+                        .map(|union| union.merged_plan(true))
+                        .transpose()?
+                        .flatten())
             {
                 return Ok(Transformed::yes(merged));
             }
@@ -182,7 +190,7 @@ mod tests {
     use crate::table::QdrantTableProvider;
 
     fn subtree_class(plan: &LogicalPlan) -> Result<QdrantSubtreeClass> {
-        subtree_status(plan).map(|status| status.class)
+        QdrantSubtreeStatus::of(plan).map(|status| status.class)
     }
 
     #[derive(Debug, Clone, Hash, PartialEq, Eq)]
