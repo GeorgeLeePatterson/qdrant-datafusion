@@ -35,8 +35,12 @@ canonical carrier; missing values are not imputed during scan.
   - `id =`, `id !=`, `id IN (...)`, `id NOT IN (...)`
   - vector-column `IS NULL` / `IS NOT NULL`
 - indexed scalar `payload:<path>` comparisons, `IN`, `NOT IN`, `BETWEEN`, and `NOT BETWEEN`
+  - integer match predicates require lookup-capable integer indexes
+  - integer range predicates require range-capable integer indexes
 - exact `COUNT(*)` pushdown over a single `Qdrant` source through the crate's session/planner helper
-- exact top-facet grouped-count pushdown over one keyword `payload:<path>` field through the crate's session/planner helper
+- exact top-facet grouped-count pushdown over one scalar `payload:<path>` field through the crate's session/planner helper
+  - currently admitted facet fields are keyword, bool, and lookup-capable integer payload indexes
+  - facet keys currently surface as `Utf8`, matching the current textual `payload:<path>` SQL bridge
 - a unified relation-pushdown analyzer scaffold now owns the admitted planner-layer subtree
   replacements instead of relying on separate analyzer-rule ownership by convention
   - the scaffold now classifies subtree source, topology, and composition explicitly as the
@@ -50,7 +54,7 @@ canonical carrier; missing values are not imputed during scan.
     - same-collection raw `EXCEPT DISTINCT` branches over exact filters
     - all currently rewrite to a single filtered scan
   - those extracted child kernels now also compose upward in the same analyzer pass:
-    - exact `COUNT(*)` and exact keyword-facet grouped counts can still replace the larger parent
+    - exact `COUNT(*)` and exact scalar-facet grouped counts can still replace the larger parent
       subtree after a mergeable child region collapses to one scan-local kernel
   - redundant `DISTINCT` over a raw full-row `Qdrant` scan is now dropped because row identity
     already includes unique `id`
@@ -64,7 +68,7 @@ canonical carrier; missing values are not imputed during scan.
 - write support or `INSERT INTO`
 - payload empty semantics, text, geo, nested, and count-oriented payload predicates
 - broader payload-key SQL `ORDER BY` pushdown beyond the admitted `payload:<path>` subset
-- broader aggregate/grouped SQL beyond the admitted keyword-facet subset
+- broader aggregate/grouped SQL beyond the admitted scalar-facet subset
 - projection-time `payload:<path>` execution outside an admitted `Qdrant` kernel in the prepared
   session/planner path
 - `Qdrant`-specific UDFs, UDAFs, or UDTFs
@@ -158,6 +162,12 @@ SELECT payload:tag AS tag, COUNT(*) AS total
 FROM docs
 WHERE payload:rank >= 10
 GROUP BY payload:tag
+ORDER BY total DESC
+LIMIT 10;
+
+SELECT payload:active AS active, COUNT(*) AS total
+FROM docs
+GROUP BY payload:active
 ORDER BY total DESC
 LIMIT 10;
 ```

@@ -1,6 +1,6 @@
 # Qdrant Compatibility Matrix
 
-Last updated: 2026-03-24
+Last updated: 2026-03-25
 
 ## Purpose
 
@@ -51,7 +51,7 @@ This matrix is derived from:
 | Row restriction | `must` / `should` / `must_not` / nested filter composition | `Filter`, `Condition` | predicate algebra | `Next` | This is the core bridge. General boolean normalization should be implemented over provider-owned predicate IR, not inline expression lowering. |
 | Row restriction | `has_id` | `Condition::has_id` | `id =`, `id !=`, `id IN`, `id NOT IN` | `Current` | Already admitted. |
 | Row restriction | `has_vector` | `Condition::has_vector` | vector-column `IS NULL` / `IS NOT NULL` | `Current` | Already admitted through nullable vector scan contract. |
-| Row restriction | payload equality | `Condition::matches` | `payload:<path> = ...` | `Current` | Already admitted for indexed scalar payload fields. |
+| Row restriction | payload equality | `Condition::matches` | `payload:<path> = ...` | `Current` | Already admitted for indexed scalar payload fields. Integer equality currently requires lookup-capable integer indexes. |
 | Row restriction | payload inequality / range | `Condition::range`, `Condition::datetime_range` | `<`, `<=`, `>`, `>=`, non-negated `BETWEEN` | `Current` | Already admitted for integer / float / datetime. |
 | Row restriction | `Match Any` | `Condition::matches` over collections | `IN (...)` | `Current` | Admitted for the current exact predicate algebra. |
 | Row restriction | `Match Except` | `Condition::matches(!MatchValue::...)` | `NOT IN (...)` | `Current` | Admitted for the current exact predicate algebra. |
@@ -59,7 +59,7 @@ This matrix is derived from:
 | Row restriction | general `OR` | `should` | boolean predicate normalization | `Current` | Admitted exactly over the current leaf subset. Unsupported branches still reject cleanly. |
 | Row restriction | general `NOT` | `must_not` | boolean predicate normalization | `Current` | Admitted exactly over the current leaf subset. Payload-empty semantics are still deferred. |
 | Row restriction | `is_null` | field condition | payload null semantics | `Current` | SQL `payload:<path> IS NULL` is now admitted exactly as missing or explicit null. Backend lowering composes `is_null` with missing-only detection. |
-| Row restriction | `is_empty` | field condition | payload empty / missing semantics | `Next` | Runtime contract is now validated, but SQL empty semantics are still deferred. |
+| Row restriction | `is_empty` | field condition | payload empty / missing semantics | `Next` | Runtime contract is now validated more precisely: `is_empty` matches missing, explicit null, and `[]`, but not empty strings or empty objects on the current runtime line. SQL empty semantics are still deferred. |
 | Row restriction | `values_count` | field condition | cardinality predicates | `Later` | Good fit semantically, but depends on payload shape policy. |
 | Row restriction | nested object filter | nested condition | correlated payload-array predicates | `Later` | Important, but it is not equivalent to dotted-path conjunctions. Needs explicit SQL semantics. |
 | Row restriction | geo radius / bbox / polygon | geo conditions | geo predicates / functions | `Later` | Natural fit for SQL functions or typed expressions, but not first-wave. |
@@ -85,7 +85,7 @@ This matrix is derived from:
 | Ranking / re-scoring | formula query | `Query::Formula` | score-expression modifier | `Later` | This is a scoring algebra problem, not a scan problem. |
 | Ranking / re-scoring | relevance feedback | `Query::RelevanceFeedback` | feedback-driven ranking | `Later` | Likely after retrieval IR and ranking algebra exist. |
 | Aggregation / grouping | point count | `count` | exact `COUNT(*)`-like pushdown | `Current` | The first aggregate-like slice is now admitted through a narrow analyzer / extension-planner path over a single `Qdrant` source. It composes directly over the existing predicate algebra. |
-| Aggregation / grouping | top-facet grouped counts over one keyword payload field | `facet` | `GROUP BY payload:<path> ORDER BY count DESC LIMIT N` | `Current` | The first facet slice is now admitted through the analyzer / extension-planner path for keyword-indexed fields only. It composes over the existing predicate algebra, but it is intentionally narrower than general SQL grouping. |
+| Aggregation / grouping | top-facet grouped counts over one scalar payload field | `facet` | `GROUP BY payload:<path> ORDER BY count DESC LIMIT N` | `Current` | The current facet slice now admits keyword, bool, and lookup-capable integer payload indexes. Facet keys still surface as `Utf8`, matching the current textual `payload:<path>` SQL bridge, so this remains intentionally narrower than general SQL grouping. Live collection introspection on the current runtime line now preserves integer lookup/range metadata well enough to keep integer facets exact on the same admission contract. |
 | Aggregation / grouping | grouped search results | `query_groups`, `search_groups`, `recommend_groups` | grouped retrieval relation | `Later` | Likely after core retrieval relation exists. |
 | Aggregation / grouping | `with_lookup` on groups | group builders | grouped retrieval enrichment | `Later` | Depends on grouped retrieval surface. |
 | Aggregation / grouping | search matrix pairs | `search_matrix_pairs` | similarity-graph / pair relation | `Later` | Interesting, but specialized. |
@@ -159,7 +159,7 @@ Grouped retrieval should follow only after the retrieval relation surface is sta
 
 This remains the strongest next implementation focus.
 
-1. explicit output contracts for aggregate-like `Qdrant` exploration surfaces beyond exact `COUNT(*)` and the first keyword-facet slice
+1. explicit output contracts for aggregate-like `Qdrant` exploration surfaces beyond exact `COUNT(*)` and the first scalar-facet slice
 2. determine the next grouped/exploration surface without overstating `Qdrant` facet as general SQL grouping
 4. preserve the exact-subset-first boundary already established by the predicate algebra
 
@@ -175,7 +175,7 @@ This remains important, but the scope is now payload empty semantics rather than
 
 These are strong next-release candidates because they are SQL-natural and reuse the predicate work:
 
-1. broader aggregate-like exploration beyond exact single-source counts and the first keyword-facet slice
+1. broader aggregate-like exploration beyond exact single-source counts and the first scalar-facet slice
 
 ### P2: introduce the first retrieval relation
 
@@ -253,7 +253,7 @@ The scaffold now classifies a broader internal space:
 The currently admitted replacement subset is still intentionally narrower:
 
 1. exact single-source atomic `Qdrant` relations only
-2. relation kinds: exact `COUNT(*)` and the first keyword-facet grouped-count subset
+2. relation kinds: exact `COUNT(*)` and the first scalar-facet grouped-count subset
 3. the first explicit invalid planner surface is projection-time `payload:<path>` access in the prepared session/planner path when no admitted exact kernel owns that expression
 4. the first explicit `mergeable` multi-branch state is same-collection raw `UNION ALL`
    branches only when exact filters imply pairwise-disjoint finite point-ID bounds
@@ -267,7 +267,7 @@ The currently admitted replacement subset is still intentionally narrower:
 8. redundant `DISTINCT` over raw full-row `Qdrant` scans is now dropped when the row identity
    still includes unique `id`
 9. those mergeable child kernels are now explicitly validated as compositional:
-   exact `COUNT(*)` and the first keyword-facet grouped-count relation can still claim the larger
+   exact `COUNT(*)` and the first scalar-facet grouped-count relation can still claim the larger
    parent subtree after the child region collapses in the same analyzer pass
 
 Future expansion should widen those axes explicitly rather than adding planner-layer endpoint

@@ -75,7 +75,7 @@ impl QdrantPayloadSchema {
     ) -> Option<QdrantPayloadOrdering> {
         match self.field(field) {
             Some(
-                QdrantPayloadField::Integer { range: true }
+                QdrantPayloadField::Integer { range: true, .. }
                 | QdrantPayloadField::Float
                 | QdrantPayloadField::Datetime,
             ) => Some(QdrantPayloadOrdering { field: field.to_owned(), descending }),

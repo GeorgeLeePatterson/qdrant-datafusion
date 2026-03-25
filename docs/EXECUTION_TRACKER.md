@@ -1,6 +1,6 @@
 # Execution Tracker
 
-Last updated: 2026-03-24
+Last updated: 2026-03-25
 
 ## Purpose
 
@@ -70,6 +70,8 @@ Use it to resume work without replaying the full repository history.
       - `id =`, `id !=`, `id IN (...)`, `id NOT IN (...)`
       - vector-column `IS NULL` / `IS NOT NULL`
       - indexed scalar `payload:<path>` comparisons, `IN`, `NOT IN`, `BETWEEN`, and `NOT BETWEEN`
+        - integer match predicates require lookup-capable integer indexes
+        - integer range predicates require range-capable integer indexes
     - physical filter pushdown now absorbs the admitted subset so `FilterExec` does not remain above `QdrantScanExec`
     - payload filter literals are coerced by indexed payload field type because `DataFusion`’s physical `payload:<path>` expressions do not carry a typed scalar contract
 18. `Q-021`: Exact `COUNT(*)` pushdown is now admitted as the first aggregate-like planner slice.
@@ -80,16 +82,18 @@ Use it to resume work without replaying the full repository history.
     - unsupported aggregate shapes fall back cleanly instead of pretending to be exact
 19. `Q-022`: Exact top-facet grouped counts are now admitted as the second aggregate-like planner slice.
     - the admitted SQL subset is `GROUP BY payload:<path> ORDER BY count DESC LIMIT N`
-    - the grouped field is currently limited to keyword-indexed payload fields
+    - the grouped field is currently limited to scalar payload fields with an admitted facet contract
     - the execution path lowers into `Qdrant`’s native `facet` API
     - admitted exact filters still reuse the existing provider-owned predicate algebra
     - broader grouped SQL remains deferred because `Qdrant` facet denotes top-N grouped counts, not unconstrained SQL grouping
 20. `Q-023`: Payload null / empty runtime behavior is now validated directly against the target dependency line.
-    - on March 24, 2026, live `Qdrant 1.17.0` tests through `qdrant-client 1.17.0` confirmed:
+    - on March 25, 2026, live `Qdrant 1.17.0` tests through `qdrant-client 1.17.0` confirmed:
       - explicit payload `NULL` written via point upsert is preserved
       - explicit payload `NULL` written via `set_payload` is preserved
       - `is_null` matches explicit null only
-      - `is_empty` matches explicit null plus missing
+      - `is_empty` matches missing, explicit null, and `[]`
+      - `is_empty` does not match empty strings or empty objects on the current runtime line
+      - `values_count >= 0` matches present fields, including explicit null and empty arrays
     - payload empty SQL semantics remain deferred, but they are no longer blocked on runtime uncertainty
 21. `Q-024`: SQL null semantics for `payload:<path>` are now admitted exactly.
     - `payload:<path> IS NULL` means missing or explicit null
@@ -102,7 +106,7 @@ Use it to resume work without replaying the full repository history.
     - current recognizers remain modular
     - current admitted replacement kinds remain:
       - exact single-source `COUNT(*)`
-      - exact single-source keyword facet grouped counts
+      - exact single-source scalar facet grouped counts
 23. `Q-026`: The unified relation-pushdown scaffold now derives broader subtree classification explicitly before relation recognition.
     - source class:
       - `none`
@@ -152,14 +156,20 @@ Use it to resume work without replaying the full repository history.
     - projected `DISTINCT` remains a separate semantic case
 30. `Q-033`: Mergeable child-kernel extraction is now explicitly validated as compositional.
     - a nested same-collection set-algebra region can collapse to one scan-local kernel first
-    - exact `COUNT(*)` and exact keyword-facet grouped counts can still replace the larger parent
+    - exact `COUNT(*)` and exact scalar-facet grouped counts can still replace the larger parent
       subtree after that child rewrite in the same bottom-up analyzer pass
+31. `Q-034`: The admitted facet slice is now broader without overstating typed payload SQL semantics.
+    - top-facet grouped counts now admit keyword, bool, and lookup-capable integer payload indexes
+    - facet keys still surface as `Utf8`, matching the current textual `payload:<path>` SQL bridge
+    - integer payload metadata now distinguishes `lookup` from `range`, so integer `=` / `IN` pushdown no longer overstates range-only integer indexes
+    - live collection introspection on the current runtime line now preserves integer lookup/range metadata well enough to admit integer facet pushdown on the same exact contract
+    - this keeps the broadened facet slice exact on the current planner/runtime contract without pretending typed payload projection is already admitted
 ## Next
 
 1. The detailed planning inventory for the next expansion round now lives in `docs/QDRANT_COMPATIBILITY_MATRIX.md`.
 2. `Q-017`: Validate distributed-ordering behavior on the target `Qdrant` deployment modes before claiming broader exact payload-key sort pushdown.
 3. `M-002`: Continue aggregate-like exploration over the predicate algebra.
-   - explicit output contracts for aggregate-like `Qdrant` exploration surfaces beyond exact `COUNT(*)` and top-facet grouped counts
+   - explicit output contracts for aggregate-like `Qdrant` exploration surfaces beyond exact `COUNT(*)` and the current scalar-facet grouped counts
    - determine whether the next grouped slice is broader facet semantics or a separate aggregate-like relation
 4. `Q-020`: Extend the predicate algebra only where the SQL semantics are explicit.
    - payload empty semantics

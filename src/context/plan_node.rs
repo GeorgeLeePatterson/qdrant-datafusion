@@ -481,11 +481,10 @@ impl ExecutionPlan for QdrantFacetExec {
                         "Qdrant facet hit missing value".to_owned(),
                     )
                 })?;
-                let facet_value::Variant::StringValue(facet_value) = value else {
-                    return exec_err!(
-                        "Qdrant facet field {} returned non-string value",
-                        field.key()
-                    );
+                let facet_value = match value {
+                    facet_value::Variant::StringValue(value) => value,
+                    facet_value::Variant::IntegerValue(value) => value.to_string(),
+                    facet_value::Variant::BoolValue(value) => value.to_string(),
                 };
                 keys.push(facet_value);
                 counts.push(i64::try_from(hit.count).map_err(|_| {

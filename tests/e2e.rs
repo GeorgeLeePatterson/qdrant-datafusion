@@ -61,6 +61,22 @@ e2e_test!(
 
 #[cfg(feature = "test-utils")]
 e2e_test!(
+    table_provider_pushes_down_integer_facet,
+    tests::test_table_provider_pushes_down_integer_facet,
+    TRACING_DIRECTIVES,
+    None
+);
+
+#[cfg(feature = "test-utils")]
+e2e_test!(
+    table_provider_pushes_down_bool_facet,
+    tests::test_table_provider_pushes_down_bool_facet,
+    TRACING_DIRECTIVES,
+    None
+);
+
+#[cfg(feature = "test-utils")]
+e2e_test!(
     qdrant_raw_ordered_scroll_integer_contracts,
     tests::test_qdrant_raw_ordered_scroll_integer_contracts,
     TRACING_DIRECTIVES,
@@ -100,6 +116,22 @@ e2e_test!(
 );
 
 #[cfg(feature = "test-utils")]
+e2e_test!(
+    qdrant_raw_payload_empty_contracts,
+    tests::test_qdrant_raw_payload_empty_contracts,
+    TRACING_DIRECTIVES,
+    None
+);
+
+#[cfg(feature = "test-utils")]
+e2e_test!(
+    qdrant_raw_integer_facet_contracts,
+    tests::test_qdrant_raw_integer_facet_contracts,
+    TRACING_DIRECTIVES,
+    None
+);
+
+#[cfg(feature = "test-utils")]
 mod tests {
     use std::collections::BTreeSet;
     use std::sync::Arc;
@@ -116,11 +148,11 @@ mod tests {
     use qdrant_client::Qdrant;
     use qdrant_client::qdrant::{
         Condition, CreateCollectionBuilder, CreateFieldIndexCollectionBuilder, Direction, Distance,
-        FieldType, Filter, FloatIndexParamsBuilder, MultiVectorComparator, MultiVectorConfig,
-        NamedVectors, OrderByBuilder, PointStruct, RetrievedPoint, ScrollPointsBuilder,
-        SetPayloadPointsBuilder, SparseVectorParamsBuilder, SparseVectorsConfigBuilder,
-        UpsertPointsBuilder, Value, Vector, VectorParamsBuilder, VectorsConfigBuilder, order_value,
-        payload_index_params, point_id, start_from,
+        FacetCountsBuilder, FieldType, Filter, FloatIndexParamsBuilder, MultiVectorComparator,
+        MultiVectorConfig, NamedVectors, OrderByBuilder, PayloadSchemaType, PointStruct,
+        RetrievedPoint, ScrollPointsBuilder, SetPayloadPointsBuilder, SparseVectorParamsBuilder,
+        SparseVectorsConfigBuilder, UpsertPointsBuilder, Value, Vector, VectorParamsBuilder,
+        VectorsConfigBuilder, facet_value, order_value, payload_index_params, point_id, start_from,
     };
     use qdrant_datafusion::arrow::schema::{
         dense_vector_width, is_multi_vector_field, is_sparse_vector_field, multivector_width,
@@ -554,7 +586,7 @@ mod tests {
             collection_name,
             "rank",
             FieldType::Integer,
-            qdrant_client::qdrant::IntegerIndexParamsBuilder::new(false, true).build(),
+            qdrant_client::qdrant::IntegerIndexParamsBuilder::new(true, true).build(),
         )
         .await?;
         let points = vec![
@@ -585,6 +617,162 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(ids, vec![2, 3, 1]);
+
+        Ok(())
+    }
+
+    pub(super) async fn test_table_provider_pushes_down_bool_facet(
+        c: Arc<QdrantContainer>,
+    ) -> Result<()> {
+        let client = create_qdrant_client(&c)?;
+        let collection_name = "test_bool_facet_pushdown";
+        create_scalar_collection(&client, collection_name).await?;
+        create_payload_index(
+            &client,
+            collection_name,
+            "active",
+            FieldType::Bool,
+            qdrant_client::qdrant::BoolIndexParamsBuilder::default().build(),
+        )
+        .await?;
+
+        let mut payload1 = qdrant_client::Payload::new();
+        payload1.insert("active", true);
+        let mut payload2 = qdrant_client::Payload::new();
+        payload2.insert("active", false);
+        let mut payload3 = qdrant_client::Payload::new();
+        payload3.insert("active", true);
+        let mut payload4 = qdrant_client::Payload::new();
+        payload4.insert("active", true);
+
+        let points = vec![
+            PointStruct::new(1, Vector::new_dense(vec![0.0]), payload1),
+            PointStruct::new(2, Vector::new_dense(vec![0.0]), payload2),
+            PointStruct::new(3, Vector::new_dense(vec![0.0]), payload3),
+            PointStruct::new(4, Vector::new_dense(vec![0.0]), payload4),
+        ];
+        drop(client.upsert_points(UpsertPointsBuilder::new(collection_name, points)).await?);
+
+        let table_provider = QdrantTableProvider::try_new(client.clone(), collection_name).await?;
+        let ctx = QdrantSessionContext::from(SessionContext::new());
+        drop(ctx.session_context().register_table("vectors", Arc::new(table_provider))?);
+
+        let dataframe = ctx
+            .sql(
+                "SELECT payload:active AS active, COUNT(*) AS total FROM vectors GROUP BY \
+                 payload:active ORDER BY total DESC LIMIT 2",
+            )
+            .await?;
+        let plan = dataframe.clone().create_physical_plan().await?;
+        let display =
+            datafusion::physical_plan::displayable(plan.as_ref()).indent(true).to_string();
+        let batches = dataframe.collect().await?;
+        let rows = batches
+            .iter()
+            .flat_map(|batch| {
+                let active = batch
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .expect("active string array");
+                let totals = batch
+                    .column(1)
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .expect("count int64 array");
+                (0..batch.num_rows())
+                    .map(|row| (active.value(row).to_owned(), totals.value(row)))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(rows, vec![("true".to_owned(), 3), ("false".to_owned(), 1)]);
+        assert!(display.contains("QdrantFacetExec"), "{display}");
+        assert!(!display.contains("AggregateExec"), "{display}");
+        assert!(!display.contains("SortExec"), "{display}");
+        assert!(!display.contains("GlobalLimitExec"), "{display}");
+        assert!(!display.contains("LocalLimitExec"), "{display}");
+
+        Ok(())
+    }
+
+    pub(super) async fn test_table_provider_pushes_down_integer_facet(
+        c: Arc<QdrantContainer>,
+    ) -> Result<()> {
+        let client = create_qdrant_client(&c)?;
+        let collection_name = "test_integer_facet_pushdown";
+        create_scalar_collection(&client, collection_name).await?;
+        create_payload_index(
+            &client,
+            collection_name,
+            "rank",
+            FieldType::Integer,
+            qdrant_client::qdrant::IntegerIndexParamsBuilder::new(true, false).build(),
+        )
+        .await?;
+
+        let mut payload1 = qdrant_client::Payload::new();
+        payload1.insert("rank", 20_i64);
+        let mut payload2 = qdrant_client::Payload::new();
+        payload2.insert("rank", 10_i64);
+        let mut payload3 = qdrant_client::Payload::new();
+        payload3.insert("rank", 20_i64);
+        let mut payload4 = qdrant_client::Payload::new();
+        payload4.insert("rank", 20_i64);
+        let mut payload5 = qdrant_client::Payload::new();
+        payload5.insert("rank", 10_i64);
+        let mut payload6 = qdrant_client::Payload::new();
+        payload6.insert("rank", 30_i64);
+
+        let points = vec![
+            PointStruct::new(1, Vector::new_dense(vec![0.0]), payload1),
+            PointStruct::new(2, Vector::new_dense(vec![0.0]), payload2),
+            PointStruct::new(3, Vector::new_dense(vec![0.0]), payload3),
+            PointStruct::new(4, Vector::new_dense(vec![0.0]), payload4),
+            PointStruct::new(5, Vector::new_dense(vec![0.0]), payload5),
+            PointStruct::new(6, Vector::new_dense(vec![0.0]), payload6),
+        ];
+        drop(client.upsert_points(UpsertPointsBuilder::new(collection_name, points)).await?);
+
+        let table_provider = QdrantTableProvider::try_new(client.clone(), collection_name).await?;
+        let ctx = QdrantSessionContext::from(SessionContext::new());
+        drop(ctx.session_context().register_table("vectors", Arc::new(table_provider))?);
+
+        let dataframe = ctx
+            .sql(
+                "SELECT payload:rank AS rank, COUNT(*) AS total FROM vectors GROUP BY \
+                 payload:rank ORDER BY total DESC LIMIT 2",
+            )
+            .await?;
+        let plan = dataframe.clone().create_physical_plan().await?;
+        let display =
+            datafusion::physical_plan::displayable(plan.as_ref()).indent(true).to_string();
+        let batches = dataframe.collect().await?;
+        let rows = batches
+            .iter()
+            .flat_map(|batch| {
+                let ranks = batch
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .expect("rank string array");
+                let totals = batch
+                    .column(1)
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .expect("count int64 array");
+                (0..batch.num_rows())
+                    .map(|row| (ranks.value(row).to_owned(), totals.value(row)))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(rows, vec![("20".to_owned(), 3), ("10".to_owned(), 2)]);
+        assert!(display.contains("QdrantFacetExec"), "{display}");
+        assert!(!display.contains("AggregateExec"), "{display}");
+        assert!(!display.contains("SortExec"), "{display}");
+        assert!(!display.contains("GlobalLimitExec"), "{display}");
+        assert!(!display.contains("LocalLimitExec"), "{display}");
 
         Ok(())
     }
@@ -1412,6 +1600,188 @@ mod tests {
             .await?;
         let not_null_ids = not_null.result.iter().map(point_num).collect::<Vec<_>>();
         assert_eq!(not_null_ids, vec![2, 3]);
+
+        Ok(())
+    }
+
+    #[expect(clippy::too_many_lines)]
+    pub(super) async fn test_qdrant_raw_payload_empty_contracts(
+        c: Arc<QdrantContainer>,
+    ) -> Result<()> {
+        let client = create_qdrant_client(&c)?;
+        let collection_name = "test_payload_empty_contracts";
+        create_scalar_collection(&client, collection_name).await?;
+
+        let mut missing = qdrant_client::Payload::new();
+        missing.insert("kind", "missing");
+
+        let mut nulls = qdrant_client::Payload::new();
+        nulls.insert("kind", "null");
+        nulls.insert("text", serde_json::Value::Null);
+        nulls.insert("list", serde_json::Value::Null);
+        nulls.insert("obj", serde_json::Value::Null);
+
+        let mut empties = qdrant_client::Payload::new();
+        empties.insert("kind", "empty");
+        empties.insert("text", "");
+        empties.insert("list", serde_json::json!([]));
+        empties.insert("obj", serde_json::json!({}));
+
+        let mut values = qdrant_client::Payload::new();
+        values.insert("kind", "value");
+        values.insert("text", "x");
+        values.insert("list", serde_json::json!([1]));
+        values.insert("obj", serde_json::json!({"k": 1}));
+
+        let points = vec![
+            PointStruct::new(1, Vector::new_dense(vec![0.0]), missing),
+            PointStruct::new(2, Vector::new_dense(vec![0.0]), nulls),
+            PointStruct::new(3, Vector::new_dense(vec![0.0]), empties),
+            PointStruct::new(4, Vector::new_dense(vec![0.0]), values),
+        ];
+        drop(client.upsert_points(UpsertPointsBuilder::new(collection_name, points)).await?);
+
+        let text_empty = client
+            .scroll(
+                ScrollPointsBuilder::new(collection_name)
+                    .limit(10)
+                    .with_payload(true)
+                    .with_vectors(false)
+                    .filter(Filter::all([Condition::is_empty("text")])),
+            )
+            .await?;
+        let text_empty_ids = text_empty.result.iter().map(point_num).collect::<Vec<_>>();
+
+        let list_empty = client
+            .scroll(
+                ScrollPointsBuilder::new(collection_name)
+                    .limit(10)
+                    .with_payload(true)
+                    .with_vectors(false)
+                    .filter(Filter::all([Condition::is_empty("list")])),
+            )
+            .await?;
+        let list_empty_ids = list_empty.result.iter().map(point_num).collect::<Vec<_>>();
+
+        let obj_empty = client
+            .scroll(
+                ScrollPointsBuilder::new(collection_name)
+                    .limit(10)
+                    .with_payload(true)
+                    .with_vectors(false)
+                    .filter(Filter::all([Condition::is_empty("obj")])),
+            )
+            .await?;
+        let obj_empty_ids = obj_empty.result.iter().map(point_num).collect::<Vec<_>>();
+
+        let text_exists = client
+            .scroll(
+                ScrollPointsBuilder::new(collection_name)
+                    .limit(10)
+                    .with_payload(true)
+                    .with_vectors(false)
+                    .filter(Filter::all([Condition::values_count(
+                        "text",
+                        qdrant_client::qdrant::ValuesCount { gte: Some(0), ..Default::default() },
+                    )])),
+            )
+            .await?;
+        let text_exists_ids = text_exists.result.iter().map(point_num).collect::<Vec<_>>();
+
+        let list_exists = client
+            .scroll(
+                ScrollPointsBuilder::new(collection_name)
+                    .limit(10)
+                    .with_payload(true)
+                    .with_vectors(false)
+                    .filter(Filter::all([Condition::values_count(
+                        "list",
+                        qdrant_client::qdrant::ValuesCount { gte: Some(0), ..Default::default() },
+                    )])),
+            )
+            .await?;
+        let list_exists_ids = list_exists.result.iter().map(point_num).collect::<Vec<_>>();
+
+        let obj_exists = client
+            .scroll(
+                ScrollPointsBuilder::new(collection_name)
+                    .limit(10)
+                    .with_payload(true)
+                    .with_vectors(false)
+                    .filter(Filter::all([Condition::values_count(
+                        "obj",
+                        qdrant_client::qdrant::ValuesCount { gte: Some(0), ..Default::default() },
+                    )])),
+            )
+            .await?;
+        let obj_exists_ids = obj_exists.result.iter().map(point_num).collect::<Vec<_>>();
+
+        assert_eq!(text_empty_ids, vec![1, 2]);
+        assert_eq!(list_empty_ids, vec![1, 2, 3]);
+        assert_eq!(obj_empty_ids, vec![1, 2]);
+        assert_eq!(text_exists_ids, vec![2, 3, 4]);
+        assert_eq!(list_exists_ids, vec![2, 3, 4]);
+        assert_eq!(obj_exists_ids, vec![2, 3, 4]);
+
+        Ok(())
+    }
+
+    pub(super) async fn test_qdrant_raw_integer_facet_contracts(
+        c: Arc<QdrantContainer>,
+    ) -> Result<()> {
+        let client = create_qdrant_client(&c)?;
+        let collection_name = "test_integer_facet_contracts";
+        create_scalar_collection(&client, collection_name).await?;
+        create_payload_index(
+            &client,
+            collection_name,
+            "rank",
+            FieldType::Integer,
+            qdrant_client::qdrant::IntegerIndexParamsBuilder::new(true, false).build(),
+        )
+        .await?;
+
+        let points = vec![
+            scalar_point(1, "rank", 20_i64),
+            scalar_point(2, "rank", 10_i64),
+            scalar_point(3, "rank", 20_i64),
+            scalar_point(4, "rank", 20_i64),
+            scalar_point(5, "rank", 10_i64),
+            scalar_point(6, "rank", 30_i64),
+        ];
+        drop(client.upsert_points(UpsertPointsBuilder::new(collection_name, points)).await?);
+
+        let info = client.collection_info(collection_name).await?;
+        let info = info.result.expect("collection info result");
+        let rank_info = info.payload_schema.get("rank").expect("rank payload schema");
+        assert_eq!(
+            PayloadSchemaType::try_from(rank_info.data_type).ok(),
+            Some(PayloadSchemaType::Integer),
+        );
+        match rank_info.params.as_ref().and_then(|params| params.index_params.as_ref()) {
+            Some(payload_index_params::IndexParams::IntegerIndexParams(params)) => {
+                assert_eq!(params.lookup, Some(true));
+                assert_eq!(params.range, Some(false));
+            }
+            _ => panic!("expected integer payload index params"),
+        }
+
+        let facet = client
+            .facet(FacetCountsBuilder::new(collection_name, "rank").exact(true).limit(2))
+            .await?;
+        let rows = facet
+            .hits
+            .into_iter()
+            .map(|hit| {
+                let value = hit.value.and_then(|value| value.variant).expect("facet value");
+                let facet_value::Variant::IntegerValue(value) = value else {
+                    panic!("expected integer facet value");
+                };
+                (value, hit.count)
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(rows, vec![(20, 3), (10, 2)]);
 
         Ok(())
     }

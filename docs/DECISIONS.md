@@ -1,6 +1,6 @@
 # Locked Decisions
 
-Last updated: 2026-03-24
+Last updated: 2026-03-25
 
 ## Core Constraints
 
@@ -52,6 +52,8 @@ Last updated: 2026-03-24
         - `IS NULL` means missing or explicit null
         - `IS NOT NULL` means present and non-null
       - indexed scalar `payload:<path>` comparisons, `IN`, `NOT IN`, `BETWEEN`, and `NOT BETWEEN`
+        - integer match predicates require lookup-capable integer indexes
+        - integer range predicates require range-capable integer indexes
     - payload empty semantics, text, geo, nested, and count-oriented predicates remain deferred until those SQL contracts are explicit
 21. Physical filter pushdown must absorb the admitted exact subset, not just logical filter pushdown declarations.
     - `supports_filters_pushdown` alone is not sufficient on the current `DataFusion` revision
@@ -78,12 +80,13 @@ Last updated: 2026-03-24
     - no `COUNT(column)`
     - exact admitted filters may still participate through the existing predicate algebra
     - this path currently requires the `Qdrant` session/planner helper rather than plain `SessionContext`
-26. The second admitted aggregate-like SQL subset is exact top-facet grouped counts over one keyword payload field.
+26. The second admitted aggregate-like SQL subset is exact top-facet grouped counts over one scalar payload field with an admitted facet contract.
     - the admitted SQL shape is `SELECT payload:<path>, COUNT(*) ... GROUP BY payload:<path> ORDER BY count DESC LIMIT N`
     - the current implementation admits one grouped field only
-    - the grouped field must be a keyword-indexed payload field
+    - the grouped field must currently be a keyword-, bool-, or lookup-capable integer-indexed payload field
     - exact admitted filters may still participate through the existing predicate algebra
     - this path also requires the `Qdrant` session/planner helper rather than plain `SessionContext`
+    - facet keys still surface as `Utf8`, matching the current textual `payload:<path>` SQL bridge
     - broader grouped SQL remains deferred because `Qdrant` facet denotes top-N grouped counts, not unconstrained SQL grouping
 27. Planner-layer subtree replacement should be owned by one `Qdrant` relation-pushdown analyzer scaffold rather than by independent analyzer rules alone.
     - separate recognizers may remain modular
@@ -95,7 +98,7 @@ Last updated: 2026-03-24
     - current admitted replacement ownership is still intentionally narrower than the full classifier space
     - current admitted replacement kinds are:
       - exact single-source `COUNT(*)`
-      - exact single-source keyword facet grouped counts
+      - exact single-source scalar facet grouped counts
     - the first explicit invalid planner surface is projection-time `payload:<path>` access in the prepared session/planner path when no admitted exact `Qdrant` kernel owns that expression
     - the first explicit `mergeable` multi-branch state is same-collection raw `UNION ALL`
       branches only when exact filters imply pairwise-disjoint finite point-ID bounds; same
@@ -110,11 +113,21 @@ Last updated: 2026-03-24
       also admitted executable `mergeable` cases; for raw full-row scan/filter branches they lower
       to conjunction and left-minus-right filter algebra respectively
     - mergeable child-kernel extraction is now treated as compositional rather than terminal:
-      exact `COUNT(*)` and exact keyword-facet grouped counts may still claim the larger parent
+      exact `COUNT(*)` and exact scalar-facet grouped counts may still claim the larger parent
       subtree after a mergeable child region rewrites to one scan-local kernel in the same
       bottom-up analyzer pass
     - redundant `DISTINCT` over a raw full-row `Qdrant` scan is now dropped because row identity
       already includes unique `id`
+28. Structural cleanup should preserve the semantic layering explicitly.
+    - shared semantic vocabulary such as payload schema, payload paths, and filter IR belongs in
+      shared modules
+    - scan-specific selectors, scan specs, and continuation state belong with the table / scan
+      runtime rather than in the shared semantic layer
+29. When behavior clearly defines or classifies a type, prefer type-owned methods over detached
+    helper functions.
+    - constructors / recognizers such as `Type::from_plan(...)` and `Type::of(...)` are the
+      preferred shape
+    - detached helpers should remain only where there is no natural semantic owner
 
 ## Execution Ordering
 

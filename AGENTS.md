@@ -48,3 +48,9 @@ Run and pass before finalizing:
    - `LogicalPlan` expression and subquery helpers
    - source capability checks
    - physical sort pushdown hooks
+7. Keep shared semantic vocabulary separate from scan-local runtime state.
+   - payload paths, payload schema, and filter IR belong in shared semantic modules
+   - scan selectors, scan specs, and continuation state belong with the table / scan runtime
+8. Prefer type-owned behavior over detached helper functions when there is a clear semantic owner.
+   - use constructors and classifiers such as `Type::from_plan(...)` / `Type::of(...)`
+   - keep free functions for genuinely ownerless local helpers only

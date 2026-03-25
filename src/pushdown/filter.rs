@@ -319,6 +319,19 @@ mod tests {
                 }),
                 points:    None,
             }),
+            ("range_only".to_owned(), PayloadSchemaInfo {
+                data_type: PayloadSchemaType::Integer as i32,
+                params:    Some(qdrant_client::qdrant::PayloadIndexParams {
+                    index_params: Some(payload_index_params::IndexParams::IntegerIndexParams(
+                        IntegerIndexParams {
+                            lookup: Some(false),
+                            range: Some(true),
+                            ..Default::default()
+                        },
+                    )),
+                }),
+                points:    None,
+            }),
         ]))
     }
 
@@ -351,6 +364,24 @@ mod tests {
             &payload_schema,
             &Expr::BinaryExpr(BinaryExpr::new(
                 Box::new(payload_path("rank")),
+                Operator::GtEq,
+                Box::new(Expr::Literal(ScalarValue::Int64(Some(10)), None)),
+            )),
+        ));
+        assert!(!QdrantFilters::supports_exact(
+            &schema,
+            &payload_schema,
+            &Expr::BinaryExpr(BinaryExpr::new(
+                Box::new(payload_path("range_only")),
+                Operator::Eq,
+                Box::new(Expr::Literal(ScalarValue::Int64(Some(10)), None)),
+            )),
+        ));
+        assert!(QdrantFilters::supports_exact(
+            &schema,
+            &payload_schema,
+            &Expr::BinaryExpr(BinaryExpr::new(
+                Box::new(payload_path("range_only")),
                 Operator::GtEq,
                 Box::new(Expr::Literal(ScalarValue::Int64(Some(10)), None)),
             )),

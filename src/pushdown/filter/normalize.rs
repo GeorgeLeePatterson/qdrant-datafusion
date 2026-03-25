@@ -215,6 +215,9 @@ impl<'a> QdrantExprNormalizer<'a> {
             ),
             QdrantFieldRef::Payload(field) => {
                 let field_type = self.payload_schema.field(field.key())?;
+                if !field_type.supports_equality() {
+                    return None;
+                }
                 let values = values
                     .into_iter()
                     .map(|value| field_type.into_filter_value(value))
@@ -249,13 +252,17 @@ impl<'a> QdrantExprNormalizer<'a> {
                 let field_type = self.payload_schema.field(field.key())?;
                 let value = field_type.into_filter_value(literal)?;
                 match op {
-                    Operator::Eq => Some(QdrantFilterExpr::Predicate(QdrantPredicate::PayloadEq {
-                        field,
-                        value,
-                    })),
-                    Operator::NotEq => Some(QdrantFilterExpr::not(QdrantFilterExpr::Predicate(
-                        QdrantPredicate::PayloadEq { field, value },
-                    ))),
+                    Operator::Eq if field_type.supports_equality() => {
+                        Some(QdrantFilterExpr::Predicate(QdrantPredicate::PayloadEq {
+                            field,
+                            value,
+                        }))
+                    }
+                    Operator::NotEq if field_type.supports_equality() => {
+                        Some(QdrantFilterExpr::not(QdrantFilterExpr::Predicate(
+                            QdrantPredicate::PayloadEq { field, value },
+                        )))
+                    }
                     Operator::Lt => Some(QdrantFilterExpr::Predicate(
                         field_type.into_range_predicate(field, None, Some((value, false)))?,
                     )),

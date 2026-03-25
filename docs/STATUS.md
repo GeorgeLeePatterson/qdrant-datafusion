@@ -1,6 +1,6 @@
 # Status Snapshot
 
-Last updated: 2026-03-24
+Last updated: 2026-03-25
 
 ## Summary
 
@@ -29,6 +29,8 @@ Current branch reality:
     - `id =`, `id !=`, `id IN (...)`, `id NOT IN (...)`
     - vector-column `IS NULL` / `IS NOT NULL`
     - indexed scalar `payload:<path>` comparisons, `IN`, `NOT IN`, `BETWEEN`, and `NOT BETWEEN`
+      - integer match predicates require lookup-capable integer indexes
+      - integer range predicates require range-capable integer indexes
 15. Physical filter pushdown now absorbs the admitted predicate algebra so `FilterExec` does not remain above `QdrantScanExec`.
 16. Payload filter literals are coerced by indexed payload field type because `DataFusion`’s physical `payload:<path>` expressions surface generic scalar literals such as `Utf8("10")`.
 17. Exact `COUNT(*)` pushdown is now admitted as the first aggregate-like planner slice.
@@ -38,16 +40,18 @@ Current branch reality:
 18. Exact top-facet grouped counts are now admitted as the second aggregate-like planner slice.
     - it lowers into `Qdrant`’s native `facet` API
     - it currently requires the `Qdrant` session/planner helper
-    - it is currently limited to one keyword-indexed `payload:<path>` field with `ORDER BY count DESC LIMIT N`
+    - it is currently limited to one admitted scalar `payload:<path>` field with `ORDER BY count DESC LIMIT N`
     - it reuses the existing provider-owned predicate algebra for admitted exact filters
 19. The root `README.md`, repo notes, and tracker docs describe only the admitted baseline.
 20. Detailed capability-expansion planning now has an explicit semantic inventory in `docs/QDRANT_COMPATIBILITY_MATRIX.md`.
 21. Payload-null runtime semantics are now validated; payload-empty SQL semantics are still intentionally deferred.
-22. On March 24, 2026, live `Qdrant 1.17.0` tests through `qdrant-client 1.17.0` validated the runtime contract:
+22. On March 25, 2026, live `Qdrant 1.17.0` tests through `qdrant-client 1.17.0` validated the runtime contract:
     - explicit payload `NULL` written via point upsert is preserved
     - explicit payload `NULL` written via `set_payload` is preserved
     - `is_null` matches explicit null only
-    - `is_empty` matches explicit null plus missing
+    - `is_empty` matches missing, explicit null, and `[]`
+    - `is_empty` does not match empty strings or empty objects on the current runtime line
+    - `values_count >= 0` matches present fields, including explicit null and empty arrays
 23. SQL null semantics for `payload:<path>` are now admitted exactly:
     - `IS NULL` means missing or explicit null
     - `IS NOT NULL` means present and non-null
@@ -81,8 +85,13 @@ Current branch reality:
     - projected `DISTINCT` remains a separate semantic case
 33. Mergeable child-kernel extraction is now explicitly validated as compositional.
     - a nested same-collection set-algebra region can collapse to one scan-local kernel first
-    - exact `COUNT(*)` and exact keyword-facet grouped counts can still replace the larger parent
+    - exact `COUNT(*)` and exact scalar-facet grouped counts can still replace the larger parent
       subtree after that child rewrite in the same bottom-up analyzer pass
+34. The admitted facet slice is now broader without overstating typed payload SQL semantics.
+    - top-facet grouped counts now admit keyword, bool, and lookup-capable integer payload indexes
+    - facet keys still surface as `Utf8`, matching the current textual `payload:<path>` SQL bridge
+    - integer payload metadata now distinguishes `lookup` from `range`, so integer `=` / `IN` pushdown no longer overstates range-only integer indexes
+    - live collection introspection on the current runtime line now preserves integer lookup/range metadata well enough to admit integer facet pushdown on the same exact contract
 
 ## Current Code Ownership
 
@@ -94,19 +103,20 @@ Current branch reality:
    - exact `ORDER BY id ASC` pushdown
    - exact `ORDER BY payload:<path>` pushdown
 2. `src/pushdown.rs`
-   - provider-owned pushdown model
-   - scan projection / payload / filters / ordering / continuation contract
+   - shared payload schema, payload path, and filter semantics
    - payload index metadata normalization for admitted sort and filter pushdown
-3. `src/arrow/schema.rs`
+3. `src/table/pushdown.rs`
+   - scan-local selectors, scan spec, ordering, and continuation contract
+4. `src/arrow/schema.rs`
    - collection-config to Arrow schema translation
-4. `src/arrow/deserialize.rs`
+5. `src/arrow/deserialize.rs`
    - `Qdrant` point to Arrow record-batch materialization
-5. `tests/e2e.rs`
+6. `tests/e2e.rs`
    - integration coverage for the admitted scan baseline and the first exact aggregate-like slices
-6. `src/context.rs`, `src/context/planner.rs`, `src/context/plan_node.rs`
-   - narrow session / analyzer / extension-planner support for exact `COUNT(*)` and keyword-facet pushdown
-7. `src/analyzer.rs`, `src/analyzer/common.rs`, `src/analyzer/relation_pushdown.rs`, `src/analyzer/count_pushdown.rs`, `src/analyzer/facet_pushdown.rs`
-   - unified relation-pushdown analyzer scaffold with explicit subtree source / topology / composition / kernel-placement classification, modular recognizers for exact single-source `Qdrant` counts and the first keyword-facet grouped-count subset, and the first narrow invalid-surface rejection
+7. `src/context.rs`, `src/context/planner.rs`, `src/context/plan_node.rs`
+   - narrow session / analyzer / extension-planner support for exact `COUNT(*)` and scalar-facet pushdown
+8. `src/analyzer.rs`, `src/analyzer/common.rs`, `src/analyzer/relation_pushdown.rs`, `src/analyzer/count_pushdown.rs`, `src/analyzer/facet_pushdown.rs`
+   - unified relation-pushdown analyzer scaffold with explicit subtree source / topology / composition / kernel-placement classification, modular recognizers for exact single-source `Qdrant` counts and the first scalar-facet grouped-count subset, and the first narrow invalid-surface rejection
 
 ## Operational Notes
 
@@ -127,7 +137,7 @@ Current branch reality:
 9. The admitted exact filter bridge is now a real predicate algebra over the current admitted leaves, not just conjunctive leaf pushdown.
 10. Distributed-ordering behavior is still intentionally deferred before claiming broader payload-key sort exactness.
 11. The next capability round is now planned semantically rather than endpoint-by-endpoint:
-    - broader aggregate-like exploration beyond the first keyword-facet slice
+    - broader aggregate-like exploration beyond the first scalar-facet slice
     - retrieval relations after that
 12. Planner expansion should now build on the explicit subtree classifier rather than adding recognizers in isolation:
     - broader source-set ownership

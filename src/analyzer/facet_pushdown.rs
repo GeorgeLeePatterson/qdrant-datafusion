@@ -5,8 +5,8 @@ use datafusion::logical_expr::{Expr, LogicalPlan};
 
 use super::common::{QdrantSource, count_star_like};
 use crate::context::plan_node::{QdrantFacetNode, QdrantFacetOutput};
+use crate::pushdown::QdrantPayloadPath;
 use crate::pushdown::filter::QdrantFilters;
-use crate::pushdown::{QdrantPayloadField, QdrantPayloadPath};
 
 pub(super) fn facet_node(plan: &LogicalPlan) -> Result<Option<QdrantFacetNode>> {
     let (schema, mut output_exprs, plan): (_, Option<&[Expr]>, _) = match plan {
@@ -61,7 +61,10 @@ pub(super) fn facet_node(plan: &LogicalPlan) -> Result<Option<QdrantFacetNode>> 
     let Some(source) = QdrantSource::from_plan(aggregate.input.as_ref()) else {
         return Ok(None);
     };
-    if source.payload_schema.field(field.key()) != Some(QdrantPayloadField::Keyword) {
+    let Some(field_type) = source.payload_schema.field(field.key()) else {
+        return Ok(None);
+    };
+    if !field_type.supports_facet() {
         return Ok(None);
     }
     if !source

@@ -136,7 +136,7 @@ impl QdrantPayloadField {
         upper: Option<(QdrantFilterValue, bool)>,
     ) -> Option<QdrantPredicate> {
         match self {
-            QdrantPayloadField::Integer { range: true }
+            QdrantPayloadField::Integer { range: true, .. }
             | QdrantPayloadField::Float
             | QdrantPayloadField::Datetime => {
                 Some(QdrantPredicate::PayloadRange { field, lower, upper })

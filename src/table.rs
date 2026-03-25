@@ -980,6 +980,61 @@ mod tests {
     }
 
     #[test]
+    fn physical_plan_uses_qdrant_facet_exec_for_top_integer_facets() {
+        let provider = QdrantTableProvider {
+            payload_schema: payload_schema([(
+                "rank",
+                PayloadSchemaInfo {
+                    data_type: qdrant_client::qdrant::PayloadSchemaType::Integer as i32,
+                    params: Some(qdrant_client::qdrant::PayloadIndexParams {
+                        index_params: Some(
+                            qdrant_client::qdrant::payload_index_params::IndexParams::IntegerIndexParams(
+                                IntegerIndexParams {
+                                    lookup: Some(true),
+                                    range: Some(false),
+                                    ..Default::default()
+                                },
+                            ),
+                        ),
+                    }),
+                    points: None,
+                },
+            )]),
+            ..test_provider(Schema::new(vec![
+                Field::new(ID_FIELD_NAME, DataType::Utf8, false),
+                Field::new(PAYLOAD_FIELD_NAME, DataType::Utf8, true),
+            ]))
+        };
+        let ctx = QdrantSessionContext::from(SessionContext::new());
+        drop(
+            ctx.session_context()
+                .register_table("vectors", Arc::new(provider))
+                .expect("register table"),
+        );
+        let dataframe = ctx
+            .sql(
+                "SELECT payload:rank AS rank, COUNT(*) AS total FROM vectors GROUP BY \
+                 payload:rank ORDER BY total DESC LIMIT 2",
+            )
+            .now_or_never()
+            .expect("sql future is ready")
+            .expect("dataframe");
+        let plan = dataframe
+            .create_physical_plan()
+            .now_or_never()
+            .expect("plan future is ready")
+            .expect("physical plan");
+        let display = displayable(plan.as_ref()).indent(true).to_string();
+        let _facet = qdrant_facet(&plan);
+
+        assert!(display.contains("QdrantFacetExec"), "{display}");
+        assert!(!display.contains("AggregateExec"), "{display}");
+        assert!(!display.contains("SortExec"), "{display}");
+        assert!(!display.contains("GlobalLimitExec"), "{display}");
+        assert!(!display.contains("LocalLimitExec"), "{display}");
+    }
+
+    #[test]
     fn logical_sort_expr_uses_payload_json_access_for_direct_path() {
         let plan = logical_plan(
             test_provider(Schema::new(vec![

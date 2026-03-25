@@ -13,7 +13,7 @@ This folder is the compaction-safe planning and execution source of truth for `q
    - widen the SQL-native capability surface only through explicit semantic milestones
 4. The current milestone is aggregate-like exploration over the predicate algebra.
    - the first slice is exact `COUNT(*)` pushdown over a single `Qdrant` source
-   - the next admitted slice is exact top-facet grouped counts over one keyword payload field
+   - the next admitted slice is exact top-facet grouped counts over one admitted scalar payload field
 
 ## Documents
 
