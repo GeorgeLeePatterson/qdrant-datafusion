@@ -13,13 +13,16 @@ use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, Pla
 use datafusion::prelude::Expr;
 use futures_util::stream;
 use qdrant_client::Qdrant;
-use qdrant_client::qdrant::{CountPointsBuilder, FacetCountsBuilder, facet_value};
+use qdrant_client::qdrant::{
+    CountPointsBuilder, FacetCountsBuilder, QueryPointsBuilder, facet_value,
+};
 
+use crate::arrow::deserialize::QdrantRecordBatchBuilder;
+use crate::context::QDRANT_SCORE_FIELD_NAME;
 use crate::pushdown::QdrantPayloadPath;
 use crate::pushdown::filter::QdrantFilters;
 
-pub(crate) const QDRANT_COUNT_NODE_NAME: &str = "QdrantCountNode";
-pub(crate) const QDRANT_FACET_NODE_NAME: &str = "QdrantFacetNode";
+pub(crate) const QDRANT_KERNEL_NODE_NAME: &str = "QdrantKernelNode";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum QdrantFacetOutput {
@@ -28,55 +31,72 @@ pub(crate) enum QdrantFacetOutput {
 }
 
 #[derive(Clone)]
-pub(crate) struct QdrantCountNode {
-    schema:     DFSchemaRef,
-    client:     Arc<Qdrant>,
-    collection: String,
-    filters:    QdrantFilters,
+pub(crate) struct QdrantKernelNode {
+    schema: DFSchemaRef,
+    client: Arc<Qdrant>,
+    spec:   QdrantKernelSpec,
 }
 
-impl QdrantCountNode {
-    pub(crate) fn new(
+#[derive(Debug, Clone)]
+pub(crate) enum QdrantKernelSpec {
+    Count(QdrantCountKernel),
+    Facet(QdrantFacetKernel),
+    Query(QdrantQueryKernel),
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct QdrantCountKernel {
+    pub(crate) collection: String,
+    pub(crate) filters:    QdrantFilters,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct QdrantFacetKernel {
+    pub(crate) collection: String,
+    pub(crate) filters:    QdrantFilters,
+    pub(crate) field:      QdrantPayloadPath,
+    pub(crate) limit:      u64,
+    pub(crate) outputs:    Vec<QdrantFacetOutput>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct QdrantQueryKernel {
+    pub(crate) collection:      String,
+    pub(crate) filters:         QdrantFilters,
+    pub(crate) query:           QdrantQueryVariant,
+    pub(crate) using:           Option<String>,
+    pub(crate) limit:           u64,
+    pub(crate) score_threshold: Option<f32>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum QdrantQueryVariant {
+    Nearest { vector: Vec<f32> },
+}
+
+impl QdrantKernelNode {
+    pub(crate) fn with_spec(
+        schema: DFSchemaRef,
+        client: Arc<Qdrant>,
+        spec: QdrantKernelSpec,
+    ) -> Self {
+        Self { schema, client, spec }
+    }
+
+    pub(crate) fn count(
         schema: DFSchemaRef,
         client: Arc<Qdrant>,
         collection: String,
         filters: QdrantFilters,
     ) -> Self {
-        Self { schema, client, collection, filters }
+        Self::with_spec(
+            schema,
+            client,
+            QdrantKernelSpec::Count(QdrantCountKernel { collection, filters }),
+        )
     }
 
-    pub(crate) fn execute(&self) -> Arc<dyn ExecutionPlan> {
-        Arc::new(QdrantCountExec::new(
-            Arc::clone(&self.client),
-            self.collection.clone(),
-            self.filters.clone(),
-            Arc::clone(self.schema.inner()),
-        ))
-    }
-}
-
-impl std::fmt::Debug for QdrantCountNode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("QdrantCountNode")
-            .field("collection", &self.collection)
-            .field("filters", &self.filters)
-            .finish_non_exhaustive()
-    }
-}
-
-#[derive(Clone)]
-pub(crate) struct QdrantFacetNode {
-    schema:     DFSchemaRef,
-    client:     Arc<Qdrant>,
-    collection: String,
-    filters:    QdrantFilters,
-    field:      QdrantPayloadPath,
-    limit:      u64,
-    outputs:    Vec<QdrantFacetOutput>,
-}
-
-impl QdrantFacetNode {
-    pub(crate) fn new(
+    pub(crate) fn facet(
         schema: DFSchemaRef,
         client: Arc<Qdrant>,
         collection: String,
@@ -85,35 +105,99 @@ impl QdrantFacetNode {
         limit: u64,
         outputs: Vec<QdrantFacetOutput>,
     ) -> Self {
-        Self { schema, client, collection, filters, field, limit, outputs }
+        Self::with_spec(
+            schema,
+            client,
+            QdrantKernelSpec::Facet(QdrantFacetKernel {
+                collection,
+                filters,
+                field,
+                limit,
+                outputs,
+            }),
+        )
     }
 
     pub(crate) fn execute(&self) -> Arc<dyn ExecutionPlan> {
-        Arc::new(QdrantFacetExec::new(
-            Arc::clone(&self.client),
-            self.collection.clone(),
-            self.filters.clone(),
-            self.field.clone(),
-            self.limit,
-            self.outputs.clone(),
-            Arc::clone(self.schema.inner()),
-        ))
+        match &self.spec {
+            QdrantKernelSpec::Count(spec) => Arc::new(QdrantCountExec::new(
+                Arc::clone(&self.client),
+                spec.collection.clone(),
+                spec.filters.clone(),
+                Arc::clone(self.schema.inner()),
+            )),
+            QdrantKernelSpec::Facet(spec) => Arc::new(QdrantFacetExec::new(
+                Arc::clone(&self.client),
+                spec.collection.clone(),
+                spec.filters.clone(),
+                spec.field.clone(),
+                spec.limit,
+                spec.outputs.clone(),
+                Arc::clone(self.schema.inner()),
+            )),
+            QdrantKernelSpec::Query(spec) => Arc::new(QdrantNearestExec::new(
+                Arc::clone(&self.client),
+                spec.clone(),
+                Arc::clone(self.schema.inner()),
+            )),
+        }
     }
 }
 
-impl std::fmt::Debug for QdrantFacetNode {
+impl QdrantKernelSpec {
+    fn collection(&self) -> &str {
+        match self {
+            Self::Count(spec) => &spec.collection,
+            Self::Facet(spec) => &spec.collection,
+            Self::Query(spec) => &spec.collection,
+        }
+    }
+
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::Count(_) => "count",
+            Self::Facet(_) => "facet",
+            Self::Query(_) => "query",
+        }
+    }
+
+    fn kind_rank(&self) -> u8 {
+        match self {
+            Self::Count(_) => 0,
+            Self::Facet(_) => 1,
+            Self::Query(_) => 2,
+        }
+    }
+}
+
+impl std::fmt::Debug for QdrantKernelNode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("QdrantFacetNode")
-            .field("collection", &self.collection)
-            .field("field", &self.field)
-            .field("limit", &self.limit)
-            .field("filters", &self.filters)
-            .finish_non_exhaustive()
+        let mut debug = f.debug_struct("QdrantKernelNode");
+        let _ = debug.field("kind", &self.spec.kind()).field("collection", &self.spec.collection());
+        match &self.spec {
+            QdrantKernelSpec::Count(spec) => {
+                let _ = debug.field("filters", &spec.filters);
+            }
+            QdrantKernelSpec::Facet(spec) => {
+                let _ = debug
+                    .field("field", &spec.field)
+                    .field("limit", &spec.limit)
+                    .field("filters", &spec.filters);
+            }
+            QdrantKernelSpec::Query(spec) => {
+                let _ = debug
+                    .field("using", &spec.using)
+                    .field("limit", &spec.limit)
+                    .field("score_threshold", &spec.score_threshold)
+                    .field("filters", &spec.filters);
+            }
+        }
+        debug.finish_non_exhaustive()
     }
 }
 
-impl UserDefinedLogicalNodeCore for QdrantCountNode {
-    fn name(&self) -> &str { QDRANT_COUNT_NODE_NAME }
+impl UserDefinedLogicalNodeCore for QdrantKernelNode {
+    fn name(&self) -> &str { QDRANT_KERNEL_NODE_NAME }
 
     fn inputs(&self) -> Vec<&datafusion::logical_expr::LogicalPlan> { vec![] }
 
@@ -122,7 +206,32 @@ impl UserDefinedLogicalNodeCore for QdrantCountNode {
     fn expressions(&self) -> Vec<Expr> { vec![] }
 
     fn fmt_for_explain(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{QDRANT_COUNT_NODE_NAME}: collection={}", self.collection)
+        match &self.spec {
+            QdrantKernelSpec::Count(spec) => {
+                write!(f, "{QDRANT_KERNEL_NODE_NAME}: kind=count, collection={}", spec.collection)
+            }
+            QdrantKernelSpec::Facet(spec) => write!(
+                f,
+                "{QDRANT_KERNEL_NODE_NAME}: kind=facet, collection={}, field={}, limit={}",
+                spec.collection,
+                spec.field.key(),
+                spec.limit,
+            ),
+            QdrantKernelSpec::Query(spec) => {
+                write!(
+                    f,
+                    "{QDRANT_KERNEL_NODE_NAME}: kind=query, collection={}, limit={}",
+                    spec.collection, spec.limit
+                )?;
+                if let Some(using) = &spec.using {
+                    write!(f, ", using={using}")?;
+                }
+                if let Some(threshold) = spec.score_threshold {
+                    write!(f, ", score_threshold={threshold}")?;
+                }
+                Ok(())
+            }
+        }
     }
 
     fn with_exprs_and_inputs(
@@ -131,10 +240,10 @@ impl UserDefinedLogicalNodeCore for QdrantCountNode {
         inputs: Vec<datafusion::logical_expr::LogicalPlan>,
     ) -> datafusion::error::Result<Self> {
         if !exprs.is_empty() {
-            return plan_err!("{QDRANT_COUNT_NODE_NAME} expects no expressions");
+            return plan_err!("{QDRANT_KERNEL_NODE_NAME} expects no expressions");
         }
         if !inputs.is_empty() {
-            return plan_err!("{QDRANT_COUNT_NODE_NAME} expects no inputs");
+            return plan_err!("{QDRANT_KERNEL_NODE_NAME} expects no inputs");
         }
         Ok(self.clone())
     }
@@ -146,122 +255,144 @@ impl UserDefinedLogicalNodeCore for QdrantCountNode {
     }
 }
 
-impl UserDefinedLogicalNodeCore for QdrantFacetNode {
-    fn name(&self) -> &str { QDRANT_FACET_NODE_NAME }
-
-    fn inputs(&self) -> Vec<&datafusion::logical_expr::LogicalPlan> { vec![] }
-
-    fn schema(&self) -> &DFSchemaRef { &self.schema }
-
-    fn expressions(&self) -> Vec<Expr> { vec![] }
-
-    fn fmt_for_explain(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{QDRANT_FACET_NODE_NAME}: collection={}, field={}, limit={}",
-            self.collection,
-            self.field.key(),
-            self.limit,
-        )
-    }
-
-    fn with_exprs_and_inputs(
-        &self,
-        exprs: Vec<Expr>,
-        inputs: Vec<datafusion::logical_expr::LogicalPlan>,
-    ) -> datafusion::error::Result<Self> {
-        if !exprs.is_empty() {
-            return plan_err!("{QDRANT_FACET_NODE_NAME} expects no expressions");
-        }
-        if !inputs.is_empty() {
-            return plan_err!("{QDRANT_FACET_NODE_NAME} expects no inputs");
-        }
-        Ok(self.clone())
-    }
-
-    fn check_invariants(&self, _check: InvariantLevel) -> datafusion::error::Result<()> { Ok(()) }
-
-    fn necessary_children_exprs(&self, _output_columns: &[usize]) -> Option<Vec<Vec<usize>>> {
-        None
-    }
-}
-
-impl PartialEq for QdrantCountNode {
+impl PartialEq for QdrantKernelNode {
     fn eq(&self, other: &Self) -> bool {
-        std::ptr::addr_eq(Arc::as_ptr(&self.client), Arc::as_ptr(&other.client))
-            && self.collection == other.collection
-            && self.filters == other.filters
-            && self.schema == other.schema
+        if !std::ptr::addr_eq(Arc::as_ptr(&self.client), Arc::as_ptr(&other.client))
+            || self.schema != other.schema
+        {
+            return false;
+        }
+        match (&self.spec, &other.spec) {
+            (QdrantKernelSpec::Count(lhs), QdrantKernelSpec::Count(rhs)) => {
+                lhs.collection == rhs.collection && lhs.filters == rhs.filters
+            }
+            (QdrantKernelSpec::Facet(lhs), QdrantKernelSpec::Facet(rhs)) => {
+                lhs.collection == rhs.collection
+                    && lhs.filters == rhs.filters
+                    && lhs.field == rhs.field
+                    && lhs.limit == rhs.limit
+                    && lhs.outputs == rhs.outputs
+            }
+            (QdrantKernelSpec::Query(lhs), QdrantKernelSpec::Query(rhs)) => {
+                lhs.collection == rhs.collection
+                    && lhs.filters == rhs.filters
+                    && lhs.using == rhs.using
+                    && lhs.limit == rhs.limit
+                    && lhs.score_threshold.map(f32::to_bits)
+                        == rhs.score_threshold.map(f32::to_bits)
+                    && match (&lhs.query, &rhs.query) {
+                        (
+                            QdrantQueryVariant::Nearest { vector: lhs },
+                            QdrantQueryVariant::Nearest { vector: rhs },
+                        ) => lhs
+                            .iter()
+                            .map(|value| value.to_bits())
+                            .eq(rhs.iter().map(|value| value.to_bits())),
+                    }
+            }
+            _ => false,
+        }
     }
 }
 
-impl Eq for QdrantCountNode {}
+impl Eq for QdrantKernelNode {}
 
-impl PartialOrd for QdrantCountNode {
+impl PartialOrd for QdrantKernelNode {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        (self.collection.as_str(), format!("{:?}", self.filters), format!("{:?}", self.schema))
-            .partial_cmp(&(
-                other.collection.as_str(),
-                format!("{:?}", other.filters),
-                format!("{:?}", other.schema),
-            ))
+        let kind_cmp = self.spec.kind_rank().cmp(&other.spec.kind_rank());
+        if kind_cmp != std::cmp::Ordering::Equal {
+            return Some(kind_cmp);
+        }
+        match (&self.spec, &other.spec) {
+            (QdrantKernelSpec::Count(lhs), QdrantKernelSpec::Count(rhs)) => (
+                lhs.collection.as_str(),
+                format!("{:?}", lhs.filters),
+                format!("{:?}", self.schema),
+            )
+                .partial_cmp(&(
+                    rhs.collection.as_str(),
+                    format!("{:?}", rhs.filters),
+                    format!("{:?}", other.schema),
+                )),
+            (QdrantKernelSpec::Facet(lhs), QdrantKernelSpec::Facet(rhs)) => (
+                lhs.collection.as_str(),
+                lhs.field.key(),
+                lhs.limit,
+                &lhs.outputs,
+                format!("{:?}", lhs.filters),
+                format!("{:?}", self.schema),
+            )
+                .partial_cmp(&(
+                    rhs.collection.as_str(),
+                    rhs.field.key(),
+                    rhs.limit,
+                    &rhs.outputs,
+                    format!("{:?}", rhs.filters),
+                    format!("{:?}", other.schema),
+                )),
+            (QdrantKernelSpec::Query(lhs), QdrantKernelSpec::Query(rhs)) => (
+                lhs.collection.as_str(),
+                format!("{:?}", lhs.filters),
+                match &lhs.query {
+                    QdrantQueryVariant::Nearest { vector } => {
+                        vector.iter().map(|value| value.to_bits()).collect::<Vec<_>>()
+                    }
+                },
+                &lhs.using,
+                lhs.limit,
+                lhs.score_threshold.map(f32::to_bits),
+                format!("{:?}", self.schema),
+            )
+                .partial_cmp(&(
+                    rhs.collection.as_str(),
+                    format!("{:?}", rhs.filters),
+                    match &rhs.query {
+                        QdrantQueryVariant::Nearest { vector } => {
+                            vector.iter().map(|value| value.to_bits()).collect::<Vec<_>>()
+                        }
+                    },
+                    &rhs.using,
+                    rhs.limit,
+                    rhs.score_threshold.map(f32::to_bits),
+                    format!("{:?}", other.schema),
+                )),
+            _ => Some(std::cmp::Ordering::Equal),
+        }
     }
 }
 
-impl std::hash::Hash for QdrantCountNode {
+impl std::hash::Hash for QdrantKernelNode {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        QDRANT_COUNT_NODE_NAME.hash(state);
+        QDRANT_KERNEL_NODE_NAME.hash(state);
         Arc::as_ptr(&self.client).hash(state);
-        self.collection.hash(state);
-        format!("{:?}", self.filters).hash(state);
-        format!("{:?}", self.schema).hash(state);
-    }
-}
-
-impl PartialEq for QdrantFacetNode {
-    fn eq(&self, other: &Self) -> bool {
-        std::ptr::addr_eq(Arc::as_ptr(&self.client), Arc::as_ptr(&other.client))
-            && self.collection == other.collection
-            && self.filters == other.filters
-            && self.field == other.field
-            && self.limit == other.limit
-            && self.outputs == other.outputs
-            && self.schema == other.schema
-    }
-}
-
-impl Eq for QdrantFacetNode {}
-
-impl PartialOrd for QdrantFacetNode {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        (
-            self.collection.as_str(),
-            self.field.key(),
-            self.limit,
-            &self.outputs,
-            format!("{:?}", self.filters),
-            format!("{:?}", self.schema),
-        )
-            .partial_cmp(&(
-                other.collection.as_str(),
-                other.field.key(),
-                other.limit,
-                &other.outputs,
-                format!("{:?}", other.filters),
-                format!("{:?}", other.schema),
-            ))
-    }
-}
-
-impl std::hash::Hash for QdrantFacetNode {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        QDRANT_FACET_NODE_NAME.hash(state);
-        Arc::as_ptr(&self.client).hash(state);
-        self.collection.hash(state);
-        self.field.hash(state);
-        self.limit.hash(state);
-        self.outputs.hash(state);
-        format!("{:?}", self.filters).hash(state);
+        self.spec.kind_rank().hash(state);
+        match &self.spec {
+            QdrantKernelSpec::Count(spec) => {
+                spec.collection.hash(state);
+                format!("{:?}", spec.filters).hash(state);
+            }
+            QdrantKernelSpec::Facet(spec) => {
+                spec.collection.hash(state);
+                spec.field.hash(state);
+                spec.limit.hash(state);
+                spec.outputs.hash(state);
+                format!("{:?}", spec.filters).hash(state);
+            }
+            QdrantKernelSpec::Query(spec) => {
+                spec.collection.hash(state);
+                format!("{:?}", spec.filters).hash(state);
+                spec.using.hash(state);
+                spec.limit.hash(state);
+                spec.score_threshold.map(f32::to_bits).hash(state);
+                match &spec.query {
+                    QdrantQueryVariant::Nearest { vector } => {
+                        for value in vector {
+                            value.to_bits().hash(state);
+                        }
+                    }
+                }
+            }
+        }
         format!("{:?}", self.schema).hash(state);
     }
 }
@@ -283,6 +414,14 @@ pub(crate) struct QdrantFacetExec {
     field:      QdrantPayloadPath,
     limit:      u64,
     outputs:    Vec<QdrantFacetOutput>,
+    schema:     SchemaRef,
+    properties: Arc<PlanProperties>,
+}
+
+#[derive(Clone)]
+pub(crate) struct QdrantNearestExec {
+    client:     Arc<Qdrant>,
+    spec:       QdrantQueryKernel,
     schema:     SchemaRef,
     properties: Arc<PlanProperties>,
 }
@@ -333,6 +472,18 @@ impl QdrantFacetExec {
     }
 }
 
+impl QdrantNearestExec {
+    fn new(client: Arc<Qdrant>, spec: QdrantQueryKernel, schema: SchemaRef) -> Self {
+        let properties = PlanProperties::new(
+            datafusion::physical_expr::EquivalenceProperties::new(Arc::clone(&schema)),
+            datafusion::physical_plan::Partitioning::UnknownPartitioning(1),
+            datafusion::physical_plan::execution_plan::EmissionType::Final,
+            Boundedness::Bounded,
+        );
+        Self { client, spec, schema, properties: Arc::new(properties) }
+    }
+}
+
 impl std::fmt::Debug for QdrantCountExec {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("QdrantCountExec")
@@ -349,6 +500,18 @@ impl std::fmt::Debug for QdrantFacetExec {
             .field("field", &self.field)
             .field("limit", &self.limit)
             .field("filters", &self.filters)
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for QdrantNearestExec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("QdrantNearestExec")
+            .field("collection", &self.spec.collection)
+            .field("using", &self.spec.using)
+            .field("limit", &self.spec.limit)
+            .field("score_threshold", &self.spec.score_threshold)
+            .field("filters", &self.spec.filters)
             .finish_non_exhaustive()
     }
 }
@@ -508,6 +671,83 @@ impl ExecutionPlan for QdrantFacetExec {
     }
 }
 
+impl ExecutionPlan for QdrantNearestExec {
+    fn name(&self) -> &'static str { "QdrantNearestExec" }
+
+    fn as_any(&self) -> &dyn Any { self }
+
+    fn properties(&self) -> &Arc<PlanProperties> { &self.properties }
+
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&dyn PhysicalExpr) -> datafusion::error::Result<TreeNodeRecursion>,
+    ) -> datafusion::error::Result<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
+    }
+
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> { vec![] }
+
+    fn with_new_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
+        if !children.is_empty() {
+            return exec_err!("QdrantNearestExec expects no children");
+        }
+        Ok(self)
+    }
+
+    fn execute(
+        &self,
+        partition: usize,
+        _context: Arc<datafusion::execution::TaskContext>,
+    ) -> datafusion::error::Result<datafusion::execution::SendableRecordBatchStream> {
+        if partition != 0 {
+            return exec_err!("QdrantNearestExec invalid partition {partition}");
+        }
+
+        let client = Arc::clone(&self.client);
+        let spec = self.spec.clone();
+        let schema = Arc::clone(&self.schema);
+        let fut = async move {
+            let QdrantQueryKernel { collection, filters, query, using, limit, score_threshold } =
+                spec;
+
+            if limit == 0 {
+                return Ok(RecordBatch::new_empty(schema));
+            }
+
+            let mut request = QueryPointsBuilder::new(collection)
+                .query(match query {
+                    QdrantQueryVariant::Nearest { vector } => vector,
+                })
+                .limit(limit)
+                .with_payload(true)
+                .with_vectors(true);
+            if let Some(using) = using {
+                request = request.using(using);
+            }
+            if let Some(filter) = filters.to_filter() {
+                request = request.filter(filter);
+            }
+            if let Some(threshold) = score_threshold {
+                request = request.score_threshold(threshold);
+            }
+            let response = client
+                .query(request)
+                .await
+                .map_err(|error| datafusion::error::DataFusionError::External(Box::new(error)))?;
+            let mut builder =
+                QdrantRecordBatchBuilder::new(Arc::clone(&schema), response.result.len())?;
+            for point in response.result {
+                builder.append_point(point)?;
+            }
+            builder.finish()
+        };
+        Ok(Box::pin(RecordBatchStreamAdapter::new(Arc::clone(&self.schema), stream::once(fut))))
+    }
+}
+
 impl DisplayAs for QdrantCountExec {
     fn fmt_as(&self, t: DisplayFormatType, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match t {
@@ -530,6 +770,28 @@ impl DisplayAs for QdrantFacetExec {
                 self.limit,
             ),
             DisplayFormatType::TreeRender => write!(f, "QdrantFacetExec"),
+        }
+    }
+}
+
+impl DisplayAs for QdrantNearestExec {
+    fn fmt_as(&self, t: DisplayFormatType, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match t {
+            DisplayFormatType::Default | DisplayFormatType::Verbose => {
+                write!(
+                    f,
+                    "QdrantNearestExec: collection={}, limit={}",
+                    self.spec.collection, self.spec.limit
+                )?;
+                if let Some(using) = &self.spec.using {
+                    write!(f, ", using={using}")?;
+                }
+                if let Some(threshold) = self.spec.score_threshold {
+                    write!(f, ", score_threshold={threshold}")?;
+                }
+                write!(f, ", score_field={QDRANT_SCORE_FIELD_NAME}")
+            }
+            DisplayFormatType::TreeRender => write!(f, "QdrantNearestExec"),
         }
     }
 }

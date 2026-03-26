@@ -1,6 +1,6 @@
 # Execution Tracker
 
-Last updated: 2026-03-25
+Last updated: 2026-03-26
 
 ## Purpose
 
@@ -18,7 +18,12 @@ Use it to resume work without replaying the full repository history.
    - top-level nullable vector columns for heterogeneous named collections
    - current typed `qdrant-client` vector outputs only
 4. `INSERT INTO` is explicitly unsupported instead of panicking.
-5. The broad SQL-native `Qdrant` capability surface is still intentionally incomplete, but the predicate algebra foundation and the first aggregate-like planner slices are now in place for the next expansion round.
+5. The broad SQL-native `Qdrant` capability surface is still intentionally incomplete, but the predicate algebra foundation, the first aggregate-like planner slices, and the first prepared-session retrieval relation are now in place.
+6. The next expansion round is now explicitly staged around the full `Qdrant` relation
+   architecture rather than feature-by-feature node growth:
+   - first checkpoint: unify current exact count / facet / nearest kernels behind one generic
+     extracted kernel family
+   - second checkpoint: land the generic public operator layer above that kernel family
 
 ## Done
 
@@ -169,21 +174,53 @@ Use it to resume work without replaying the full repository history.
     - empty strings remain ordinary non-null values and are expressed through normal equality, for example `payload:<path> = ''`
     - current tests now prove that empty strings stay distinct from `payload:<path> IS NULL`
     - empty-container/cardinality semantics remain deferred until typed payload access is admitted more broadly
+33. `Q-036`: The first retrieval relation is now admitted through the prepared session surface.
+    - current entrypoint is `QdrantSessionContext::nearest`
+    - the current request contract is `QdrantNearestQuery`
+    - current admitted scope is:
+      - dense nearest-neighbor query over `Qdrant::query`
+      - optional named-vector `using`
+      - exact admitted filters from the existing predicate algebra
+      - `LIMIT`
+      - optional score threshold
+    - output is the full base row plus `__qdrant_score: Float32`
+    - the stable SQL retrieval surface remains deferred deliberately; this is not yet a SQL syntax decision
+34. `Q-037`: The current exact `Qdrant` leaf relations are now represented by one generic kernel
+    family instead of separate logical node types.
+    - `QdrantKernelNode` is now the extracted leaf node for the current exact remote kernels
+    - `QdrantKernelSpec` now carries the admitted current kernel families:
+      - `count`
+      - `facet`
+      - `query`
+    - the current nearest-neighbor retrieval slice now lives under the `query` kernel family
+      instead of its own top-level kernel node type
+    - current public behavior is intentionally unchanged; the prepared-session nearest surface is
+      still transitional until the operator checkpoint lands
 ## Next
 
 1. The detailed planning inventory for the next expansion round now lives in `docs/QDRANT_COMPATIBILITY_MATRIX.md`.
 2. `Q-017`: Validate distributed-ordering behavior on the target `Qdrant` deployment modes before claiming broader exact payload-key sort pushdown.
-3. `M-002`: Continue aggregate-like exploration over the predicate algebra.
-   - explicit output contracts for aggregate-like `Qdrant` exploration surfaces beyond exact `COUNT(*)` and the current scalar-facet grouped counts
-   - determine whether the next grouped slice is broader facet semantics or a separate aggregate-like relation
-4. `Q-020`: Extend the predicate algebra only where the SQL semantics are explicit.
+3. `M-002`: Land the public/operator side of the `Qdrant` relation architecture above the new
+   generic kernel family.
+   - introduce generic unary `QdrantOpNode` / `QdrantOp`
+   - move nearest away from `QdrantSessionContext::nearest` toward a DataFusion-native marker
+     surface
+   - preserve DataFusion-derived schema naming instead of extending the current ad hoc score-field
+     convention
+4. `M-003`: After the operator checkpoint, resume broader aggregate-like and retrieval growth on
+   the shared operator / kernel structure.
+   - aggregate-like: explicit output contracts beyond exact `COUNT(*)` and the current scalar
+     facet slice
+   - retrieval: sample, then broader `query`-family relations such as recommend / discover /
+     context once the nearest prototype is fully absorbed
+5. `Q-020`: Extend the predicate algebra only where the SQL semantics are explicit.
    - payload empty-container/cardinality semantics
    - text, geo, nested, and count-oriented predicates
-5. Continue mapping the pushdown model onto `DataFusion`’s own idioms where broader traversal is required.
+6. Continue mapping the pushdown model onto `DataFusion`’s own idioms where broader traversal is required.
    - `TreeNode` visitors / rewriters instead of ad hoc recursion
    - `LogicalPlan` expression and subquery helpers before project-local traversal
    - exact admission of broader filter families and aggregate-like shapes instead of ad hoc expression splitting
-6. Extend the planner scaffold beyond the current explicit classifier set toward richer island composition and kernel extraction.
+7. Extend the planner scaffold beyond the current explicit classifier set toward richer island composition and kernel extraction.
    - source-set ownership over larger plan regions
    - widen `mergeable` only with explicit algebraic proofs such as disjointness or duplicate-elimination semantics, not collection identity alone
    - broaden `invalid` detection carefully as more remote-only surfaces are introduced
@@ -208,3 +245,6 @@ When the next implementation round starts:
 9. keep aggregate-like planner work compositional:
    - provider-owned predicate algebra remains the lowering target
    - relation-producing retrieval work is still a separate higher layer
+10. keep the new architectural checkpoints explicit:
+   - do not add more feature-specific `Qdrant` logical node families under the new plan
+   - extend the generic operator / kernel enums instead

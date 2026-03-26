@@ -4,11 +4,11 @@ use datafusion::common::{Result, ScalarValue};
 use datafusion::logical_expr::{Expr, LogicalPlan};
 
 use super::common::{QdrantSource, count_star_like};
-use crate::context::plan_node::{QdrantFacetNode, QdrantFacetOutput};
+use crate::context::plan_node::{QdrantFacetOutput, QdrantKernelNode};
 use crate::pushdown::QdrantPayloadPath;
 use crate::pushdown::filter::QdrantFilters;
 
-pub(super) fn facet_node(plan: &LogicalPlan) -> Result<Option<QdrantFacetNode>> {
+pub(super) fn facet_node(plan: &LogicalPlan) -> Result<Option<QdrantKernelNode>> {
     let (schema, mut output_exprs, plan): (_, Option<&[Expr]>, _) = match plan {
         LogicalPlan::Projection(projection) => (
             Arc::clone(&projection.schema),
@@ -87,7 +87,7 @@ pub(super) fn facet_node(plan: &LogicalPlan) -> Result<Option<QdrantFacetNode>> 
         return Ok(None);
     }
     let filters = QdrantFilters::try_new(&source.schema, &source.payload_schema, &source.filters)?;
-    Ok(Some(QdrantFacetNode::new(
+    Ok(Some(QdrantKernelNode::facet(
         schema,
         source.client,
         source.collection,

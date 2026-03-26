@@ -1,6 +1,6 @@
 # Status Snapshot
 
-Last updated: 2026-03-25
+Last updated: 2026-03-26
 
 ## Summary
 
@@ -95,6 +95,23 @@ Current branch reality:
     - facet keys still surface as `Utf8`, matching the current textual `payload:<path>` SQL bridge
     - integer payload metadata now distinguishes `lookup` from `range`, so integer `=` / `IN` pushdown no longer overstates range-only integer indexes
     - live collection introspection on the current runtime line now preserves integer lookup/range metadata well enough to admit integer facet pushdown on the same exact contract
+35. The first retrieval relation is now admitted through the prepared session surface.
+    - current entrypoint is `QdrantSessionContext::nearest`
+    - current request contract is `QdrantNearestQuery`
+    - current admitted scope is:
+      - dense nearest-neighbor query over `Qdrant::query`
+      - optional named-vector `using`
+      - exact admitted filters from the existing predicate algebra
+      - `LIMIT`
+      - optional score threshold
+    - output is the full base row plus `__qdrant_score: Float32`
+    - this public surface is transitional until the generic operator checkpoint lands
+    - stable SQL retrieval syntax remains intentionally deferred
+36. Current exact `Qdrant` leaf relations are now being normalized around one generic extracted
+    kernel family instead of separate logical node types.
+    - exact count, scalar facet, and the current nearest retrieval slice should share one
+      `QdrantKernelNode` / `QdrantKernelSpec` structure
+    - the next checkpoint is the generic public operator layer above that kernel family
 
 ## Current Code Ownership
 
@@ -117,7 +134,10 @@ Current branch reality:
 6. `tests/e2e.rs`
    - integration coverage for the admitted scan baseline and the first exact aggregate-like slices
 7. `src/context.rs`, `src/context/planner.rs`, `src/context/plan_node.rs`
-   - narrow session / analyzer / extension-planner support for exact `COUNT(*)` and scalar-facet pushdown
+   - prepared-session helper surface plus extension-planner support for the current generic
+     `Qdrant` kernel layer
+   - current admitted kernel families are exact `COUNT(*)`, scalar facet, and the first
+     nearest-neighbor retrieval slice
 8. `src/analyzer.rs`, `src/analyzer/common.rs`, `src/analyzer/relation_pushdown.rs`, `src/analyzer/count_pushdown.rs`, `src/analyzer/facet_pushdown.rs`
    - unified relation-pushdown analyzer scaffold with explicit subtree source / topology / composition / kernel-placement classification, modular recognizers for exact single-source `Qdrant` counts and the first scalar-facet grouped-count subset, and the first narrow invalid-surface rejection
 
@@ -126,7 +146,9 @@ Current branch reality:
 1. Prefer clean reimplementation over porting code from the old spike branch.
 2. Remove deprecated `qdrant-client` paths instead of preserving fallback behavior.
 3. Preserve truthful nullability at the scan boundary; do not impute missing vectors during scan.
-4. The next step is still not ad hoc implementation. It is the remaining pushdown-first SQL-bridge work tracked as `Q-017`, `M-002`, and the narrowed empty-container/cardinality part of `Q-020`.
+4. The next step is no longer ad hoc feature growth. It is the next explicit architectural
+   checkpoint tracked as `M-002`: generic public `Qdrant` operator ownership above the new kernel
+   layer, followed by broader aggregate-like and retrieval work on that structure.
 5. That next phase is explicitly anchored on `DataFusion`’s own idioms:
    - `TreeNode` traversal / rewriting
    - `LogicalPlan` expression and subquery helpers
@@ -141,7 +163,7 @@ Current branch reality:
 10. Distributed-ordering behavior is still intentionally deferred before claiming broader payload-key sort exactness.
 11. The next capability round is now planned semantically rather than endpoint-by-endpoint:
     - broader aggregate-like exploration beyond the first scalar-facet slice
-    - retrieval relations after that
+    - retrieval relations beyond nearest after that
 12. Planner expansion should now build on the explicit subtree classifier rather than adding recognizers in isolation:
     - broader source-set ownership
     - richer composition classes beyond the first sound `mergeable` proof case

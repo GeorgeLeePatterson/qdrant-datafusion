@@ -11,9 +11,15 @@ This folder is the compaction-safe planning and execution source of truth for `q
    - preserve truthful collection scans over canonical carriers
    - use current `qdrant-client` APIs only
    - widen the SQL-native capability surface only through explicit semantic milestones
-4. The current milestone is aggregate-like exploration over the predicate algebra.
-   - the first slice is exact `COUNT(*)` pushdown over a single `Qdrant` source
-   - the next admitted slice is exact top-facet grouped counts over one admitted scalar payload field
+4. The current milestone is the first full architectural checkpoint for broader `Qdrant` relation
+   work.
+   - the first checkpoint is generic kernel unification for the currently admitted exact
+     `Qdrant` leaves
+   - current exact `COUNT(*)`, scalar-facet grouped counts, and nearest-neighbor retrieval should
+     converge on one `QdrantKernelNode` / `QdrantKernelSpec` family instead of separate node
+     types
+   - the next checkpoint is the generic public operator layer above that kernel layer:
+     `QdrantOpNode` / `QdrantOp` plus a DataFusion-native nearest marker surface
 
 ## Documents
 
@@ -44,4 +50,5 @@ Then verify repository state quickly:
 This round is not the broad `Qdrant` capability expansion round yet.
 
 The collection-scan baseline is now correct, current, and contract-aligned. Widen the SQL surface
-only through semantic milestones that compose cleanly over the provider-owned pushdown model.
+only through semantic milestones that compose cleanly over the provider-owned pushdown model and
+the now-explicit `Qdrant` operator / kernel architecture.

@@ -240,8 +240,8 @@ mod tests {
 
     use super::*;
     use crate::arrow::schema::{ID_FIELD_NAME, PAYLOAD_FIELD_NAME};
-    use crate::context::QdrantSessionContext;
-    use crate::context::plan_node::{QdrantCountExec, QdrantFacetExec};
+    use crate::context::plan_node::{QdrantCountExec, QdrantFacetExec, QdrantNearestExec};
+    use crate::context::{QDRANT_SCORE_FIELD_NAME, QdrantNearestQuery, QdrantSessionContext};
     use crate::pushdown::QdrantPayloadSchema;
     use crate::table::pushdown::QdrantPayloadOrdering;
 
@@ -358,6 +358,19 @@ mod tests {
             return qdrant_facet(projection.input());
         }
         panic!("expected qdrant facet exec in plan:\n{}", displayable(plan.as_ref()).indent(true));
+    }
+
+    fn qdrant_nearest(plan: &Arc<dyn ExecutionPlan>) -> &QdrantNearestExec {
+        if let Some(nearest) = plan.as_any().downcast_ref::<QdrantNearestExec>() {
+            return nearest;
+        }
+        if let Some(cooperative) = plan.as_any().downcast_ref::<CooperativeExec>() {
+            return qdrant_nearest(cooperative.input());
+        }
+        panic!(
+            "expected qdrant nearest exec in plan:\n{}",
+            displayable(plan.as_ref()).indent(true)
+        );
     }
 
     #[test]
@@ -1032,6 +1045,58 @@ mod tests {
         assert!(!display.contains("SortExec"), "{display}");
         assert!(!display.contains("GlobalLimitExec"), "{display}");
         assert!(!display.contains("LocalLimitExec"), "{display}");
+    }
+
+    #[test]
+    fn physical_plan_uses_qdrant_nearest_exec_for_session_helper() {
+        let provider = test_provider(Schema::new(vec![
+            Field::new(ID_FIELD_NAME, DataType::Utf8, false),
+            Field::new(PAYLOAD_FIELD_NAME, DataType::Utf8, true),
+            Field::new(
+                "embedding",
+                DataType::new_fixed_size_list(DataType::Float32, 2, false),
+                true,
+            ),
+            Field::new("aux", DataType::new_fixed_size_list(DataType::Float32, 2, false), true),
+        ]));
+        let ctx = QdrantSessionContext::from(SessionContext::new());
+        drop(
+            ctx.session_context()
+                .register_table("vectors", Arc::new(provider))
+                .expect("register table"),
+        );
+        let dataframe = ctx
+            .nearest(
+                "vectors",
+                QdrantNearestQuery::new(vec![1.0, 0.0]).using("embedding").limit(2).filter(
+                    Expr::BinaryExpr(BinaryExpr::new(
+                        Box::new(Expr::Column(ExprColumn::new_unqualified(ID_FIELD_NAME))),
+                        Operator::NotEq,
+                        Box::new(Expr::Literal(ScalarValue::Utf8(Some("3".to_owned())), None)),
+                    )),
+                ),
+            )
+            .now_or_never()
+            .expect("nearest future is ready")
+            .expect("dataframe");
+        assert_eq!(
+            dataframe
+                .logical_plan()
+                .schema()
+                .field_with_unqualified_name(QDRANT_SCORE_FIELD_NAME)
+                .expect("score field")
+                .data_type(),
+            &DataType::Float32,
+        );
+        let plan = dataframe
+            .create_physical_plan()
+            .now_or_never()
+            .expect("plan future is ready")
+            .expect("physical plan");
+        let display = displayable(plan.as_ref()).indent(true).to_string();
+        let _nearest = qdrant_nearest(&plan);
+
+        assert!(display.contains("QdrantNearestExec"), "{display}");
     }
 
     #[test]

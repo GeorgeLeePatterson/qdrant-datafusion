@@ -41,6 +41,9 @@ canonical carrier; missing values are not imputed during scan.
 - exact top-facet grouped-count pushdown over one scalar `payload:<path>` field through the crate's session/planner helper
   - currently admitted facet fields are keyword, bool, and lookup-capable integer payload indexes
   - facet keys currently surface as `Utf8`, matching the current textual `payload:<path>` SQL bridge
+- current exact `COUNT(*)`, scalar facet, and prepared-session nearest retrieval now lower through
+  one shared internal `QdrantKernelNode` / `QdrantKernelSpec` family rather than isolated logical
+  node types
 - a unified relation-pushdown analyzer scaffold now owns the admitted planner-layer subtree
   replacements instead of relying on separate analyzer-rule ownership by convention
   - the scaffold now classifies subtree source, topology, and composition explicitly as the
@@ -74,6 +77,7 @@ canonical carrier; missing values are not imputed during scan.
   session/planner path
 - `Qdrant`-specific UDFs, UDAFs, or UDTFs
 - SQL-native search / recommend / discover / fusion semantics
+- the generic public `QdrantOpNode` / `QdrantOp` layer above the new kernel family
 - broader planner rewrites beyond the narrow exact `COUNT(*)` / facet slices
 
 ## Basic Usage
@@ -101,7 +105,8 @@ let batches = ctx
 # }
 ```
 
-Exact aggregate-like pushdown currently requires the crate's prepared session context:
+Exact aggregate-like pushdown and the first retrieval relation currently require the crate's
+prepared session context:
 
 ```rust,ignore
 use std::sync::Arc;
@@ -123,6 +128,43 @@ let batches = ctx
     .await?
     .collect()
     .await?;
+# Ok(())
+# }
+```
+
+The first retrieval relation is nearest-neighbor query through the same prepared session surface.
+That API is transitional; the next architectural checkpoint is a DataFusion-native operator
+surface over the same internal kernel family:
+
+```rust,ignore
+use std::sync::Arc;
+
+use datafusion::prelude::*;
+use qdrant_client::Qdrant;
+use qdrant_datafusion::prelude::*;
+
+# async fn example() -> Result<()> {
+let client = Qdrant::from_url("http://localhost:6334").build()?;
+let table_provider = QdrantTableProvider::try_new(client, "my_collection").await?;
+
+let ctx = QdrantSessionContext::from(SessionContext::new());
+ctx.session_context()
+    .register_table("vectors", Arc::new(table_provider))?;
+
+let batches = ctx
+    .nearest(
+        "vectors",
+        QdrantNearestQuery::new(vec![1.0, 0.0, 0.0])
+            .using("embedding")
+            .filter(col("id").not_eq(lit("3")))
+            .limit(10)
+            .score_threshold(0.25),
+    )
+    .await?
+    .collect()
+    .await?;
+
+let _score_column = QDRANT_SCORE_FIELD_NAME;
 # Ok(())
 # }
 ```

@@ -4,10 +4,10 @@ use datafusion::datasource::source_as_provider;
 use datafusion::logical_expr::LogicalPlan;
 
 use super::{
-    QDRANT_COUNT_NODE_NAME, QDRANT_FACET_NODE_NAME, QdrantCompositionClass, QdrantKernelClass,
-    QdrantSourceClass, QdrantSubtreeClass, QdrantSubtreeStatus, QdrantTableProvider,
-    QdrantTopologyClass,
+    QdrantCompositionClass, QdrantKernelClass, QdrantSourceClass, QdrantSubtreeClass,
+    QdrantSubtreeStatus, QdrantTableProvider, QdrantTopologyClass,
 };
+use crate::context::plan_node::QDRANT_KERNEL_NODE_NAME;
 use crate::pushdown::QdrantPayloadPath;
 
 impl QdrantSubtreeStatus {
@@ -43,10 +43,7 @@ impl QdrantSourceClass {
                 }
             }
             LogicalPlan::Extension(extension)
-                if matches!(
-                    extension.node.name(),
-                    QDRANT_COUNT_NODE_NAME | QDRANT_FACET_NODE_NAME
-                ) =>
+                if extension.node.name() == QDRANT_KERNEL_NODE_NAME =>
             {
                 Self::SingleQdrant
             }
@@ -95,11 +92,8 @@ impl QdrantTopologyClass {
 impl QdrantKernelClass {
     pub(super) fn of(plan: &LogicalPlan, exact_self: bool) -> Self {
         if exact_self
-            || matches!(
-                plan,
-                LogicalPlan::Extension(extension)
-                    if matches!(extension.node.name(), QDRANT_COUNT_NODE_NAME | QDRANT_FACET_NODE_NAME)
-            )
+            || matches!(plan, LogicalPlan::Extension(extension) if extension.node.name()
+                == QDRANT_KERNEL_NODE_NAME)
         {
             return Self::ExactSelf;
         }

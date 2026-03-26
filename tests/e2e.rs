@@ -85,6 +85,14 @@ e2e_test!(
 
 #[cfg(feature = "test-utils")]
 e2e_test!(
+    session_context_nearest_query,
+    tests::test_session_context_nearest_query,
+    TRACING_DIRECTIVES,
+    None
+);
+
+#[cfg(feature = "test-utils")]
+e2e_test!(
     qdrant_raw_ordered_scroll_integer_contracts,
     tests::test_qdrant_raw_ordered_scroll_integer_contracts,
     TRACING_DIRECTIVES,
@@ -146,7 +154,7 @@ mod tests {
 
     use datafusion::arrow::array::types::Float32Type;
     use datafusion::arrow::array::{
-        Array, FixedSizeListArray, Int64Array, StringArray, StructArray,
+        Array, FixedSizeListArray, Float32Array, Int64Array, StringArray, StructArray,
     };
     use datafusion::prelude::*;
     use ndarrow::{
@@ -165,7 +173,9 @@ mod tests {
     use qdrant_datafusion::arrow::schema::{
         dense_vector_width, is_multi_vector_field, is_sparse_vector_field, multivector_width,
     };
-    use qdrant_datafusion::context::QdrantSessionContext;
+    use qdrant_datafusion::context::{
+        QDRANT_SCORE_FIELD_NAME, QdrantNearestQuery, QdrantSessionContext,
+    };
     use qdrant_datafusion::error::Result;
     use qdrant_datafusion::table::QdrantTableProvider;
     use qdrant_datafusion::test_utils::QdrantContainer;
@@ -700,6 +710,100 @@ mod tests {
         assert!(!display.contains("SortExec"), "{display}");
         assert!(!display.contains("GlobalLimitExec"), "{display}");
         assert!(!display.contains("LocalLimitExec"), "{display}");
+
+        Ok(())
+    }
+
+    pub(super) async fn test_session_context_nearest_query(c: Arc<QdrantContainer>) -> Result<()> {
+        let client = create_qdrant_client(&c)?;
+        let collection_name = "test_session_context_nearest_query";
+
+        let mut vectors_config = VectorsConfigBuilder::default();
+        let _ = vectors_config.add_named_vector_params(
+            "embedding",
+            VectorParamsBuilder::new(2, Distance::Dot).build(),
+        );
+        let _ = vectors_config
+            .add_named_vector_params("aux", VectorParamsBuilder::new(2, Distance::Dot).build());
+        let _ = client
+            .create_collection(
+                CreateCollectionBuilder::new(collection_name).vectors_config(vectors_config),
+            )
+            .await?;
+
+        let points = vec![
+            PointStruct::new(
+                1,
+                NamedVectors::default()
+                    .add_vector("embedding", vec![1.0, 0.0])
+                    .add_vector("aux", vec![0.0, 1.0]),
+                qdrant_client::Payload::new(),
+            ),
+            PointStruct::new(
+                2,
+                NamedVectors::default()
+                    .add_vector("embedding", vec![0.4, 0.0])
+                    .add_vector("aux", vec![1.0, 0.0]),
+                qdrant_client::Payload::new(),
+            ),
+            PointStruct::new(
+                3,
+                NamedVectors::default()
+                    .add_vector("embedding", vec![0.0, 1.0])
+                    .add_vector("aux", vec![1.0, 0.0]),
+                qdrant_client::Payload::new(),
+            ),
+        ];
+        drop(client.upsert_points(UpsertPointsBuilder::new(collection_name, points)).await?);
+
+        let table_provider = QdrantTableProvider::try_new(client.clone(), collection_name).await?;
+        let ctx = QdrantSessionContext::from(SessionContext::new());
+        drop(ctx.session_context().register_table("vectors", Arc::new(table_provider))?);
+
+        let dataframe = ctx
+            .nearest(
+                "vectors",
+                QdrantNearestQuery::new(vec![1.0, 0.0])
+                    .using("embedding")
+                    .filter(col("id").not_eq(lit("3")))
+                    .limit(3)
+                    .score_threshold(0.3),
+            )
+            .await?;
+        let plan = dataframe.clone().create_physical_plan().await?;
+        let display =
+            datafusion::physical_plan::displayable(plan.as_ref()).indent(true).to_string();
+        let batches = dataframe.collect().await?;
+        let batch = batches.into_iter().next().expect("nearest batch");
+
+        let ids = batch
+            .column(batch.schema().index_of("id").expect("id column"))
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("id string array")
+            .iter()
+            .map(|value| value.expect("non-null id").parse::<u64>().expect("numeric id"))
+            .collect::<Vec<_>>();
+        let scores = batch
+            .column(batch.schema().index_of(QDRANT_SCORE_FIELD_NAME).expect("score column"))
+            .as_any()
+            .downcast_ref::<Float32Array>()
+            .expect("score float32 array")
+            .iter()
+            .map(|value| value.expect("non-null score"))
+            .collect::<Vec<_>>();
+
+        assert_eq!(ids, vec![1, 2]);
+        assert_eq!(field_names(batch.schema().as_ref()), vec![
+            "id",
+            "payload",
+            "embedding",
+            "aux",
+            QDRANT_SCORE_FIELD_NAME
+        ],);
+        assert_f32_eq(scores[0], 1.0);
+        assert_f32_eq(scores[1], 0.4);
+        assert!(display.contains("QdrantNearestExec"), "{display}");
 
         Ok(())
     }

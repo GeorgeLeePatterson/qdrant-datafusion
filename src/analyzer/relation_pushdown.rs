@@ -11,9 +11,7 @@ use datafusion::optimizer::AnalyzerRule;
 use qdrant_client::qdrant::PointId;
 
 use self::mergeable::redundant_raw_qdrant_distinct_plan;
-use crate::context::plan_node::{
-    QDRANT_COUNT_NODE_NAME, QDRANT_FACET_NODE_NAME, QdrantCountNode, QdrantFacetNode,
-};
+use crate::context::plan_node::QdrantKernelNode;
 use crate::pushdown::filter::QdrantFilters;
 use crate::table::QdrantTableProvider;
 
@@ -99,26 +97,17 @@ enum QdrantKernelClass {
 }
 
 #[derive(Debug, Clone)]
-enum QdrantRelationNode {
-    Count(QdrantCountNode),
-    Facet(QdrantFacetNode),
-}
-
-#[derive(Debug, Clone)]
 struct QdrantRelationCandidate {
     source:      QdrantSourceClass,
     topology:    QdrantTopologyClass,
     composition: QdrantCompositionClass,
-    node:        QdrantRelationNode,
+    node:        QdrantKernelNode,
 }
 
 impl QdrantRelationCandidate {
     fn into_plan(self) -> LogicalPlan {
         let _ = (self.source, self.topology, self.composition);
-        let node: Arc<dyn datafusion::logical_expr::UserDefinedLogicalNode> = match self.node {
-            QdrantRelationNode::Count(node) => Arc::new(node),
-            QdrantRelationNode::Facet(node) => Arc::new(node),
-        };
+        let node: Arc<dyn datafusion::logical_expr::UserDefinedLogicalNode> = Arc::new(self.node);
         LogicalPlan::Extension(Extension { node })
     }
 }
@@ -182,9 +171,7 @@ mod tests {
 
     use super::*;
     use crate::arrow::schema::{ID_FIELD_NAME, PAYLOAD_FIELD_NAME};
-    use crate::context::plan_node::{
-        QDRANT_COUNT_NODE_NAME, QDRANT_FACET_NODE_NAME, QdrantCountNode,
-    };
+    use crate::context::plan_node::{QDRANT_KERNEL_NODE_NAME, QdrantKernelNode};
     use crate::pushdown::QdrantPayloadSchema;
     use crate::pushdown::filter::QdrantFilters;
     use crate::table::QdrantTableProvider;
@@ -234,7 +221,7 @@ mod tests {
             .to_dfschema_ref()
             .expect("df schema");
         LogicalPlan::Extension(Extension {
-            node: Arc::new(QdrantCountNode::new(
+            node: Arc::new(QdrantKernelNode::count(
                 schema,
                 Arc::new(Qdrant::from_url("http://localhost:6334").build().expect("qdrant client")),
                 "docs".to_owned(),
@@ -248,7 +235,7 @@ mod tests {
             .to_dfschema_ref()
             .expect("df schema");
         LogicalPlan::Extension(Extension {
-            node: Arc::new(DummyQdrantNode { name: QDRANT_COUNT_NODE_NAME, schema }),
+            node: Arc::new(DummyQdrantNode { name: QDRANT_KERNEL_NODE_NAME, schema }),
         })
     }
 
@@ -669,7 +656,7 @@ mod tests {
         let LogicalPlan::Extension(extension) = &analyzed else {
             panic!("expected qdrant count extension, got {analyzed:?}");
         };
-        assert_eq!(extension.node.name(), QDRANT_COUNT_NODE_NAME);
+        assert_eq!(extension.node.name(), QDRANT_KERNEL_NODE_NAME);
         assert_eq!(subtree_class(&analyzed).expect("subtree class"), QdrantSubtreeClass {
             source:      QdrantSourceClass::SingleQdrant,
             topology:    QdrantTopologyClass::Leaf,
@@ -701,7 +688,7 @@ mod tests {
         let LogicalPlan::Extension(extension) = &analyzed else {
             panic!("expected qdrant facet extension, got {analyzed:?}");
         };
-        assert_eq!(extension.node.name(), QDRANT_FACET_NODE_NAME);
+        assert_eq!(extension.node.name(), QDRANT_KERNEL_NODE_NAME);
         assert_eq!(subtree_class(&analyzed).expect("subtree class"), QdrantSubtreeClass {
             source:      QdrantSourceClass::SingleQdrant,
             topology:    QdrantTopologyClass::Leaf,

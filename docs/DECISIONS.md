@@ -1,6 +1,6 @@
 # Locked Decisions
 
-Last updated: 2026-03-25
+Last updated: 2026-03-26
 
 ## Core Constraints
 
@@ -131,6 +131,37 @@ Last updated: 2026-03-25
     - constructors / recognizers such as `Type::from_plan(...)` and `Type::of(...)` are the
       preferred shape
     - detached helpers should remain only where there is no natural semantic owner
+30. The first admitted retrieval relation is nearest-neighbor query through the prepared session
+    helper, not through ad hoc SQL syntax.
+    - current entrypoint is `QdrantSessionContext::nearest`
+    - current request surface is `QdrantNearestQuery`
+    - it currently lowers into the generic extracted kernel layer over `Qdrant::query`
+    - current admitted scope is:
+      - dense query vector
+      - optional named-vector `using`
+      - exact admitted filters from the existing predicate algebra
+      - `LIMIT`
+      - optional score threshold
+    - output is the full base row plus `__qdrant_score: Float32`
+    - this prepared-session nearest surface is transitional rather than the final public retrieval
+      contract
+    - stable SQL retrieval syntax remains intentionally deferred until the broader retrieval
+      surface is planned explicitly
+31. `Qdrant` planner integration now has an explicit two-stage architecture.
+    - public or marker semantics belong on a generic unary `QdrantOpNode` over `QdrantOp`
+    - extracted exact remote execution belongs on a generic leaf `QdrantKernelNode` over
+      `QdrantKernelSpec`
+    - feature growth should add enum variants to those families before adding new top-level node
+      families
+32. Kernel planning should be organized around actual admitted `Qdrant` request families rather
+    than one logical node type per feature.
+    - current admitted kernel families are:
+      - `count`
+      - `facet`
+      - `query`
+    - retrieval-specific shapes such as nearest-neighbor search should live inside the `query`
+      family rather than as separate top-level kernel nodes
+    - later admitted grouped / batch retrieval should extend that same request-family structure
 
 ## Execution Ordering
 

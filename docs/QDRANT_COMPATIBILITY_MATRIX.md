@@ -69,16 +69,16 @@ This matrix is derived from:
 | Row ordering | payload-key ordered scroll | `order_by` on `scroll` | `ORDER BY payload:<path>` | `Current` | Admitted exact subset for indexed integer / float / datetime fields. Distributed exactness still deferred. |
 | Row ordering | broader payload ordering | `order_by` | richer payload path ordering | `Later` | Only after payload access contract stabilizes further. |
 | Row production | ID-ordered full scan | `scroll` | base table relation | `Current` | This is the stable table-scan baseline. |
-| Row production | nearest-neighbor search | `query(Query::Nearest)` / `search` | relation-producing retrieval | `Next` | First retrieval surface to add. Should not be bolted into plain table scan semantics. |
+| Row production | nearest-neighbor search | `query(Query::Nearest)` / `search` | relation-producing retrieval | `Current` | The first retrieval relation is now admitted through `QdrantSessionContext::nearest`, not through SQL syntax. It returns the full base row plus `__qdrant_score`, and currently admits dense query vectors, optional named-vector `using`, exact admitted filters, `LIMIT`, and optional score threshold. |
 | Row production | nearest with MMR | `query(Query::NearestWithMmr)` | retrieval + ranking modifier | `Later` | Best treated as retrieval modifier after nearest is admitted. |
 | Row production | recommendation | `query(Query::Recommend)`, `recommend` | relation-producing retrieval | `Later` | Depends on retrieval IR and SQL surface decision. |
 | Row production | discovery | `query(Query::Discover)`, `discover` | relation-producing retrieval | `Later` | Same dependency as recommendation. |
 | Row production | context query | `query(Query::Context)` | relation-producing retrieval | `Later` | Same dependency as recommendation / discovery. |
-| Row production | sample | `query(Query::Sample)` | relation-producing retrieval | `Next` | Conceptually simple and useful as a retrieval relation once query IR exists. |
+| Row production | sample | `query(Query::Sample)` | relation-producing retrieval | `Next` | Conceptually simple and useful as the next retrieval relation now that nearest exists. |
 | Row production | prefetch subqueries | `QueryPointsBuilder::prefetch` | retrieval pipeline / subquery composition | `Later` | Important for hybrid query plans, but should follow core retrieval IR. |
-| Row production | `using` named vector | query/search/recommend builders | retrieval relation parameter | `Next` | Core to multi-vector collections. |
+| Row production | `using` named vector | query/search/recommend builders | retrieval relation parameter | `Current` | The first nearest-neighbor relation already admits named-vector `using` through `QdrantNearestQuery`. |
 | Row production | `lookup_from` | query/search/recommend/group builders | cross-collection lookup parameter | `Later` | Useful, but not first-wave. |
-| Row production | score threshold | query/search builders | retrieval relation modifier | `Next` | Natural once score-bearing retrieval relations exist. |
+| Row production | score threshold | query/search builders | retrieval relation modifier | `Current` | The first nearest-neighbor relation already admits optional score threshold and returns explicit score output. |
 | Row production | search params (`ef`, exact, quantization knobs) | `SearchParams` | retrieval relation modifier / hint | `Later` | Important, but probably better as explicit parameters after the relation surface exists. |
 | Row production | read consistency / timeout / shard selector | builders | execution modifiers | `Later` | Real features, but not part of the core SQL denotation. |
 | Ranking / re-scoring | fusion (`RRF`, `DBSF`) | `Query::Fusion`, `Query::Rrf` | ranking composition over retrieval relations | `Later` | Should compose over retrieval relations, not over table scans. |
@@ -177,18 +177,19 @@ These are strong next-release candidates because they are SQL-natural and reuse 
 
 1. broader aggregate-like exploration beyond exact single-source counts and the first scalar-facet slice
 
-### P2: introduce the first retrieval relation
+### P2: broaden retrieval relations beyond nearest
 
-This is the first major SQL-surface expansion that is still reasonable for the next release:
+The first retrieval relation now exists through the prepared session surface. The next expansion is
+to keep the retrieval family compositional without freezing SQL syntax too early:
 
-1. nearest-neighbor retrieval via unified `query`
-2. `using` named-vector selection
-3. `limit`, filters, and score threshold
-4. explicit score-bearing output contract
+1. sample
+2. search params and execution hints where they do not distort denotation
+3. recommendation / discovery / context
+4. keep the score/output contract stable while widening relation kinds
 
 ### P3: follow with retrieval modifiers
 
-Only after the first retrieval relation exists:
+Now that the first retrieval relation exists:
 
 1. sample
 2. recommend
@@ -209,8 +210,8 @@ Only after the first retrieval relation exists:
 
 1. settle whether the next grouped/exploration step is broader facet semantics or a separate aggregate-like relation
 2. settle explicit payload empty semantics
-3. design the first retrieval relation and its score contract
-4. implement nearest retrieval
+3. preserve the nearest score/output contract while widening retrieval
+4. implement sample and the next retrieval relations
 5. layer retrieval modifiers and secondary retrieval operators on top
 
 That order is the most compositional one currently available.

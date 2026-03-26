@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use datafusion::arrow::array::{
-    ArrayRef, FixedSizeListArray, Float32Array, Int32Array, ListArray, NullBufferBuilder,
-    StringBuilder, StructArray, UInt32Array,
+    ArrayRef, FixedSizeListArray, Float32Array, Float32Builder, Int32Array, ListArray,
+    NullBufferBuilder, StringBuilder, StructArray, UInt32Array,
 };
 use datafusion::arrow::buffer::{NullBuffer, OffsetBuffer, ScalarBuffer};
 use datafusion::arrow::datatypes::{DataType, Field, SchemaRef};
@@ -366,6 +366,7 @@ impl SparseVectorRows {
 enum FieldAppender {
     Id(StringBuilder),
     Payload(StringBuilder),
+    Score(Float32Builder),
     DenseVector(DenseVectorRows),
     MultiVector(MultiVectorRows),
     SparseVector(SparseVectorRows),
@@ -396,6 +397,8 @@ impl QdrantRecordBatchBuilder {
                         point_count,
                         point_count * 64,
                     )))
+                } else if field.name() == crate::context::QDRANT_SCORE_FIELD_NAME {
+                    Ok(FieldAppender::Score(Float32Builder::with_capacity(point_count)))
                 } else if let Some(width) = dense_vector_width(field) {
                     Ok(FieldAppender::DenseVector(DenseVectorRows::new(
                         field.name().clone(),
@@ -440,8 +443,8 @@ impl QdrantRecordBatchBuilder {
     /// # Errors
     /// Returns an error if the point does not match the admitted scan schema contract.
     pub fn append_point(&mut self, point: ScoredPoint) -> DataFusionResult<()> {
-        let ScoredPoint { id, payload, vectors, .. } = point;
-        self.append_parts(id, &payload, vectors)
+        let ScoredPoint { id, payload, vectors, score, .. } = point;
+        self.append_parts(id, &payload, vectors, Some(score))
     }
 
     /// Append a single retrieved Qdrant point to the in-progress batch.
@@ -450,7 +453,7 @@ impl QdrantRecordBatchBuilder {
     /// Returns an error if the point does not match the admitted scan schema contract.
     pub fn append_retrieved_point(&mut self, point: RetrievedPoint) -> DataFusionResult<()> {
         let RetrievedPoint { id, payload, vectors, .. } = point;
-        self.append_parts(id, &payload, vectors)
+        self.append_parts(id, &payload, vectors, None)
     }
 
     fn append_parts(
@@ -458,6 +461,7 @@ impl QdrantRecordBatchBuilder {
         id: Option<PointId>,
         payload: &HashMap<String, Value>,
         vectors: Option<VectorsOutput>,
+        score: Option<f32>,
     ) -> DataFusionResult<()> {
         let point_id = id.and_then(|id| id.point_id_options);
         let (mut unnamed_vector, mut named_vectors) =
@@ -482,6 +486,7 @@ impl QdrantRecordBatchBuilder {
                     serde_json::to_string(payload)
                         .map_err(|error| DataFusionError::External(Box::new(error)))?,
                 ),
+                FieldAppender::Score(builder) => builder.append_option(score),
                 FieldAppender::DenseVector(rows) => {
                     rows.push(take_vector(
                         rows.unnamed,
@@ -524,6 +529,7 @@ impl QdrantRecordBatchBuilder {
                 FieldAppender::Id(mut builder) | FieldAppender::Payload(mut builder) => {
                     Ok(Arc::new(builder.finish()) as ArrayRef)
                 }
+                FieldAppender::Score(mut builder) => Ok(Arc::new(builder.finish()) as ArrayRef),
                 FieldAppender::DenseVector(rows) => rows.finish(),
                 FieldAppender::MultiVector(rows) => rows.finish(),
                 FieldAppender::SparseVector(rows) => rows.finish(),

@@ -4,10 +4,10 @@ use datafusion::common::Result;
 use datafusion::logical_expr::LogicalPlan;
 
 use super::common::{QdrantSource, count_star_like};
-use crate::context::plan_node::QdrantCountNode;
+use crate::context::plan_node::QdrantKernelNode;
 use crate::pushdown::filter::QdrantFilters;
 
-pub(super) fn count_node(plan: &LogicalPlan) -> Result<Option<QdrantCountNode>> {
+pub(super) fn count_node(plan: &LogicalPlan) -> Result<Option<QdrantKernelNode>> {
     let LogicalPlan::Aggregate(aggregate) = plan else {
         return Ok(None);
     };
@@ -30,7 +30,7 @@ pub(super) fn count_node(plan: &LogicalPlan) -> Result<Option<QdrantCountNode>> 
     }
 
     let filters = QdrantFilters::try_new(&source.schema, &source.payload_schema, &source.filters)?;
-    Ok(Some(QdrantCountNode::new(
+    Ok(Some(QdrantKernelNode::count(
         Arc::clone(&aggregate.schema),
         source.client,
         source.collection,

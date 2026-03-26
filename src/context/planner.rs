@@ -6,9 +6,7 @@ use datafusion::logical_expr::{LogicalPlan, UserDefinedLogicalNode};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_planner::{ExtensionPlanner, PhysicalPlanner};
 
-use super::plan_node::{
-    QDRANT_COUNT_NODE_NAME, QDRANT_FACET_NODE_NAME, QdrantCountNode, QdrantFacetNode,
-};
+use super::plan_node::{QDRANT_KERNEL_NODE_NAME, QdrantKernelNode};
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct QdrantExtensionPlanner;
@@ -24,18 +22,11 @@ impl ExtensionPlanner for QdrantExtensionPlanner {
         _session_state: &SessionState,
     ) -> datafusion::error::Result<Option<Arc<dyn ExecutionPlan>>> {
         match node.name() {
-            QDRANT_COUNT_NODE_NAME => {
+            QDRANT_KERNEL_NODE_NAME => {
                 let node = node
                     .as_any()
-                    .downcast_ref::<QdrantCountNode>()
-                    .ok_or(plan_datafusion_err!("Failed to downcast QdrantCountNode"))?;
-                Ok(Some(node.execute()))
-            }
-            QDRANT_FACET_NODE_NAME => {
-                let node = node
-                    .as_any()
-                    .downcast_ref::<QdrantFacetNode>()
-                    .ok_or(plan_datafusion_err!("Failed to downcast QdrantFacetNode"))?;
+                    .downcast_ref::<QdrantKernelNode>()
+                    .ok_or(plan_datafusion_err!("Failed to downcast QdrantKernelNode"))?;
                 Ok(Some(node.execute()))
             }
             _ => Ok(None),
