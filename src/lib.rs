@@ -4,6 +4,7 @@ mod analyzer;
 pub mod arrow;
 pub mod context;
 pub mod error;
+pub mod expr_fn;
 pub mod prelude;
 mod pushdown;
 pub mod stream;

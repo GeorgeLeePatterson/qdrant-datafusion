@@ -17,10 +17,10 @@ use crate::arrow::deserialize::QdrantRecordBatchBuilder;
 
 #[derive(Clone)]
 pub(super) struct QdrantScrollState {
-    pub(super) client:       Arc<Qdrant>,
-    pub(super) collection:   String,
-    pub(super) pushdown:     Arc<QdrantScanSpec>,
-    pub(super) remaining:    Option<usize>,
+    pub(super) client: Arc<Qdrant>,
+    pub(super) collection: String,
+    pub(super) pushdown: Arc<QdrantScanSpec>,
+    pub(super) remaining: Option<usize>,
     pub(super) continuation: QdrantContinuation,
 }
 
@@ -92,7 +92,8 @@ impl QdrantScrollState {
         }
         let ordered = ordered.map(|ordered| ordered.next(&result)).transpose()?;
         let point_count = result.len();
-        let mut builder = QdrantRecordBatchBuilder::new(Arc::clone(&pushdown.schema), point_count)?;
+        let mut builder =
+            QdrantRecordBatchBuilder::new(Arc::clone(&pushdown.schema), point_count, None)?;
         for point in result {
             builder.append_retrieved_point(point)?;
         }

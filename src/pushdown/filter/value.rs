@@ -90,26 +90,28 @@ fn timestamp_from_scaled(value: i64, scale: i64) -> Timestamp {
     Timestamp { seconds, nanos: i32::try_from(nanos).expect("nanos fit in i32") }
 }
 
-fn nanos_i32(nanos: u32) -> i32 { i32::try_from(nanos).expect("nanos fit in i32") }
+fn nanos_i32(nanos: u32) -> i32 {
+    i32::try_from(nanos).expect("nanos fit in i32")
+}
 
 fn timestamp_from_string(value: &str) -> Option<Timestamp> {
     if let Ok(value) = DateTime::parse_from_rfc3339(value) {
         let value = value.with_timezone(&Utc);
         return Some(Timestamp {
             seconds: value.timestamp(),
-            nanos:   nanos_i32(value.timestamp_subsec_nanos()),
+            nanos: nanos_i32(value.timestamp_subsec_nanos()),
         });
     }
     if let Ok(value) = NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S%.f") {
         return Some(Timestamp {
             seconds: value.and_utc().timestamp(),
-            nanos:   nanos_i32(value.and_utc().timestamp_subsec_nanos()),
+            nanos: nanos_i32(value.and_utc().timestamp_subsec_nanos()),
         });
     }
     if let Ok(value) = NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%.f") {
         return Some(Timestamp {
             seconds: value.and_utc().timestamp(),
-            nanos:   nanos_i32(value.and_utc().timestamp_subsec_nanos()),
+            nanos: nanos_i32(value.and_utc().timestamp_subsec_nanos()),
         });
     }
     let value = NaiveDate::parse_from_str(value, "%Y-%m-%d").ok()?;
@@ -118,4 +120,6 @@ fn timestamp_from_string(value: &str) -> Option<Timestamp> {
 }
 
 #[allow(clippy::cast_precision_loss)]
-fn integer_to_f64(value: i64) -> f64 { value as f64 }
+fn integer_to_f64(value: i64) -> f64 {
+    value as f64
+}

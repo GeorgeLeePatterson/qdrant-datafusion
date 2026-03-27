@@ -131,22 +131,23 @@ Last updated: 2026-03-26
     - constructors / recognizers such as `Type::from_plan(...)` and `Type::of(...)` are the
       preferred shape
     - detached helpers should remain only where there is no natural semantic owner
-30. The first admitted retrieval relation is nearest-neighbor query through the prepared session
-    helper, not through ad hoc SQL syntax.
-    - current entrypoint is `QdrantSessionContext::nearest`
-    - current request surface is `QdrantNearestQuery`
-    - it currently lowers into the generic extracted kernel layer over `Qdrant::query`
+30. The first admitted retrieval prototype is nearest-neighbor query through a DataFusion-native
+    marker surface over the prepared session context, not through a context-owned relation helper.
+    - current public marker is `qdrant_nearest_score(...)`
+    - it lowers through the generic public operator layer over `QdrantOpNode` / `QdrantOp`, then
+      into the generic extracted kernel layer over `QdrantKernelNode` / `QdrantKernelSpec::Query`
     - current admitted scope is:
       - dense query vector
-      - optional named-vector `using`
-      - exact admitted filters from the existing predicate algebra
+      - named-vector selection by the vector column argument
+      - exact admitted base filters from the existing predicate algebra
+      - descending score sort
       - `LIMIT`
-      - optional score threshold
-    - output is the full base row plus `__qdrant_score: Float32`
-    - this prepared-session nearest surface is transitional rather than the final public retrieval
-      contract
-    - stable SQL retrieval syntax remains intentionally deferred until the broader retrieval
-      surface is planned explicitly
+      - optional score-threshold predicates
+    - projecting the score column is optional
+    - when the score is projected, aliases win; otherwise naming follows normal `DataFusion`
+      expression naming
+    - `QdrantSessionContext` remains only as the prepared-session wrapper that installs the
+      analyzer, planner, and marker-UDF hooks
 31. `Qdrant` planner integration now has an explicit two-stage architecture.
     - public or marker semantics belong on a generic unary `QdrantOpNode` over `QdrantOp`
     - extracted exact remote execution belongs on a generic leaf `QdrantKernelNode` over

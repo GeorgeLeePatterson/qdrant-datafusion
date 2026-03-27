@@ -41,9 +41,15 @@ canonical carrier; missing values are not imputed during scan.
 - exact top-facet grouped-count pushdown over one scalar `payload:<path>` field through the crate's session/planner helper
   - currently admitted facet fields are keyword, bool, and lookup-capable integer payload indexes
   - facet keys currently surface as `Utf8`, matching the current textual `payload:<path>` SQL bridge
-- current exact `COUNT(*)`, scalar facet, and prepared-session nearest retrieval now lower through
-  one shared internal `QdrantKernelNode` / `QdrantKernelSpec` family rather than isolated logical
-  node types
+- a generic public `QdrantOpNode` / `QdrantOp` layer now exists above the shared kernel family
+  for the current nearest-retrieval prototype
+- current exact `COUNT(*)`, scalar facet, and nearest retrieval now lower through one shared
+  internal `QdrantKernelNode` / `QdrantKernelSpec` family rather than isolated logical node types
+- the first retrieval prototype is a DataFusion-native marker UDF:
+  - `qdrant_nearest_score(vector_column, ...)`
+  - exact lowering currently admits dense query vectors, descending score sort, `LIMIT`,
+    optional exact base filters, and optional score-threshold predicates
+  - the score column is only added when projected; aliases follow normal `DataFusion` naming
 - a unified relation-pushdown analyzer scaffold now owns the admitted planner-layer subtree
   replacements instead of relying on separate analyzer-rule ownership by convention
   - the scaffold now classifies subtree source, topology, and composition explicitly as the
@@ -75,9 +81,8 @@ canonical carrier; missing values are not imputed during scan.
 - broader aggregate/grouped SQL beyond the admitted scalar-facet subset
 - projection-time `payload:<path>` execution outside an admitted `Qdrant` kernel in the prepared
   session/planner path
-- `Qdrant`-specific UDFs, UDAFs, or UDTFs
+- broader `Qdrant`-specific UDF, UDAF, or UDTF surface beyond the current nearest marker UDF
 - SQL-native search / recommend / discover / fusion semantics
-- the generic public `QdrantOpNode` / `QdrantOp` layer above the new kernel family
 - broader planner rewrites beyond the narrow exact `COUNT(*)` / facet slices
 
 ## Basic Usage
@@ -132,9 +137,8 @@ let batches = ctx
 # }
 ```
 
-The first retrieval relation is nearest-neighbor query through the same prepared session surface.
-That API is transitional; the next architectural checkpoint is a DataFusion-native operator
-surface over the same internal kernel family:
+The first retrieval prototype is nearest-neighbor query through a DataFusion-native marker UDF on
+the same prepared session surface:
 
 ```rust,ignore
 use std::sync::Arc;
@@ -152,19 +156,16 @@ ctx.session_context()
     .register_table("vectors", Arc::new(table_provider))?;
 
 let batches = ctx
-    .nearest(
-        "vectors",
-        QdrantNearestQuery::new(vec![1.0, 0.0, 0.0])
-            .using("embedding")
-            .filter(col("id").not_eq(lit("3")))
-            .limit(10)
-            .score_threshold(0.25),
+    .sql(
+        "SELECT id, payload, qdrant_nearest_score(embedding, 1.0, 0.0, 0.0) AS score \
+         FROM vectors \
+         WHERE id <> '3' AND qdrant_nearest_score(embedding, 1.0, 0.0, 0.0) >= 0.25 \
+         ORDER BY score DESC \
+         LIMIT 10",
     )
     .await?
     .collect()
     .await?;
-
-let _score_column = QDRANT_SCORE_FIELD_NAME;
 # Ok(())
 # }
 ```
@@ -188,6 +189,12 @@ WHERE id IN ('1', '2', '3');
 SELECT id
 FROM docs
 WHERE payload:rank >= 10
+
+SELECT id, qdrant_nearest_score(embedding, 1.0, 0.0) AS score
+FROM docs
+WHERE qdrant_nearest_score(embedding, 1.0, 0.0) >= 0.3
+ORDER BY score DESC
+LIMIT 10;
 ORDER BY payload:rank;
 
 SELECT id

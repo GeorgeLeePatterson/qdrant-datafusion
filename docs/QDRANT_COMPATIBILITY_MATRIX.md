@@ -1,6 +1,6 @@
 # Qdrant Compatibility Matrix
 
-Last updated: 2026-03-25
+Last updated: 2026-03-26
 
 ## Purpose
 
@@ -69,16 +69,16 @@ This matrix is derived from:
 | Row ordering | payload-key ordered scroll | `order_by` on `scroll` | `ORDER BY payload:<path>` | `Current` | Admitted exact subset for indexed integer / float / datetime fields. Distributed exactness still deferred. |
 | Row ordering | broader payload ordering | `order_by` | richer payload path ordering | `Later` | Only after payload access contract stabilizes further. |
 | Row production | ID-ordered full scan | `scroll` | base table relation | `Current` | This is the stable table-scan baseline. |
-| Row production | nearest-neighbor search | `query(Query::Nearest)` / `search` | relation-producing retrieval | `Current` | The first retrieval relation is now admitted through `QdrantSessionContext::nearest`, not through SQL syntax. It returns the full base row plus `__qdrant_score`, and currently admits dense query vectors, optional named-vector `using`, exact admitted filters, `LIMIT`, and optional score threshold. |
+| Row production | nearest-neighbor search | `query(Query::Nearest)` / `search` | relation-producing retrieval | `Current` | The first retrieval prototype now uses `qdrant_nearest_score(...)` as a marker UDF over the prepared session context. Exact lowering currently admits dense query vectors, descending score sort, `LIMIT`, optional exact base filters, and optional score-threshold predicates. The score only enters the output when projected, and aliases follow normal `DataFusion` naming. |
 | Row production | nearest with MMR | `query(Query::NearestWithMmr)` | retrieval + ranking modifier | `Later` | Best treated as retrieval modifier after nearest is admitted. |
 | Row production | recommendation | `query(Query::Recommend)`, `recommend` | relation-producing retrieval | `Later` | Depends on retrieval IR and SQL surface decision. |
 | Row production | discovery | `query(Query::Discover)`, `discover` | relation-producing retrieval | `Later` | Same dependency as recommendation. |
 | Row production | context query | `query(Query::Context)` | relation-producing retrieval | `Later` | Same dependency as recommendation / discovery. |
 | Row production | sample | `query(Query::Sample)` | relation-producing retrieval | `Next` | Conceptually simple and useful as the next retrieval relation now that nearest exists. |
 | Row production | prefetch subqueries | `QueryPointsBuilder::prefetch` | retrieval pipeline / subquery composition | `Later` | Important for hybrid query plans, but should follow core retrieval IR. |
-| Row production | `using` named vector | query/search/recommend builders | retrieval relation parameter | `Current` | The first nearest-neighbor relation already admits named-vector `using` through `QdrantNearestQuery`. |
+| Row production | `using` named vector | query/search/recommend builders | retrieval relation parameter | `Current` | The current nearest prototype already admits named-vector selection through the vector column argument to `qdrant_nearest_score(...)`. |
 | Row production | `lookup_from` | query/search/recommend/group builders | cross-collection lookup parameter | `Later` | Useful, but not first-wave. |
-| Row production | score threshold | query/search builders | retrieval relation modifier | `Current` | The first nearest-neighbor relation already admits optional score threshold and returns explicit score output. |
+| Row production | score threshold | query/search builders | retrieval relation modifier | `Current` | The current nearest prototype already admits optional score-threshold predicates over `qdrant_nearest_score(...)`. |
 | Row production | search params (`ef`, exact, quantization knobs) | `SearchParams` | retrieval relation modifier / hint | `Later` | Important, but probably better as explicit parameters after the relation surface exists. |
 | Row production | read consistency / timeout / shard selector | builders | execution modifiers | `Later` | Real features, but not part of the core SQL denotation. |
 | Ranking / re-scoring | fusion (`RRF`, `DBSF`) | `Query::Fusion`, `Query::Rrf` | ranking composition over retrieval relations | `Later` | Should compose over retrieval relations, not over table scans. |

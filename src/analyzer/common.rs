@@ -10,11 +10,11 @@ use crate::pushdown::QdrantPayloadSchema;
 use crate::table::QdrantTableProvider;
 
 pub(crate) struct QdrantSource {
-    pub(crate) client:         Arc<qdrant_client::Qdrant>,
-    pub(crate) collection:     String,
-    pub(crate) schema:         datafusion::arrow::datatypes::SchemaRef,
+    pub(crate) client: Arc<qdrant_client::Qdrant>,
+    pub(crate) collection: String,
+    pub(crate) schema: datafusion::arrow::datatypes::SchemaRef,
     pub(crate) payload_schema: Arc<QdrantPayloadSchema>,
-    pub(crate) filters:        Vec<Expr>,
+    pub(crate) filters: Vec<Expr>,
 }
 
 impl QdrantSource {

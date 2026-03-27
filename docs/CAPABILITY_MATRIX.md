@@ -35,26 +35,27 @@ This file is the canonical scope and sufficiency map for `qdrant-datafusion`.
 | Aggregation / grouping | exact `COUNT(*)` over a single `Qdrant` source | Implemented | The first aggregate-like slice now lands through a narrow analyzer / extension-planner path and lowers into `Qdrant`’s native `count` API while reusing the provider-owned predicate algebra. |
 | Aggregation / grouping | top-facet grouped counts over one scalar payload field | Implemented | The second aggregate-like slice now lands through the analyzer / extension-planner path and lowers into `Qdrant`’s native `facet` API for the admitted `GROUP BY payload:<path> ORDER BY count DESC LIMIT N` subset. Current admitted facet fields are keyword, bool, and lookup-capable integer indexes, and facet keys still surface as `Utf8` because the current `payload:<path>` SQL bridge remains textual. |
 | Aggregation / grouping | broader aggregate-like exploration | Partial | Exact `COUNT(*)` and the first scalar-facet grouped-count slice now exist, but richer grouped/exploration semantics are still pending. |
-| Planner integration | generic extracted `Qdrant` kernel family | Implemented | Current exact `COUNT(*)`, scalar facet, and prepared-session nearest retrieval now converge on one generic `QdrantKernelNode` / `QdrantKernelSpec` family instead of isolated logical node types. |
-| Planner integration | generic public `Qdrant` operator family | Missing | The next checkpoint is a generic unary `QdrantOpNode` / `QdrantOp` layer for public marker semantics, starting with nearest. |
-| Retrieval relation | prepared-session nearest-neighbor query | Implemented | `QdrantSessionContext::nearest` still builds the current score-bearing retrieval relation over `Qdrant::query` with dense query vectors, optional `using`, exact admitted filters, `LIMIT`, and optional score threshold, but that surface is now treated as transitional until the generic operator layer lands. |
+| Planner integration | generic extracted `Qdrant` kernel family | Implemented | Current exact `COUNT(*)`, scalar facet, and nearest retrieval now converge on one generic `QdrantKernelNode` / `QdrantKernelSpec` family instead of isolated logical node types. |
+| Planner integration | generic public `Qdrant` operator family | Implemented | A generic unary `QdrantOpNode` / `QdrantOp` layer now owns the current public marker semantics, starting with nearest over the `query` family. |
+| Retrieval relation | nearest-neighbor query prototype | Implemented | The current public nearest prototype uses `qdrant_nearest_score(...)` as a DataFusion-native marker UDF on the prepared session context. Exact lowering currently admits dense query vectors, descending score sort, `LIMIT`, optional exact base filters, and optional score-threshold predicates. The score column is only present when projected, and aliasing follows normal `DataFusion` naming. |
 | Dense vector output contract | canonical fixed-dimension vector carrier | Implemented | Dense scans use nullable `FixedSizeList<Float32>(D)`. |
 | Multivector output contract | canonical ragged tensor carrier | Implemented | Multivectors use nullable `arrow.variable_shape_tensor<Float32>`. |
 | Sparse vector output contract | canonical sparse carrier | Implemented | Sparse scans use nullable `ndarrow.csr_matrix_batch<Float32>`. |
 | Null semantics | heterogeneous named vectors | Implemented | Missing per-row vectors become top-level `NULL` without changing the inner carrier. |
 | Payload contract | baseline payload exposure | Implemented | Baseline surface is JSON/text payload projection. |
 | Writes | `INSERT INTO` | Partial | The provider now fails explicitly instead of panicking, but write support is not admitted. |
-| SQL-native `Qdrant` capability surface | search / recommend / discover / fusion / grouped query forms | Missing | The first retrieval relation now exists through the prepared-session helper, but a stable SQL form is still intentionally deferred. |
-| UDF/UDAF/UDTF surface | `Qdrant`-specific SQL helpers | Missing | No crate-local SQL helpers are intentionally exposed yet. |
+| SQL-native `Qdrant` capability surface | search / recommend / discover / fusion / grouped query forms | Partial | The first SQL-facing retrieval prototype now exists through `qdrant_nearest_score(...)`, but broader stable SQL search / recommend / discover / fusion / grouped-query semantics are still intentionally deferred. |
+| UDF/UDAF/UDTF surface | `Qdrant`-specific SQL helpers | Partial | The crate now exposes `qdrant_nearest_score(...)` as a marker UDF for nearest retrieval planning. Broader helper surface remains intentionally deferred. |
 | Planner integration | query rewriting / tree visitors / custom planning | Partial | A unified relation-pushdown analyzer / extension-planner scaffold now owns the current exact single-source `COUNT(*)` and exact scalar-facet grouped-count replacement path, classifies subtree source / topology / composition plus exact-kernel placement explicitly for later island expansion, rejects projection-time `payload:<path>` surfaces in the prepared session/planner path when no admitted exact kernel can own them, rewrites four concrete `mergeable` multi-branch cases (`UNION ALL`, `UNION DISTINCT`, `INTERSECT DISTINCT`, `EXCEPT DISTINCT` over admitted raw same-collection branches) to one filtered scan, composes those extracted child kernels upward into exact `COUNT(*)` and exact scalar-facet replacements in the same analyzer pass, and now drops redundant `DISTINCT` over raw full-row `Qdrant` scans because row identity already includes unique `id`. Broader planner-layer capability expansion is still deferred. |
 | Validation | end-to-end scan tests on current baseline | Implemented | Integration tests cover canonical carriers, nullable heterogeneous scans, non-truncated full scans, and raw ordered-scroll runtime contracts. |
 | Documentation | public docs aligned with current tree | Implemented | Root README, tracker docs, and repository notes describe the admitted baseline only. |
 
 ## Sufficiency Verdict
 
-`qdrant-datafusion` is now sufficient for the next planning round, but not yet for the broader SQL-native capability expansion.
+`qdrant-datafusion` is now sufficient for the next planning round on the shared `Qdrant`
+operator/kernel architecture, but not yet for the broader SQL-native capability expansion.
 
-The next blocking milestone is completion of the public/operator side of the new `Qdrant`
-relation architecture: generic `QdrantOp` ownership above the now-unified kernel layer, starting
-with nearest. After that, broader aggregate-like and retrieval relations can extend the same
-operator/kernel families instead of introducing new one-off node types.
+The next blocking milestone is extension of that architecture beyond the nearest prototype:
+broader `query`-family retrieval variants plus richer aggregate-like output contracts should now
+extend the same `QdrantOp` / `QdrantKernelSpec` families instead of introducing new one-off node
+types.

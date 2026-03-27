@@ -11,15 +11,16 @@ This folder is the compaction-safe planning and execution source of truth for `q
    - preserve truthful collection scans over canonical carriers
    - use current `qdrant-client` APIs only
    - widen the SQL-native capability surface only through explicit semantic milestones
-4. The current milestone is the first full architectural checkpoint for broader `Qdrant` relation
-   work.
-   - the first checkpoint is generic kernel unification for the currently admitted exact
-     `Qdrant` leaves
-   - current exact `COUNT(*)`, scalar-facet grouped counts, and nearest-neighbor retrieval should
-     converge on one `QdrantKernelNode` / `QdrantKernelSpec` family instead of separate node
-     types
-   - the next checkpoint is the generic public operator layer above that kernel layer:
-     `QdrantOpNode` / `QdrantOp` plus a DataFusion-native nearest marker surface
+4. The current milestone is the first full public/operator checkpoint for broader `Qdrant`
+   relation work.
+   - current exact `COUNT(*)`, scalar-facet grouped counts, and nearest-neighbor retrieval now
+     converge on one `QdrantKernelNode` / `QdrantKernelSpec` family instead of separate node types
+   - the generic public operator layer now exists above that kernel layer:
+     `QdrantOpNode` / `QdrantOp`
+   - the first public prototype on that layer is a DataFusion-native nearest marker surface via
+     `qdrant_nearest_score(...)`
+   - the next checkpoint is broader query-family and aggregate-like growth on those shared enums,
+     not more one-off node families
 
 ## Documents
 

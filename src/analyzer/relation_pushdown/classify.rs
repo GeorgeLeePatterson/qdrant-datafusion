@@ -7,7 +7,7 @@ use super::{
     QdrantCompositionClass, QdrantKernelClass, QdrantSourceClass, QdrantSubtreeClass,
     QdrantSubtreeStatus, QdrantTableProvider, QdrantTopologyClass,
 };
-use crate::context::plan_node::QDRANT_KERNEL_NODE_NAME;
+use crate::context::plan_node::{QDRANT_KERNEL_NODE_NAME, QDRANT_OP_NODE_NAME};
 use crate::pushdown::QdrantPayloadPath;
 
 impl QdrantSubtreeStatus {
@@ -43,7 +43,10 @@ impl QdrantSourceClass {
                 }
             }
             LogicalPlan::Extension(extension)
-                if extension.node.name() == QDRANT_KERNEL_NODE_NAME =>
+                if matches!(
+                    extension.node.name(),
+                    QDRANT_KERNEL_NODE_NAME | QDRANT_OP_NODE_NAME
+                ) =>
             {
                 Self::SingleQdrant
             }

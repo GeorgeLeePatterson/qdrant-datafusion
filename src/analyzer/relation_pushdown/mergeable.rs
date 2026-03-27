@@ -184,13 +184,13 @@ impl RawQdrantSetJoin {
             return None;
         }
         Some(Self {
-            collection:     left_source.collection,
-            client:         left_source.client,
-            schema:         left_source.schema,
+            collection: left_source.collection,
+            client: left_source.client,
+            schema: left_source.schema,
             payload_schema: left_source.payload_schema,
-            left_filter:    conjunction(left_source.filters),
-            right_filter:   conjunction(right_source.filters),
-            join_type:      join.join_type,
+            left_filter: conjunction(left_source.filters),
+            right_filter: conjunction(right_source.filters),
+            join_type: join.join_type,
         })
     }
 
@@ -247,5 +247,5 @@ impl QdrantSource {
 struct BranchInfo {
     source: QdrantSource,
     filter: Option<Expr>,
-    ids:    Option<Vec<PointId>>,
+    ids: Option<Vec<PointId>>,
 }

@@ -85,8 +85,8 @@ e2e_test!(
 
 #[cfg(feature = "test-utils")]
 e2e_test!(
-    session_context_nearest_query,
-    tests::test_session_context_nearest_query,
+    prepared_session_sql_nearest_query,
+    tests::test_prepared_session_sql_nearest_query,
     TRACING_DIRECTIVES,
     None
 );
@@ -173,9 +173,7 @@ mod tests {
     use qdrant_datafusion::arrow::schema::{
         dense_vector_width, is_multi_vector_field, is_sparse_vector_field, multivector_width,
     };
-    use qdrant_datafusion::context::{
-        QDRANT_SCORE_FIELD_NAME, QdrantNearestQuery, QdrantSessionContext,
-    };
+    use qdrant_datafusion::context::QdrantSessionContext;
     use qdrant_datafusion::error::Result;
     use qdrant_datafusion::table::QdrantTableProvider;
     use qdrant_datafusion::test_utils::QdrantContainer;
@@ -411,13 +409,10 @@ mod tests {
         let schema = batch.schema();
 
         assert_eq!(batch.num_rows(), 3);
-        assert_eq!(field_names(schema.as_ref()), vec![
-            "id",
-            "payload",
-            "text_embedding",
-            "multi_embedding",
-            "keywords"
-        ],);
+        assert_eq!(
+            field_names(schema.as_ref()),
+            vec!["id", "payload", "text_embedding", "multi_embedding", "keywords"],
+        );
 
         let payload = batch
             .column(schema.index_of("payload").expect("payload index"))
@@ -714,7 +709,9 @@ mod tests {
         Ok(())
     }
 
-    pub(super) async fn test_session_context_nearest_query(c: Arc<QdrantContainer>) -> Result<()> {
+    pub(super) async fn test_prepared_session_sql_nearest_query(
+        c: Arc<QdrantContainer>,
+    ) -> Result<()> {
         let client = create_qdrant_client(&c)?;
         let collection_name = "test_session_context_nearest_query";
 
@@ -761,13 +758,10 @@ mod tests {
         drop(ctx.session_context().register_table("vectors", Arc::new(table_provider))?);
 
         let dataframe = ctx
-            .nearest(
-                "vectors",
-                QdrantNearestQuery::new(vec![1.0, 0.0])
-                    .using("embedding")
-                    .filter(col("id").not_eq(lit("3")))
-                    .limit(3)
-                    .score_threshold(0.3),
+            .sql(
+                "SELECT id, payload, embedding, aux, qdrant_nearest_score(embedding, 1.0, 0.0) AS \
+                 score FROM vectors WHERE id <> '3' AND qdrant_nearest_score(embedding, 1.0, 0.0) \
+                 >= 0.3 ORDER BY score DESC LIMIT 3",
             )
             .await?;
         let plan = dataframe.clone().create_physical_plan().await?;
@@ -785,7 +779,7 @@ mod tests {
             .map(|value| value.expect("non-null id").parse::<u64>().expect("numeric id"))
             .collect::<Vec<_>>();
         let scores = batch
-            .column(batch.schema().index_of(QDRANT_SCORE_FIELD_NAME).expect("score column"))
+            .column(batch.schema().index_of("score").expect("score column"))
             .as_any()
             .downcast_ref::<Float32Array>()
             .expect("score float32 array")
@@ -794,16 +788,13 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(ids, vec![1, 2]);
-        assert_eq!(field_names(batch.schema().as_ref()), vec![
-            "id",
-            "payload",
-            "embedding",
-            "aux",
-            QDRANT_SCORE_FIELD_NAME
-        ],);
+        assert_eq!(
+            field_names(batch.schema().as_ref()),
+            vec!["id", "payload", "embedding", "aux", "score"],
+        );
         assert_f32_eq(scores[0], 1.0);
         assert_f32_eq(scores[1], 0.4);
-        assert!(display.contains("QdrantNearestExec"), "{display}");
+        assert!(display.contains("QdrantQueryExec"), "{display}");
 
         Ok(())
     }
@@ -1597,9 +1588,10 @@ mod tests {
             scroll_ordered_page(&client, float_collection, "score", Direction::Asc, None, &[], 3)
                 .await?;
         assert!(float_page.next_page_offset.is_none());
-        assert_eq!(float_page.result.iter().map(float_order_value).collect::<Vec<_>>(), vec![
-            1.5, 1.5, 2.25
-        ],);
+        assert_eq!(
+            float_page.result.iter().map(float_order_value).collect::<Vec<_>>(),
+            vec![1.5, 1.5, 2.25],
+        );
         let float_pages = collect_ordered_pages(
             &client,
             float_collection,
@@ -1658,10 +1650,10 @@ mod tests {
         )
         .await?;
         assert!(datetime_page.next_page_offset.is_none());
-        assert_eq!(datetime_page.result.iter().map(int_order_value).collect::<Vec<_>>(), vec![
-            1_704_067_200_000_000,
-            1_704_067_200_000_000
-        ],);
+        assert_eq!(
+            datetime_page.result.iter().map(int_order_value).collect::<Vec<_>>(),
+            vec![1_704_067_200_000_000, 1_704_067_200_000_000],
+        );
 
         let datetime_pages = collect_ordered_pages(
             &client,
@@ -1675,12 +1667,15 @@ mod tests {
         .await?;
         let datetime_values = datetime_pages.iter().map(|(_, value)| *value).collect::<Vec<_>>();
         let datetime_ids = datetime_pages.iter().map(|(id, _)| *id).collect::<Vec<_>>();
-        assert_eq!(datetime_values, vec![
-            1_704_067_200_000_000,
-            1_704_067_200_000_000,
-            1_704_153_600_000_000,
-            1_704_240_000_000_000,
-        ],);
+        assert_eq!(
+            datetime_values,
+            vec![
+                1_704_067_200_000_000,
+                1_704_067_200_000_000,
+                1_704_153_600_000_000,
+                1_704_240_000_000_000,
+            ],
+        );
         assert_eq!(
             datetime_ids.iter().copied().collect::<BTreeSet<_>>(),
             (1_u64..=4).collect::<BTreeSet<_>>(),

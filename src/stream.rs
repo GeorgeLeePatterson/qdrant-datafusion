@@ -37,5 +37,7 @@ impl Stream for QdrantQueryStream {
 }
 
 impl RecordBatchStream for QdrantQueryStream {
-    fn schema(&self) -> SchemaRef { Arc::clone(&self.schema) }
+    fn schema(&self) -> SchemaRef {
+        Arc::clone(&self.schema)
+    }
 }

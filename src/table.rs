@@ -83,9 +83,9 @@ const SCAN_PAGE_SIZE: usize = 1024;
 /// ```
 #[derive(Clone)]
 pub struct QdrantTableProvider {
-    table:          TableReference,
-    client:         Arc<Qdrant>,
-    schema:         Arc<Schema>,
+    table: TableReference,
+    client: Arc<Qdrant>,
+    schema: Arc<Schema>,
     payload_schema: Arc<QdrantPayloadSchema>,
 }
 
@@ -109,11 +109,17 @@ impl QdrantTableProvider {
         })
     }
 
-    pub(crate) fn client(&self) -> &Arc<Qdrant> { &self.client }
+    pub(crate) fn client(&self) -> &Arc<Qdrant> {
+        &self.client
+    }
 
-    pub(crate) fn collection(&self) -> &str { self.table.table() }
+    pub(crate) fn collection(&self) -> &str {
+        self.table.table()
+    }
 
-    pub(crate) fn payload_schema(&self) -> &Arc<QdrantPayloadSchema> { &self.payload_schema }
+    pub(crate) fn payload_schema(&self) -> &Arc<QdrantPayloadSchema> {
+        &self.payload_schema
+    }
 
     pub(crate) fn new_for_planner(
         collection: String,
@@ -156,11 +162,11 @@ impl QdrantTableProvider {
 /// `QdrantTableProvider` during SQL query execution.
 #[derive(Clone)]
 pub struct QdrantScanExec {
-    client:         Arc<Qdrant>,
-    collection:     String,
-    pushdown:       Arc<QdrantScanSpec>,
+    client: Arc<Qdrant>,
+    collection: String,
+    pushdown: Arc<QdrantScanSpec>,
     payload_schema: Arc<QdrantPayloadSchema>,
-    properties:     Arc<PlanProperties>,
+    properties: Arc<PlanProperties>,
 }
 
 impl QdrantScanExec {
@@ -240,18 +246,16 @@ mod tests {
 
     use super::*;
     use crate::arrow::schema::{ID_FIELD_NAME, PAYLOAD_FIELD_NAME};
-    use crate::context::plan_node::{QdrantCountExec, QdrantFacetExec, QdrantNearestExec};
-    use crate::context::{QDRANT_SCORE_FIELD_NAME, QdrantNearestQuery, QdrantSessionContext};
+    use crate::context::QdrantSessionContext;
+    use crate::context::plan_node::{QdrantCountExec, QdrantFacetExec, QdrantQueryExec};
     use crate::pushdown::QdrantPayloadSchema;
     use crate::table::pushdown::QdrantPayloadOrdering;
 
     fn test_provider(schema: Schema) -> QdrantTableProvider {
         QdrantTableProvider {
-            table:          TableReference::bare("vectors"),
-            client:         Arc::new(
-                Qdrant::from_url("http://localhost:6334").build().expect("client"),
-            ),
-            schema:         Arc::new(schema),
+            table: TableReference::bare("vectors"),
+            client: Arc::new(Qdrant::from_url("http://localhost:6334").build().expect("client")),
+            schema: Arc::new(schema),
             payload_schema: Arc::new(QdrantPayloadSchema::default()),
         }
     }
@@ -360,17 +364,14 @@ mod tests {
         panic!("expected qdrant facet exec in plan:\n{}", displayable(plan.as_ref()).indent(true));
     }
 
-    fn qdrant_nearest(plan: &Arc<dyn ExecutionPlan>) -> &QdrantNearestExec {
-        if let Some(nearest) = plan.as_any().downcast_ref::<QdrantNearestExec>() {
-            return nearest;
+    fn qdrant_query(plan: &Arc<dyn ExecutionPlan>) -> &QdrantQueryExec {
+        if let Some(query) = plan.as_any().downcast_ref::<QdrantQueryExec>() {
+            return query;
         }
         if let Some(cooperative) = plan.as_any().downcast_ref::<CooperativeExec>() {
-            return qdrant_nearest(cooperative.input());
+            return qdrant_query(cooperative.input());
         }
-        panic!(
-            "expected qdrant nearest exec in plan:\n{}",
-            displayable(plan.as_ref()).indent(true)
-        );
+        panic!("expected qdrant query exec in plan:\n{}", displayable(plan.as_ref()).indent(true));
     }
 
     #[test]
@@ -455,10 +456,10 @@ mod tests {
             DataType::Utf8,
             false,
         )])));
-        let order = [PhysicalSortExpr::new(Arc::new(Column::new(ID_FIELD_NAME, 0)), SortOptions {
-            descending:  true,
-            nulls_first: false,
-        })];
+        let order = [PhysicalSortExpr::new(
+            Arc::new(Column::new(ID_FIELD_NAME, 0)),
+            SortOptions { descending: true, nulls_first: false },
+        )];
 
         assert!(matches!(
             scan.try_pushdown_sort(&order).expect("sort pushdown"),
@@ -522,7 +523,7 @@ mod tests {
         assert_eq!(
             pushed.pushdown.ordering,
             QdrantOrdering::ByPayload(QdrantPayloadOrdering {
-                field:      "rank".to_owned(),
+                field: "rank".to_owned(),
                 descending: false,
             }),
         );
@@ -658,7 +659,7 @@ mod tests {
         assert_eq!(
             scan.pushdown.ordering,
             QdrantOrdering::ByPayload(QdrantPayloadOrdering {
-                field:      "rank".to_owned(),
+                field: "rank".to_owned(),
                 descending: false,
             }),
         );
@@ -1048,7 +1049,7 @@ mod tests {
     }
 
     #[test]
-    fn physical_plan_uses_qdrant_nearest_exec_for_session_helper() {
+    fn physical_plan_uses_qdrant_query_exec_for_nearest_score_sql() {
         let provider = test_provider(Schema::new(vec![
             Field::new(ID_FIELD_NAME, DataType::Utf8, false),
             Field::new(PAYLOAD_FIELD_NAME, DataType::Utf8, true),
@@ -1066,24 +1067,18 @@ mod tests {
                 .expect("register table"),
         );
         let dataframe = ctx
-            .nearest(
-                "vectors",
-                QdrantNearestQuery::new(vec![1.0, 0.0]).using("embedding").limit(2).filter(
-                    Expr::BinaryExpr(BinaryExpr::new(
-                        Box::new(Expr::Column(ExprColumn::new_unqualified(ID_FIELD_NAME))),
-                        Operator::NotEq,
-                        Box::new(Expr::Literal(ScalarValue::Utf8(Some("3".to_owned())), None)),
-                    )),
-                ),
+            .sql(
+                "SELECT id, payload, embedding, aux, qdrant_nearest_score(embedding, 1.0, 0.0) AS \
+                 score FROM vectors WHERE id <> '3' ORDER BY score DESC LIMIT 2",
             )
             .now_or_never()
-            .expect("nearest future is ready")
+            .expect("sql future is ready")
             .expect("dataframe");
         assert_eq!(
             dataframe
                 .logical_plan()
                 .schema()
-                .field_with_unqualified_name(QDRANT_SCORE_FIELD_NAME)
+                .field_with_unqualified_name("score")
                 .expect("score field")
                 .data_type(),
             &DataType::Float32,
@@ -1094,9 +1089,9 @@ mod tests {
             .expect("plan future is ready")
             .expect("physical plan");
         let display = displayable(plan.as_ref()).indent(true).to_string();
-        let _nearest = qdrant_nearest(&plan);
+        let _query = qdrant_query(&plan);
 
-        assert!(display.contains("QdrantNearestExec"), "{display}");
+        assert!(display.contains("QdrantQueryExec"), "{display}");
     }
 
     #[test]
@@ -1148,11 +1143,8 @@ mod tests {
     #[test]
     fn ordered_continuation_accumulates_duplicate_boundary_ids() {
         let ordered = QdrantOrderedContinuation {
-            ordering:     QdrantPayloadOrdering {
-                field:      "rank".to_owned(),
-                descending: false,
-            },
-            start_from:   Some(QdrantOrderValue::Integer(10)),
+            ordering: QdrantPayloadOrdering { field: "rank".to_owned(), descending: false },
+            start_from: Some(QdrantOrderValue::Integer(10)),
             boundary_ids: vec![PointId {
                 point_id_options: Some(point_id::PointIdOptions::Num(1)),
             }],
@@ -1171,11 +1163,8 @@ mod tests {
     #[test]
     fn ordered_continuation_resets_boundary_ids_for_new_boundary() {
         let ordered = QdrantOrderedContinuation {
-            ordering:     QdrantPayloadOrdering {
-                field:      "rank".to_owned(),
-                descending: false,
-            },
-            start_from:   Some(QdrantOrderValue::Integer(10)),
+            ordering: QdrantPayloadOrdering { field: "rank".to_owned(), descending: false },
+            start_from: Some(QdrantOrderValue::Integer(10)),
             boundary_ids: vec![PointId {
                 point_id_options: Some(point_id::PointIdOptions::Num(1)),
             }],

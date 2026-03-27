@@ -4,14 +4,14 @@ mod mergeable;
 
 use std::sync::Arc;
 
-use datafusion::common::tree_node::Transformed;
+use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::common::{Result, plan_err};
 use datafusion::logical_expr::{Extension, JoinType, LogicalPlan};
 use datafusion::optimizer::AnalyzerRule;
 use qdrant_client::qdrant::PointId;
 
 use self::mergeable::redundant_raw_qdrant_distinct_plan;
-use crate::context::plan_node::QdrantKernelNode;
+use crate::context::plan_node::{QdrantKernelNode, QdrantOpNode};
 use crate::pushdown::filter::QdrantFilters;
 use crate::table::QdrantTableProvider;
 
@@ -24,42 +24,49 @@ impl AnalyzerRule for QdrantRelationPushdown {
         plan: LogicalPlan,
         _config: &datafusion::common::config::ConfigOptions,
     ) -> Result<LogicalPlan> {
-        plan.transform_up_with_subqueries(|plan| {
-            let status = QdrantSubtreeStatus::of(&plan)?;
-            if let Some(candidate) = status.candidate {
-                return Ok(Transformed::yes(candidate.into_plan()));
-            }
-            if let Some(distinct_input) = redundant_raw_qdrant_distinct_plan(&plan) {
-                return Ok(Transformed::yes(distinct_input));
-            }
-            if status.class.composition == QdrantCompositionClass::Mergeable
-                && let Some(merged) = RawQdrantSetJoin::from_plan(&plan)
-                    .map(RawQdrantSetJoin::merged_plan)
-                    .transpose()?
-            {
-                return Ok(Transformed::yes(merged));
-            }
-            if status.class.composition == QdrantCompositionClass::Mergeable
-                && let Some(merged) = RawQdrantUnion::from_distinct_plan(&plan)?
-                    .map(|union| union.merged_plan(false))
-                    .transpose()?
-                    .flatten()
-                    .or(RawQdrantUnion::from_plan(&plan)?
-                        .map(|union| union.merged_plan(true))
+        let plan = plan
+            .transform_up_with_subqueries(|plan| {
+                let status = QdrantSubtreeStatus::of(&plan)?;
+                if let Some(candidate) = status.candidate {
+                    return Ok(Transformed::yes(candidate.into_plan()));
+                }
+                if let Some(distinct_input) = redundant_raw_qdrant_distinct_plan(&plan) {
+                    return Ok(Transformed::yes(distinct_input));
+                }
+                if status.class.composition == QdrantCompositionClass::Mergeable
+                    && let Some(merged) = RawQdrantSetJoin::from_plan(&plan)
+                        .map(RawQdrantSetJoin::merged_plan)
                         .transpose()?
-                        .flatten())
-            {
-                return Ok(Transformed::yes(merged));
-            }
-            if status.class.composition == QdrantCompositionClass::Invalid {
-                return plan_err!("unsupported qdrant payload access outside admitted kernel");
-            }
-            Ok(Transformed::no(plan))
-        })
-        .map(|transformed| transformed.data)
+                {
+                    return Ok(Transformed::yes(merged));
+                }
+                if status.class.composition == QdrantCompositionClass::Mergeable
+                    && let Some(merged) = RawQdrantUnion::from_distinct_plan(&plan)?
+                        .map(|union| union.merged_plan(false))
+                        .transpose()?
+                        .flatten()
+                        .or(RawQdrantUnion::from_plan(&plan)?
+                            .map(|union| union.merged_plan(true))
+                            .transpose()?
+                            .flatten())
+                {
+                    return Ok(Transformed::yes(merged));
+                }
+                if status.class.composition == QdrantCompositionClass::Invalid {
+                    return plan_err!("unsupported qdrant payload access outside admitted kernel");
+                }
+                Ok(Transformed::no(plan))
+            })
+            .map(|transformed| transformed.data)?;
+        if plan.exists(|plan| Ok(QdrantOpNode::from_plan(plan).is_some()))? {
+            return plan_err!("unsupported qdrant nearest surface outside admitted kernel");
+        }
+        Ok(plan)
     }
 
-    fn name(&self) -> &'static str { "qdrant_relation_pushdown" }
+    fn name(&self) -> &'static str {
+        "qdrant_relation_pushdown"
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,10 +105,10 @@ enum QdrantKernelClass {
 
 #[derive(Debug, Clone)]
 struct QdrantRelationCandidate {
-    source:      QdrantSourceClass,
-    topology:    QdrantTopologyClass,
+    source: QdrantSourceClass,
+    topology: QdrantTopologyClass,
     composition: QdrantCompositionClass,
-    node:        QdrantKernelNode,
+    node: QdrantKernelNode,
 }
 
 impl QdrantRelationCandidate {
@@ -114,35 +121,35 @@ impl QdrantRelationCandidate {
 
 #[derive(Debug, Clone)]
 struct QdrantSubtreeStatus {
-    class:     QdrantSubtreeClass,
+    class: QdrantSubtreeClass,
     candidate: Option<QdrantRelationCandidate>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct QdrantSubtreeClass {
-    source:      QdrantSourceClass,
-    topology:    QdrantTopologyClass,
+    source: QdrantSourceClass,
+    topology: QdrantTopologyClass,
     composition: QdrantCompositionClass,
-    kernel:      QdrantKernelClass,
+    kernel: QdrantKernelClass,
 }
 
 struct RawQdrantUnion {
-    collection:     String,
-    client:         Arc<qdrant_client::Qdrant>,
-    schema:         datafusion::arrow::datatypes::SchemaRef,
+    collection: String,
+    client: Arc<qdrant_client::Qdrant>,
+    schema: datafusion::arrow::datatypes::SchemaRef,
     payload_schema: Arc<crate::pushdown::QdrantPayloadSchema>,
-    branches:       Vec<Option<datafusion::logical_expr::Expr>>,
-    branch_ids:     Vec<Option<Vec<PointId>>>,
+    branches: Vec<Option<datafusion::logical_expr::Expr>>,
+    branch_ids: Vec<Option<Vec<PointId>>>,
 }
 
 struct RawQdrantSetJoin {
-    collection:     String,
-    client:         Arc<qdrant_client::Qdrant>,
-    schema:         datafusion::arrow::datatypes::SchemaRef,
+    collection: String,
+    client: Arc<qdrant_client::Qdrant>,
+    schema: datafusion::arrow::datatypes::SchemaRef,
     payload_schema: Arc<crate::pushdown::QdrantPayloadSchema>,
-    left_filter:    Option<datafusion::logical_expr::Expr>,
-    right_filter:   Option<datafusion::logical_expr::Expr>,
-    join_type:      JoinType,
+    left_filter: Option<datafusion::logical_expr::Expr>,
+    right_filter: Option<datafusion::logical_expr::Expr>,
+    join_type: JoinType,
 }
 
 #[cfg(test)]
@@ -182,22 +189,32 @@ mod tests {
 
     #[derive(Debug, Clone, Hash, PartialEq, Eq)]
     struct DummyQdrantNode {
-        name:   &'static str,
+        name: &'static str,
         schema: datafusion::common::DFSchemaRef,
     }
 
     impl PartialOrd for DummyQdrantNode {
-        fn partial_cmp(&self, other: &Self) -> Option<Ordering> { Some(self.name.cmp(other.name)) }
+        fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+            Some(self.name.cmp(other.name))
+        }
     }
 
     impl UserDefinedLogicalNodeCore for DummyQdrantNode {
-        fn name(&self) -> &str { self.name }
+        fn name(&self) -> &str {
+            self.name
+        }
 
-        fn inputs(&self) -> Vec<&LogicalPlan> { vec![] }
+        fn inputs(&self) -> Vec<&LogicalPlan> {
+            vec![]
+        }
 
-        fn schema(&self) -> &datafusion::common::DFSchemaRef { &self.schema }
+        fn schema(&self) -> &datafusion::common::DFSchemaRef {
+            &self.schema
+        }
 
-        fn expressions(&self) -> Vec<Expr> { vec![] }
+        fn expressions(&self) -> Vec<Expr> {
+            vec![]
+        }
 
         fn fmt_for_explain(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             write!(f, "{}", self.name)
@@ -213,7 +230,9 @@ mod tests {
             Ok(self.clone())
         }
 
-        fn prevent_predicate_push_down_columns(&self) -> HashSet<String> { HashSet::new() }
+        fn prevent_predicate_push_down_columns(&self) -> HashSet<String> {
+            HashSet::new()
+        }
     }
 
     fn count_extension_plan() -> LogicalPlan {
@@ -274,15 +293,18 @@ mod tests {
                 Field::new(ID_FIELD_NAME, DataType::Utf8, false),
                 Field::new(PAYLOAD_FIELD_NAME, DataType::Utf8, true),
             ]),
-            QdrantPayloadSchema::from(HashMap::from([("tag".to_owned(), PayloadSchemaInfo {
-                data_type: PayloadSchemaType::Keyword as i32,
-                params:    Some(PayloadIndexParams {
-                    index_params: Some(payload_index_params::IndexParams::KeywordIndexParams(
-                        KeywordIndexParams::default(),
-                    )),
-                }),
-                points:    None,
-            })])),
+            QdrantPayloadSchema::from(HashMap::from([(
+                "tag".to_owned(),
+                PayloadSchemaInfo {
+                    data_type: PayloadSchemaType::Keyword as i32,
+                    params: Some(PayloadIndexParams {
+                        index_params: Some(payload_index_params::IndexParams::KeywordIndexParams(
+                            KeywordIndexParams::default(),
+                        )),
+                    }),
+                    points: None,
+                },
+            )])),
         );
         LogicalPlanBuilder::scan(collection, provider_as_source(Arc::new(provider)), None)
             .expect("scan")
@@ -301,12 +323,15 @@ mod tests {
     #[test]
     fn subtree_classifies_qdrant_extension_as_atomic_leaf() {
         let class = subtree_class(&count_extension_plan()).expect("subtree class");
-        assert_eq!(class, QdrantSubtreeClass {
-            source:      QdrantSourceClass::SingleQdrant,
-            topology:    QdrantTopologyClass::Leaf,
-            composition: QdrantCompositionClass::Atomic,
-            kernel:      QdrantKernelClass::ExactSelf,
-        });
+        assert_eq!(
+            class,
+            QdrantSubtreeClass {
+                source: QdrantSourceClass::SingleQdrant,
+                topology: QdrantTopologyClass::Leaf,
+                composition: QdrantCompositionClass::Atomic,
+                kernel: QdrantKernelClass::ExactSelf,
+            }
+        );
     }
 
     #[test]
@@ -319,12 +344,15 @@ mod tests {
             .build()
             .expect("union plan");
         let class = subtree_class(&union).expect("subtree class");
-        assert_eq!(class, QdrantSubtreeClass {
-            source:      QdrantSourceClass::MultiQdrant,
-            topology:    QdrantTopologyClass::MultiBranch,
-            composition: QdrantCompositionClass::Batchable,
-            kernel:      QdrantKernelClass::ExactChildren,
-        });
+        assert_eq!(
+            class,
+            QdrantSubtreeClass {
+                source: QdrantSourceClass::MultiQdrant,
+                topology: QdrantTopologyClass::MultiBranch,
+                composition: QdrantCompositionClass::Batchable,
+                kernel: QdrantKernelClass::ExactChildren,
+            }
+        );
     }
 
     #[test]
@@ -337,12 +365,15 @@ mod tests {
             .build()
             .expect("union plan");
         let class = subtree_class(&union).expect("subtree class");
-        assert_eq!(class, QdrantSubtreeClass {
-            source:      QdrantSourceClass::MultiQdrant,
-            topology:    QdrantTopologyClass::MultiBranch,
-            composition: QdrantCompositionClass::Mergeable,
-            kernel:      QdrantKernelClass::None,
-        });
+        assert_eq!(
+            class,
+            QdrantSubtreeClass {
+                source: QdrantSourceClass::MultiQdrant,
+                topology: QdrantTopologyClass::MultiBranch,
+                composition: QdrantCompositionClass::Mergeable,
+                kernel: QdrantKernelClass::None,
+            }
+        );
     }
 
     #[test]
@@ -355,12 +386,15 @@ mod tests {
             .build()
             .expect("union plan");
         let class = subtree_class(&union).expect("subtree class");
-        assert_eq!(class, QdrantSubtreeClass {
-            source:      QdrantSourceClass::MultiQdrant,
-            topology:    QdrantTopologyClass::MultiBranch,
-            composition: QdrantCompositionClass::LocalCompose,
-            kernel:      QdrantKernelClass::None,
-        });
+        assert_eq!(
+            class,
+            QdrantSubtreeClass {
+                source: QdrantSourceClass::MultiQdrant,
+                topology: QdrantTopologyClass::MultiBranch,
+                composition: QdrantCompositionClass::LocalCompose,
+                kernel: QdrantKernelClass::None,
+            }
+        );
     }
 
     #[test]
@@ -373,12 +407,15 @@ mod tests {
             .build()
             .expect("union plan");
         let class = subtree_class(&union).expect("subtree class");
-        assert_eq!(class, QdrantSubtreeClass {
-            source:      QdrantSourceClass::MultiQdrant,
-            topology:    QdrantTopologyClass::MultiBranch,
-            composition: QdrantCompositionClass::LocalCompose,
-            kernel:      QdrantKernelClass::None,
-        });
+        assert_eq!(
+            class,
+            QdrantSubtreeClass {
+                source: QdrantSourceClass::MultiQdrant,
+                topology: QdrantTopologyClass::MultiBranch,
+                composition: QdrantCompositionClass::LocalCompose,
+                kernel: QdrantKernelClass::None,
+            }
+        );
     }
 
     #[test]
@@ -389,12 +426,15 @@ mod tests {
             .build()
             .expect("union distinct plan");
         let class = subtree_class(&union).expect("subtree class");
-        assert_eq!(class, QdrantSubtreeClass {
-            source:      QdrantSourceClass::MultiQdrant,
-            topology:    QdrantTopologyClass::UnaryRelationChange,
-            composition: QdrantCompositionClass::Mergeable,
-            kernel:      QdrantKernelClass::None,
-        });
+        assert_eq!(
+            class,
+            QdrantSubtreeClass {
+                source: QdrantSourceClass::MultiQdrant,
+                topology: QdrantTopologyClass::UnaryRelationChange,
+                composition: QdrantCompositionClass::Mergeable,
+                kernel: QdrantKernelClass::None,
+            }
+        );
     }
 
     #[test]
@@ -405,12 +445,15 @@ mod tests {
             .build()
             .expect("union distinct plan");
         let class = subtree_class(&union).expect("subtree class");
-        assert_eq!(class, QdrantSubtreeClass {
-            source:      QdrantSourceClass::MultiQdrant,
-            topology:    QdrantTopologyClass::UnaryRelationChange,
-            composition: QdrantCompositionClass::Coordinated,
-            kernel:      QdrantKernelClass::None,
-        });
+        assert_eq!(
+            class,
+            QdrantSubtreeClass {
+                source: QdrantSourceClass::MultiQdrant,
+                topology: QdrantTopologyClass::UnaryRelationChange,
+                composition: QdrantCompositionClass::Coordinated,
+                kernel: QdrantKernelClass::None,
+            }
+        );
     }
 
     #[test]
@@ -422,12 +465,15 @@ mod tests {
         )
         .expect("intersect");
         let class = subtree_class(&intersect).expect("subtree class");
-        assert_eq!(class, QdrantSubtreeClass {
-            source:      QdrantSourceClass::MultiQdrant,
-            topology:    QdrantTopologyClass::MultiBranch,
-            composition: QdrantCompositionClass::Mergeable,
-            kernel:      QdrantKernelClass::None,
-        });
+        assert_eq!(
+            class,
+            QdrantSubtreeClass {
+                source: QdrantSourceClass::MultiQdrant,
+                topology: QdrantTopologyClass::MultiBranch,
+                composition: QdrantCompositionClass::Mergeable,
+                kernel: QdrantKernelClass::None,
+            }
+        );
     }
 
     #[test]
@@ -439,12 +485,15 @@ mod tests {
         )
         .expect("except");
         let class = subtree_class(&except).expect("subtree class");
-        assert_eq!(class, QdrantSubtreeClass {
-            source:      QdrantSourceClass::MultiQdrant,
-            topology:    QdrantTopologyClass::MultiBranch,
-            composition: QdrantCompositionClass::Mergeable,
-            kernel:      QdrantKernelClass::None,
-        });
+        assert_eq!(
+            class,
+            QdrantSubtreeClass {
+                source: QdrantSourceClass::MultiQdrant,
+                topology: QdrantTopologyClass::MultiBranch,
+                composition: QdrantCompositionClass::Mergeable,
+                kernel: QdrantKernelClass::None,
+            }
+        );
     }
 
     #[test]
@@ -456,12 +505,15 @@ mod tests {
             .build()
             .expect("projection plan");
         let class = subtree_class(&projection).expect("subtree class");
-        assert_eq!(class, QdrantSubtreeClass {
-            source:      QdrantSourceClass::None,
-            topology:    QdrantTopologyClass::UnaryChain,
-            composition: QdrantCompositionClass::LocalCompose,
-            kernel:      QdrantKernelClass::None,
-        });
+        assert_eq!(
+            class,
+            QdrantSubtreeClass {
+                source: QdrantSourceClass::None,
+                topology: QdrantTopologyClass::UnaryChain,
+                composition: QdrantCompositionClass::LocalCompose,
+                kernel: QdrantKernelClass::None,
+            }
+        );
     }
 
     #[test]
@@ -472,12 +524,15 @@ mod tests {
             .build()
             .expect("projection plan");
         let class = subtree_class(&projection).expect("subtree class");
-        assert_eq!(class, QdrantSubtreeClass {
-            source:      QdrantSourceClass::SingleQdrant,
-            topology:    QdrantTopologyClass::UnaryChain,
-            composition: QdrantCompositionClass::LocalCompose,
-            kernel:      QdrantKernelClass::ExactChild,
-        });
+        assert_eq!(
+            class,
+            QdrantSubtreeClass {
+                source: QdrantSourceClass::SingleQdrant,
+                topology: QdrantTopologyClass::UnaryChain,
+                composition: QdrantCompositionClass::LocalCompose,
+                kernel: QdrantKernelClass::ExactChild,
+            }
+        );
     }
 
     #[test]
@@ -488,12 +543,15 @@ mod tests {
             .build()
             .expect("projection plan");
         let class = subtree_class(&projection).expect("subtree class");
-        assert_eq!(class, QdrantSubtreeClass {
-            source:      QdrantSourceClass::SingleQdrant,
-            topology:    QdrantTopologyClass::UnaryChain,
-            composition: QdrantCompositionClass::Invalid,
-            kernel:      QdrantKernelClass::ExactChild,
-        });
+        assert_eq!(
+            class,
+            QdrantSubtreeClass {
+                source: QdrantSourceClass::SingleQdrant,
+                topology: QdrantTopologyClass::UnaryChain,
+                composition: QdrantCompositionClass::Invalid,
+                kernel: QdrantKernelClass::ExactChild,
+            }
+        );
     }
 
     #[test]
@@ -524,12 +582,15 @@ mod tests {
             .expect("analyzed plan");
 
         assert!(matches!(analyzed, LogicalPlan::Filter(_)));
-        assert_eq!(subtree_class(&analyzed).expect("subtree class"), QdrantSubtreeClass {
-            source:      QdrantSourceClass::SingleQdrant,
-            topology:    QdrantTopologyClass::UnaryChain,
-            composition: QdrantCompositionClass::Atomic,
-            kernel:      QdrantKernelClass::None,
-        });
+        assert_eq!(
+            subtree_class(&analyzed).expect("subtree class"),
+            QdrantSubtreeClass {
+                source: QdrantSourceClass::SingleQdrant,
+                topology: QdrantTopologyClass::UnaryChain,
+                composition: QdrantCompositionClass::Atomic,
+                kernel: QdrantKernelClass::None,
+            }
+        );
     }
 
     #[test]
@@ -544,12 +605,15 @@ mod tests {
             .expect("analyzed plan");
 
         assert!(matches!(analyzed, LogicalPlan::Filter(_)));
-        assert_eq!(subtree_class(&analyzed).expect("subtree class"), QdrantSubtreeClass {
-            source:      QdrantSourceClass::SingleQdrant,
-            topology:    QdrantTopologyClass::UnaryChain,
-            composition: QdrantCompositionClass::Atomic,
-            kernel:      QdrantKernelClass::None,
-        });
+        assert_eq!(
+            subtree_class(&analyzed).expect("subtree class"),
+            QdrantSubtreeClass {
+                source: QdrantSourceClass::SingleQdrant,
+                topology: QdrantTopologyClass::UnaryChain,
+                composition: QdrantCompositionClass::Atomic,
+                kernel: QdrantKernelClass::None,
+            }
+        );
     }
 
     #[test]
@@ -565,12 +629,15 @@ mod tests {
             .expect("analyzed plan");
 
         assert!(matches!(analyzed, LogicalPlan::Filter(_)));
-        assert_eq!(subtree_class(&analyzed).expect("subtree class"), QdrantSubtreeClass {
-            source:      QdrantSourceClass::SingleQdrant,
-            topology:    QdrantTopologyClass::UnaryChain,
-            composition: QdrantCompositionClass::Atomic,
-            kernel:      QdrantKernelClass::None,
-        });
+        assert_eq!(
+            subtree_class(&analyzed).expect("subtree class"),
+            QdrantSubtreeClass {
+                source: QdrantSourceClass::SingleQdrant,
+                topology: QdrantTopologyClass::UnaryChain,
+                composition: QdrantCompositionClass::Atomic,
+                kernel: QdrantKernelClass::None,
+            }
+        );
     }
 
     #[test]
@@ -586,12 +653,15 @@ mod tests {
             .expect("analyzed plan");
 
         assert!(matches!(analyzed, LogicalPlan::Filter(_)));
-        assert_eq!(subtree_class(&analyzed).expect("subtree class"), QdrantSubtreeClass {
-            source:      QdrantSourceClass::SingleQdrant,
-            topology:    QdrantTopologyClass::UnaryChain,
-            composition: QdrantCompositionClass::Atomic,
-            kernel:      QdrantKernelClass::None,
-        });
+        assert_eq!(
+            subtree_class(&analyzed).expect("subtree class"),
+            QdrantSubtreeClass {
+                source: QdrantSourceClass::SingleQdrant,
+                topology: QdrantTopologyClass::UnaryChain,
+                composition: QdrantCompositionClass::Atomic,
+                kernel: QdrantKernelClass::None,
+            }
+        );
     }
 
     #[test]
@@ -606,12 +676,15 @@ mod tests {
             .expect("analyzed plan");
 
         assert!(matches!(analyzed, LogicalPlan::Filter(_)));
-        assert_eq!(subtree_class(&analyzed).expect("subtree class"), QdrantSubtreeClass {
-            source:      QdrantSourceClass::SingleQdrant,
-            topology:    QdrantTopologyClass::UnaryChain,
-            composition: QdrantCompositionClass::Atomic,
-            kernel:      QdrantKernelClass::None,
-        });
+        assert_eq!(
+            subtree_class(&analyzed).expect("subtree class"),
+            QdrantSubtreeClass {
+                source: QdrantSourceClass::SingleQdrant,
+                topology: QdrantTopologyClass::UnaryChain,
+                composition: QdrantCompositionClass::Atomic,
+                kernel: QdrantKernelClass::None,
+            }
+        );
     }
 
     #[test]
@@ -629,12 +702,15 @@ mod tests {
             .expect("analyzed plan");
 
         assert!(matches!(analyzed, LogicalPlan::Filter(_)));
-        assert_eq!(subtree_class(&analyzed).expect("subtree class"), QdrantSubtreeClass {
-            source:      QdrantSourceClass::SingleQdrant,
-            topology:    QdrantTopologyClass::UnaryChain,
-            composition: QdrantCompositionClass::Atomic,
-            kernel:      QdrantKernelClass::None,
-        });
+        assert_eq!(
+            subtree_class(&analyzed).expect("subtree class"),
+            QdrantSubtreeClass {
+                source: QdrantSourceClass::SingleQdrant,
+                topology: QdrantTopologyClass::UnaryChain,
+                composition: QdrantCompositionClass::Atomic,
+                kernel: QdrantKernelClass::None,
+            }
+        );
     }
 
     #[test]
@@ -657,12 +733,15 @@ mod tests {
             panic!("expected qdrant count extension, got {analyzed:?}");
         };
         assert_eq!(extension.node.name(), QDRANT_KERNEL_NODE_NAME);
-        assert_eq!(subtree_class(&analyzed).expect("subtree class"), QdrantSubtreeClass {
-            source:      QdrantSourceClass::SingleQdrant,
-            topology:    QdrantTopologyClass::Leaf,
-            composition: QdrantCompositionClass::Atomic,
-            kernel:      QdrantKernelClass::ExactSelf,
-        });
+        assert_eq!(
+            subtree_class(&analyzed).expect("subtree class"),
+            QdrantSubtreeClass {
+                source: QdrantSourceClass::SingleQdrant,
+                topology: QdrantTopologyClass::Leaf,
+                composition: QdrantCompositionClass::Atomic,
+                kernel: QdrantKernelClass::ExactSelf,
+            }
+        );
     }
 
     #[test]
@@ -689,11 +768,14 @@ mod tests {
             panic!("expected qdrant facet extension, got {analyzed:?}");
         };
         assert_eq!(extension.node.name(), QDRANT_KERNEL_NODE_NAME);
-        assert_eq!(subtree_class(&analyzed).expect("subtree class"), QdrantSubtreeClass {
-            source:      QdrantSourceClass::SingleQdrant,
-            topology:    QdrantTopologyClass::Leaf,
-            composition: QdrantCompositionClass::Atomic,
-            kernel:      QdrantKernelClass::ExactSelf,
-        });
+        assert_eq!(
+            subtree_class(&analyzed).expect("subtree class"),
+            QdrantSubtreeClass {
+                source: QdrantSourceClass::SingleQdrant,
+                topology: QdrantTopologyClass::Leaf,
+                composition: QdrantCompositionClass::Atomic,
+                kernel: QdrantKernelClass::ExactSelf,
+            }
+        );
     }
 }

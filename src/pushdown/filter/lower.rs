@@ -38,18 +38,14 @@ impl QdrantPayloadPath {
             QdrantFilterValue::String(value) => Condition::matches(self.key(), value.clone()),
             QdrantFilterValue::Integer(value) => Condition::matches(self.key(), *value),
             QdrantFilterValue::Bool(value) => Condition::matches(self.key(), *value),
-            QdrantFilterValue::Float(value) => Condition::range(self.key(), Range {
-                gte: Some(*value),
-                lte: Some(*value),
-                ..Default::default()
-            }),
-            QdrantFilterValue::Datetime(value) => {
-                Condition::datetime_range(self.key(), DatetimeRange {
-                    gte: Some(*value),
-                    lte: Some(*value),
-                    ..Default::default()
-                })
-            }
+            QdrantFilterValue::Float(value) => Condition::range(
+                self.key(),
+                Range { gte: Some(*value), lte: Some(*value), ..Default::default() },
+            ),
+            QdrantFilterValue::Datetime(value) => Condition::datetime_range(
+                self.key(),
+                DatetimeRange { gte: Some(*value), lte: Some(*value), ..Default::default() },
+            ),
         }
     }
 
@@ -148,7 +144,9 @@ impl QdrantPayloadField {
 
 impl QdrantFilterValue {
     #[allow(clippy::cast_precision_loss)]
-    fn integer_to_f64(value: i64) -> f64 { value as f64 }
+    fn integer_to_f64(value: i64) -> f64 {
+        value as f64
+    }
 
     fn range_bound(&self) -> Option<f64> {
         match self {

@@ -9,8 +9,7 @@ mod reexports {
 
 pub use reexports::*;
 
-pub use crate::context::{
-    QDRANT_SCORE_FIELD_NAME, QdrantNearestQuery, QdrantSessionContext, prepare_session_context,
-};
+pub use crate::context::{QdrantSessionContext, prepare_session_context};
 pub use crate::error::Result;
+pub use crate::expr_fn::qdrant_nearest_score;
 pub use crate::table::{QdrantScanExec, QdrantTableProvider};
