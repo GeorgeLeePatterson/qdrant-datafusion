@@ -27,7 +27,9 @@ use crate::pushdown::filter::QdrantFilters;
 use crate::pushdown::{QdrantPayloadPath, QdrantPayloadSchema};
 use crate::table::QdrantTableProvider;
 
-const STATE_NODE_NAME: &str = "PrototypeStateNode";
+// ============================================================================
+// Analyzer
+// ============================================================================
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct PrototypePushdown;
@@ -41,13 +43,11 @@ impl AnalyzerRule for PrototypePushdown {
         analyze_root(plan).map(|analysis| analysis.transformed.data)
     }
 
-    fn name(&self) -> &'static str {
-        "prototype_qdrant_pushdown"
-    }
+    fn name(&self) -> &'static str { "prototype_qdrant_pushdown" }
 }
 
 struct Analysis {
-    state: State,
+    state:       State,
     transformed: Transformed<LogicalPlan>,
 }
 
@@ -66,6 +66,95 @@ impl Analysis {
     }
 }
 
+fn analyze_root(plan: LogicalPlan) -> Result<Analysis> { analyze_plan(plan)?.finish_root() }
+
+fn analyze_plan(plan: LogicalPlan) -> Result<Analysis> {
+    let with_subqueries = plan
+        .map_subqueries(|subquery| analyze_root(subquery).map(|analysis| analysis.transformed))?;
+    let mut child_states = vec![];
+    let rewritten = with_subqueries.transform_sibling(|plan| {
+        plan.map_children(|child| {
+            analyze_plan(child).map(|analysis| {
+                child_states.push(analysis.state.clone());
+                analysis.transformed
+            })
+        })
+    })?;
+
+    let transformed = rewritten.transformed;
+    let plan = rewritten.data;
+
+    match child_states.as_slice() {
+        [] => analyze_leaf(plan, transformed),
+        [child] => analyze_unary(plan, child.clone(), transformed),
+        children => analyze_multi(plan, children.to_vec(), transformed),
+    }
+}
+
+fn analyze_leaf(plan: LogicalPlan, transformed: bool) -> Result<Analysis> {
+    if let LogicalPlan::TableScan(scan) = &plan {
+        if let Some(state) = SourceState::from_scan(scan) {
+            return Ok(Analysis::new(plan, State::Source(state), transformed));
+        }
+        return Ok(Analysis::new(plan, State::local(), transformed));
+    }
+    if let LogicalPlan::Extension(extension) = &plan
+        && let Some(node) = extension.node.as_any().downcast_ref::<StateNode>()
+    {
+        let state = node.state.clone();
+        return Ok(Analysis::new(plan, state, transformed));
+    }
+    Ok(Analysis::new(plan, State::local(), transformed))
+}
+
+fn analyze_unary(plan: LogicalPlan, child: State, transformed: bool) -> Result<Analysis> {
+    match plan {
+        LogicalPlan::Projection(_) => child.projection(plan, transformed),
+        LogicalPlan::Filter(_) => child.filter(plan, transformed),
+        LogicalPlan::Sort(_) => child.sort(plan, transformed),
+        LogicalPlan::Limit(_) => child.limit(plan, transformed),
+        LogicalPlan::Aggregate(_) => child.aggregate(plan, transformed),
+        _ => child.unary(plan, transformed),
+    }
+}
+
+fn analyze_multi(plan: LogicalPlan, children: Vec<State>, transformed: bool) -> Result<Analysis> {
+    if let Some(fatal) = children.iter().find_map(|state| match state {
+        State::Fatal(fatal) => Some(fatal.clone()),
+        _ => None,
+    }) {
+        return Ok(Analysis::new(plan, State::Fatal(fatal), transformed));
+    }
+    if SurfaceCall::collect(&plan.expressions())?.is_some() {
+        return Ok(fatal(
+            plan,
+            transformed,
+            "qdrant surface calls may not cross multi-branch boundaries",
+        ));
+    }
+    if let Some(state) = CompositeState::from_plan(&plan, &children)? {
+        return Ok(Analysis::new(plan, State::Composite(state), transformed));
+    }
+    if children.iter().any(State::requires_composite_coordination) {
+        return Ok(Analysis::new(
+            plan,
+            State::Composite(CompositeState::Coordinated(CoordinatedState {
+                branches: children.len(),
+            })),
+            transformed,
+        ));
+    }
+    Ok(Analysis::new(plan, State::local(), transformed))
+}
+
+fn fatal(plan: LogicalPlan, transformed: bool, message: impl Into<String>) -> Analysis {
+    Analysis::new(plan, State::fatal(message), transformed)
+}
+
+// ============================================================================
+// State
+// ============================================================================
+
 #[derive(Debug, Clone)]
 enum State {
     Local(LocalState),
@@ -77,9 +166,7 @@ enum State {
 }
 
 impl State {
-    fn local() -> Self {
-        Self::Local(LocalState)
-    }
+    fn local() -> Self { Self::Local(LocalState) }
 
     fn fatal(message: impl Into<String>) -> Self {
         Self::Fatal(FatalState { error: SemanticError::new(message) })
@@ -215,7 +302,7 @@ impl LocalState {
 
 #[derive(Debug, Clone)]
 struct SourceState {
-    source: Source,
+    source:  Source,
     filters: FiltersState,
 }
 
@@ -225,7 +312,7 @@ impl SourceState {
         let schema = provider.schema();
         let provider = provider.as_any().downcast_ref::<QdrantTableProvider>()?;
         Some(Self {
-            source: Source {
+            source:  Source {
                 client: Arc::clone(provider.client()),
                 collection: provider.collection().to_owned(),
                 schema,
@@ -294,14 +381,16 @@ impl SourceState {
             AggregateSurface::Count => KernelState {
                 spec: KernelSpec::Count(CountKernel {
                     collection: self.source.collection,
-                    filters: self.filters,
+                    filters:    self.filters,
                 }),
             }
             .absorb(plan, transformed),
-            AggregateSurface::Facet(op) => {
-                ProcessingState { source: self.source, filters: self.filters, op: Op::Facet(op) }
-                    .absorb(plan, transformed)
+            AggregateSurface::Facet(op) => ProcessingState {
+                source:  self.source,
+                filters: self.filters,
+                op:      Op::Facet(op),
             }
+            .absorb(plan, transformed),
         }
     }
 
@@ -324,18 +413,18 @@ impl SourceState {
 
     fn open(&self, surface: SurfaceCall) -> Result<ProcessingState> {
         Ok(ProcessingState {
-            source: self.source.clone(),
+            source:  self.source.clone(),
             filters: self.filters.clone(),
-            op: Op::from_surface(surface, &self.source)?,
+            op:      Op::from_surface(surface, &self.source)?,
         })
     }
 }
 
 #[derive(Debug, Clone)]
 struct ProcessingState {
-    source: Source,
+    source:  Source,
     filters: FiltersState,
-    op: Op,
+    op:      Op,
 }
 
 impl ProcessingState {
@@ -653,8 +742,8 @@ impl MergeableKind {
 
 #[derive(Debug, Clone)]
 struct MergeableUnion {
-    source: Source,
-    branches: Vec<Option<Expr>>,
+    source:     Source,
+    branches:   Vec<Option<Expr>>,
     branch_ids: Vec<Option<Vec<PointId>>>,
 }
 
@@ -749,10 +838,10 @@ impl MergeableUnion {
 
 #[derive(Debug, Clone)]
 struct MergeableSetJoin {
-    source: Source,
-    left_filter: Option<Expr>,
+    source:       Source,
+    left_filter:  Option<Expr>,
     right_filter: Option<Expr>,
-    join_type: JoinType,
+    join_type:    JoinType,
 }
 
 impl MergeableSetJoin {
@@ -779,10 +868,10 @@ impl MergeableSetJoin {
             return Ok(None);
         }
         Ok(Some(Self {
-            source: left.source,
-            left_filter: left.filter,
+            source:       left.source,
+            left_filter:  left.filter,
             right_filter: right.filter,
-            join_type: join.join_type,
+            join_type:    join.join_type,
         }))
     }
 
@@ -818,7 +907,7 @@ impl MergeableSetJoin {
 struct MergeableBranch {
     source: Source,
     filter: Option<Expr>,
-    ids: Option<Vec<PointId>>,
+    ids:    Option<Vec<PointId>>,
 }
 
 impl MergeableBranch {
@@ -983,16 +1072,14 @@ struct SemanticError {
 }
 
 impl SemanticError {
-    fn new(message: impl Into<String>) -> Self {
-        Self { message: message.into() }
-    }
+    fn new(message: impl Into<String>) -> Self { Self { message: message.into() } }
 }
 
 #[derive(Clone)]
 struct Source {
-    client: Arc<Qdrant>,
-    collection: String,
-    schema: SchemaRef,
+    client:         Arc<Qdrant>,
+    collection:     String,
+    schema:         SchemaRef,
     payload_schema: Arc<QdrantPayloadSchema>,
 }
 
@@ -1046,22 +1133,16 @@ impl FiltersState {
         QdrantFilters::try_new(&source.schema, &source.payload_schema, &self.exprs)
     }
 
-    fn combined_expr(&self) -> Option<Expr> {
-        conjunction(self.exprs.clone())
-    }
+    fn combined_expr(&self) -> Option<Expr> { conjunction(self.exprs.clone()) }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct OutputNames(BTreeSet<String>);
 
 impl OutputNames {
-    fn single(name: String) -> Self {
-        Self(BTreeSet::from([name]))
-    }
+    fn single(name: String) -> Self { Self(BTreeSet::from([name])) }
 
-    fn contains_name(&self, name: &str) -> bool {
-        self.0.contains(name)
-    }
+    fn contains_name(&self, name: &str) -> bool { self.0.contains(name) }
 
     fn matches_column(&self, expr: &Expr) -> bool {
         matches!(expr.clone().unalias_nested().data, Expr::Column(column) if self.contains_name(&column.name))
@@ -1083,6 +1164,143 @@ impl OutputNames {
         Ok(Self(names))
     }
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AggregateSurface {
+    Local,
+    Count,
+    Facet(FacetOp),
+}
+
+impl AggregateSurface {
+    fn of(plan: &LogicalPlan, source: &Source) -> Result<Self> {
+        let LogicalPlan::Aggregate(aggregate) = plan else {
+            return plan_err!("prototype aggregate state mismatch");
+        };
+        if aggregate.group_expr.is_empty()
+            && aggregate.aggr_expr.len() == 1
+            && count_star_like(&aggregate.aggr_expr[0])
+        {
+            return Ok(Self::Count);
+        }
+        if aggregate.group_expr.len() != 1
+            || aggregate.aggr_expr.len() != 1
+            || !count_star_like(&aggregate.aggr_expr[0])
+        {
+            return Ok(Self::Local);
+        }
+        let Some(field) = QdrantPayloadPath::from_logical_expr(&aggregate.group_expr[0]) else {
+            return Ok(Self::Local);
+        };
+        let Some(field_type) = source.payload_schema.field(field.key()) else {
+            return Ok(Self::Local);
+        };
+        if !field_type.supports_facet() {
+            return Ok(Self::Local);
+        }
+        Ok(Self::Facet(FacetOp {
+            field,
+            key_outputs: OutputNames::single(aggregate.schema.field(0).name().clone()),
+            count_outputs: OutputNames::single(aggregate.schema.field(1).name().clone()),
+            sorted: false,
+        }))
+    }
+}
+
+fn projection_is_column_only(plan: &LogicalPlan) -> bool {
+    let LogicalPlan::Projection(projection) = plan else {
+        return false;
+    };
+    projection.expr.iter().all(|expr| {
+        matches!(expr.clone().unalias_nested().data, Expr::Column(_))
+            || matches!(expr, Expr::Alias(Alias { expr, .. }) if matches!(expr.clone().unalias_nested().data, Expr::Column(_)))
+    })
+}
+
+fn full_row_join_keys(join: &datafusion::logical_expr::logical_plan::Join) -> bool {
+    let left_fields = join.left.schema().fields();
+    let right_fields = join.right.schema().fields();
+    join.on.len() == left_fields.len()
+        && left_fields.len() == right_fields.len()
+        && join.on.iter().zip(left_fields.iter().zip(right_fields.iter())).all(
+            |((left, right), (left_field, right_field))| match (left, right) {
+                (Expr::Column(left), Expr::Column(right)) => {
+                    left.name == *left_field.name() && right.name == *right_field.name()
+                }
+                _ => false,
+            },
+        )
+}
+
+// ============================================================================
+// Node
+// ============================================================================
+
+const STATE_NODE_NAME: &str = "PrototypeStateNode";
+
+#[derive(Debug, Clone)]
+struct StateNode {
+    schema: DFSchemaRef,
+    state:  State,
+}
+
+impl UserDefinedLogicalNodeCore for StateNode {
+    fn name(&self) -> &str { STATE_NODE_NAME }
+
+    fn inputs(&self) -> Vec<&LogicalPlan> { vec![] }
+
+    fn schema(&self) -> &DFSchemaRef { &self.schema }
+
+    fn expressions(&self) -> Vec<Expr> { vec![] }
+
+    fn fmt_for_explain(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.state {
+            State::Processing(state) => write!(f, "{STATE_NODE_NAME}: processing {:?}", state.op),
+            State::Kernel(state) => write!(f, "{STATE_NODE_NAME}: kernel {:?}", state.spec),
+            State::Local(_) | State::Source(_) | State::Composite(_) | State::Fatal(_) => {
+                write!(f, "{STATE_NODE_NAME}: invalid materialized state")
+            }
+        }
+    }
+
+    fn with_exprs_and_inputs(&self, exprs: Vec<Expr>, inputs: Vec<LogicalPlan>) -> Result<Self> {
+        if !exprs.is_empty() {
+            return plan_err!("{STATE_NODE_NAME} expects no expressions");
+        }
+        if !inputs.is_empty() {
+            return plan_err!("{STATE_NODE_NAME} expects no inputs");
+        }
+        Ok(self.clone())
+    }
+}
+
+impl PartialEq for StateNode {
+    fn eq(&self, other: &Self) -> bool {
+        format!("{:?}", self.state) == format!("{:?}", other.state)
+            && format!("{:?}", self.schema) == format!("{:?}", other.schema)
+    }
+}
+
+impl Eq for StateNode {}
+
+impl PartialOrd for StateNode {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        (format!("{:?}", self.state), format!("{:?}", self.schema))
+            .partial_cmp(&(format!("{:?}", other.state), format!("{:?}", other.schema)))
+    }
+}
+
+impl Hash for StateNode {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        STATE_NODE_NAME.hash(state);
+        format!("{:?}", self.state).hash(state);
+        format!("{:?}", self.schema).hash(state);
+    }
+}
+
+// ============================================================================
+// Surface
+// ============================================================================
 
 #[derive(Debug, Clone)]
 enum SurfaceCall {
@@ -1159,6 +1377,10 @@ impl QuerySurfaceCall {
         }
     }
 }
+
+// ============================================================================
+// Query
+// ============================================================================
 
 #[derive(Debug, Clone)]
 struct NearestQuery {
@@ -1279,7 +1501,7 @@ impl DenseNearestInput {
 #[derive(Debug, Clone)]
 struct SparseNearestInput {
     indices: Vec<u32>,
-    values: Vec<f32>,
+    values:  Vec<f32>,
 }
 
 impl SparseNearestInput {
@@ -1376,14 +1598,12 @@ impl IdNearestInput {
         }
     }
 
-    fn validate_on_source(&self, _source: &Source, _using: &str) -> Result<()> {
-        Ok(())
-    }
+    fn validate_on_source(&self, _source: &Source, _using: &str) -> Result<()> { Ok(()) }
 }
 
 #[derive(Debug, Clone)]
 struct DocumentNearestInput {
-    text: String,
+    text:  String,
     model: Option<String>,
 }
 
@@ -1392,9 +1612,7 @@ impl DocumentNearestInput {
         self.text == other.text && self.model == other.model
     }
 
-    fn validate_on_source(&self, _source: &Source, _using: &str) -> Result<()> {
-        Ok(())
-    }
+    fn validate_on_source(&self, _source: &Source, _using: &str) -> Result<()> { Ok(()) }
 }
 
 #[derive(Debug, Clone)]
@@ -1408,15 +1626,13 @@ impl ImageNearestInput {
         self.image == other.image && self.model == other.model
     }
 
-    fn validate_on_source(&self, _source: &Source, _using: &str) -> Result<()> {
-        Ok(())
-    }
+    fn validate_on_source(&self, _source: &Source, _using: &str) -> Result<()> { Ok(()) }
 }
 
 #[derive(Debug, Clone)]
 struct ObjectNearestInput {
     object: Vec<(String, ScalarValue)>,
-    model: Option<String>,
+    model:  Option<String>,
 }
 
 impl ObjectNearestInput {
@@ -1424,9 +1640,7 @@ impl ObjectNearestInput {
         self.object == other.object && self.model == other.model
     }
 
-    fn validate_on_source(&self, _source: &Source, _using: &str) -> Result<()> {
-        Ok(())
-    }
+    fn validate_on_source(&self, _source: &Source, _using: &str) -> Result<()> { Ok(()) }
 }
 
 #[derive(Debug, Clone)]
@@ -1499,134 +1713,168 @@ impl QueryVectorBinding {
 struct RecommendQuery;
 
 impl RecommendQuery {
-    fn same_semantics(&self, _other: &Self) -> bool {
-        true
-    }
+    fn same_semantics(&self, _other: &Self) -> bool { true }
 
-    fn validate_on_source(&self, _source: &Source) -> Result<()> {
-        Ok(())
-    }
+    fn validate_on_source(&self, _source: &Source) -> Result<()> { Ok(()) }
 }
 
 #[derive(Debug, Clone, Default)]
 struct DiscoverQuery;
 
 impl DiscoverQuery {
-    fn same_semantics(&self, _other: &Self) -> bool {
-        true
-    }
+    fn same_semantics(&self, _other: &Self) -> bool { true }
 
-    fn validate_on_source(&self, _source: &Source) -> Result<()> {
-        Ok(())
-    }
+    fn validate_on_source(&self, _source: &Source) -> Result<()> { Ok(()) }
 }
 
 #[derive(Debug, Clone, Default)]
 struct ContextQuery;
 
 impl ContextQuery {
-    fn same_semantics(&self, _other: &Self) -> bool {
-        true
-    }
+    fn same_semantics(&self, _other: &Self) -> bool { true }
 
-    fn validate_on_source(&self, _source: &Source) -> Result<()> {
-        Ok(())
-    }
+    fn validate_on_source(&self, _source: &Source) -> Result<()> { Ok(()) }
 }
 
 #[derive(Debug, Clone, Default)]
 struct OrderByQuery;
 
 impl OrderByQuery {
-    fn same_semantics(&self, _other: &Self) -> bool {
-        true
-    }
+    fn same_semantics(&self, _other: &Self) -> bool { true }
 
-    fn validate_on_source(&self, _source: &Source) -> Result<()> {
-        Ok(())
-    }
+    fn validate_on_source(&self, _source: &Source) -> Result<()> { Ok(()) }
 }
 
 #[derive(Debug, Clone, Default)]
 struct FusionQuery;
 
 impl FusionQuery {
-    fn same_semantics(&self, _other: &Self) -> bool {
-        true
-    }
+    fn same_semantics(&self, _other: &Self) -> bool { true }
 
-    fn validate_on_source(&self, _source: &Source) -> Result<()> {
-        Ok(())
-    }
+    fn validate_on_source(&self, _source: &Source) -> Result<()> { Ok(()) }
 }
 
 #[derive(Debug, Clone, Default)]
 struct SampleQuery;
 
 impl SampleQuery {
-    fn same_semantics(&self, _other: &Self) -> bool {
-        true
-    }
+    fn same_semantics(&self, _other: &Self) -> bool { true }
 
-    fn validate_on_source(&self, _source: &Source) -> Result<()> {
-        Ok(())
-    }
+    fn validate_on_source(&self, _source: &Source) -> Result<()> { Ok(()) }
 }
 
 #[derive(Debug, Clone, Default)]
 struct FormulaQuery;
 
 impl FormulaQuery {
-    fn same_semantics(&self, _other: &Self) -> bool {
-        true
-    }
+    fn same_semantics(&self, _other: &Self) -> bool { true }
 
-    fn validate_on_source(&self, _source: &Source) -> Result<()> {
-        Ok(())
-    }
+    fn validate_on_source(&self, _source: &Source) -> Result<()> { Ok(()) }
 }
 
 #[derive(Debug, Clone, Default)]
 struct NearestWithMmrQuery;
 
 impl NearestWithMmrQuery {
-    fn same_semantics(&self, _other: &Self) -> bool {
-        true
-    }
+    fn same_semantics(&self, _other: &Self) -> bool { true }
 
-    fn validate_on_source(&self, _source: &Source) -> Result<()> {
-        Ok(())
-    }
+    fn validate_on_source(&self, _source: &Source) -> Result<()> { Ok(()) }
 }
 
 #[derive(Debug, Clone, Default)]
 struct RelevanceFeedbackQuery;
 
 impl RelevanceFeedbackQuery {
-    fn same_semantics(&self, _other: &Self) -> bool {
-        true
-    }
+    fn same_semantics(&self, _other: &Self) -> bool { true }
 
-    fn validate_on_source(&self, _source: &Source) -> Result<()> {
-        Ok(())
-    }
+    fn validate_on_source(&self, _source: &Source) -> Result<()> { Ok(()) }
 }
 
 #[derive(Debug, Clone)]
+enum QueryKind {
+    Nearest(NearestQuery),
+    Recommend(RecommendQuery),
+    Discover(DiscoverQuery),
+    Context(ContextQuery),
+    OrderBy(OrderByQuery),
+    Fusion(FusionQuery),
+    Sample(SampleQuery),
+    Formula(FormulaQuery),
+    NearestWithMmr(NearestWithMmrQuery),
+    RelevanceFeedback(RelevanceFeedbackQuery),
+}
+
+impl QueryKind {
+    fn from_surface(surface: QuerySurfaceCall) -> Self {
+        match surface {
+            QuerySurfaceCall::Nearest(query) => Self::Nearest(query),
+            QuerySurfaceCall::Recommend(query) => Self::Recommend(query),
+            QuerySurfaceCall::Discover(query) => Self::Discover(query),
+            QuerySurfaceCall::Context(query) => Self::Context(query),
+            QuerySurfaceCall::OrderBy(query) => Self::OrderBy(query),
+            QuerySurfaceCall::Fusion(query) => Self::Fusion(query),
+            QuerySurfaceCall::Sample(query) => Self::Sample(query),
+            QuerySurfaceCall::Formula(query) => Self::Formula(query),
+            QuerySurfaceCall::NearestWithMmr(query) => Self::NearestWithMmr(query),
+            QuerySurfaceCall::RelevanceFeedback(query) => Self::RelevanceFeedback(query),
+        }
+    }
+
+    fn validate_on_source(&self, source: &Source) -> Result<()> {
+        match self {
+            Self::Nearest(query) => query.validate_on_source(source),
+            Self::Recommend(query) => query.validate_on_source(source),
+            Self::Discover(query) => query.validate_on_source(source),
+            Self::Context(query) => query.validate_on_source(source),
+            Self::OrderBy(query) => query.validate_on_source(source),
+            Self::Fusion(query) => query.validate_on_source(source),
+            Self::Sample(query) => query.validate_on_source(source),
+            Self::Formula(query) => query.validate_on_source(source),
+            Self::NearestWithMmr(query) => query.validate_on_source(source),
+            Self::RelevanceFeedback(query) => query.validate_on_source(source),
+        }
+    }
+
+    fn matches_surface(&self, surface: &QuerySurfaceCall) -> bool {
+        match (self, surface) {
+            (Self::Nearest(lhs), QuerySurfaceCall::Nearest(rhs)) => lhs.same_semantics(rhs),
+            (Self::Recommend(lhs), QuerySurfaceCall::Recommend(rhs)) => lhs.same_semantics(rhs),
+            (Self::Discover(lhs), QuerySurfaceCall::Discover(rhs)) => lhs.same_semantics(rhs),
+            (Self::Context(lhs), QuerySurfaceCall::Context(rhs)) => lhs.same_semantics(rhs),
+            (Self::OrderBy(lhs), QuerySurfaceCall::OrderBy(rhs)) => lhs.same_semantics(rhs),
+            (Self::Fusion(lhs), QuerySurfaceCall::Fusion(rhs)) => lhs.same_semantics(rhs),
+            (Self::Sample(lhs), QuerySurfaceCall::Sample(rhs)) => lhs.same_semantics(rhs),
+            (Self::Formula(lhs), QuerySurfaceCall::Formula(rhs)) => lhs.same_semantics(rhs),
+            (Self::NearestWithMmr(lhs), QuerySurfaceCall::NearestWithMmr(rhs)) => {
+                lhs.same_semantics(rhs)
+            }
+            (Self::RelevanceFeedback(lhs), QuerySurfaceCall::RelevanceFeedback(rhs)) => {
+                lhs.same_semantics(rhs)
+            }
+            _ => false,
+        }
+    }
+}
+
+// ============================================================================
+// Op
+// ============================================================================
+
+#[derive(Debug, Clone)]
 struct QueryOp {
-    query: QueryKind,
+    query:               QueryKind,
     query_score_outputs: OutputNames,
-    score_threshold: Option<f32>,
-    sorted: bool,
+    score_threshold:     Option<f32>,
+    sorted:              bool,
 }
 
 impl QueryOp {
     fn from_surface(surface: QuerySurfaceCall) -> Self {
         Self {
-            query: QueryKind::from_surface(surface),
+            query:               QueryKind::from_surface(surface),
             query_score_outputs: OutputNames::default(),
-            score_threshold: None,
-            sorted: false,
+            score_threshold:     None,
+            sorted:              false,
         }
     }
 
@@ -1757,77 +2005,67 @@ impl QueryOp {
 }
 
 #[derive(Debug, Clone)]
-enum QueryKind {
-    Nearest(NearestQuery),
-    Recommend(RecommendQuery),
-    Discover(DiscoverQuery),
-    Context(ContextQuery),
-    OrderBy(OrderByQuery),
-    Fusion(FusionQuery),
-    Sample(SampleQuery),
-    Formula(FormulaQuery),
-    NearestWithMmr(NearestWithMmrQuery),
-    RelevanceFeedback(RelevanceFeedbackQuery),
+enum Op {
+    Query(QueryOp),
+    Facet(FacetOp),
 }
 
-impl QueryKind {
-    fn from_surface(surface: QuerySurfaceCall) -> Self {
+impl Op {
+    fn from_surface(surface: SurfaceCall, source: &Source) -> Result<Self> {
         match surface {
-            QuerySurfaceCall::Nearest(query) => Self::Nearest(query),
-            QuerySurfaceCall::Recommend(query) => Self::Recommend(query),
-            QuerySurfaceCall::Discover(query) => Self::Discover(query),
-            QuerySurfaceCall::Context(query) => Self::Context(query),
-            QuerySurfaceCall::OrderBy(query) => Self::OrderBy(query),
-            QuerySurfaceCall::Fusion(query) => Self::Fusion(query),
-            QuerySurfaceCall::Sample(query) => Self::Sample(query),
-            QuerySurfaceCall::Formula(query) => Self::Formula(query),
-            QuerySurfaceCall::NearestWithMmr(query) => Self::NearestWithMmr(query),
-            QuerySurfaceCall::RelevanceFeedback(query) => Self::RelevanceFeedback(query),
+            SurfaceCall::Query(surface) => {
+                let op = QueryOp::from_surface(surface);
+                op.validate_on_source(source)?;
+                Ok(Self::Query(op))
+            }
         }
     }
 
-    fn validate_on_source(&self, source: &Source) -> Result<()> {
+    fn project(self, plan: &LogicalPlan) -> Result<Option<Self>> {
         match self {
-            Self::Nearest(query) => query.validate_on_source(source),
-            Self::Recommend(query) => query.validate_on_source(source),
-            Self::Discover(query) => query.validate_on_source(source),
-            Self::Context(query) => query.validate_on_source(source),
-            Self::OrderBy(query) => query.validate_on_source(source),
-            Self::Fusion(query) => query.validate_on_source(source),
-            Self::Sample(query) => query.validate_on_source(source),
-            Self::Formula(query) => query.validate_on_source(source),
-            Self::NearestWithMmr(query) => query.validate_on_source(source),
-            Self::RelevanceFeedback(query) => query.validate_on_source(source),
+            Self::Query(op) => op.project(plan).map(|op| op.map(Self::Query)),
+            Self::Facet(op) => op.project(plan).map(|op| op.map(Self::Facet)),
         }
     }
 
-    fn matches_surface(&self, surface: &QuerySurfaceCall) -> bool {
-        match (self, surface) {
-            (Self::Nearest(lhs), QuerySurfaceCall::Nearest(rhs)) => lhs.same_semantics(rhs),
-            (Self::Recommend(lhs), QuerySurfaceCall::Recommend(rhs)) => lhs.same_semantics(rhs),
-            (Self::Discover(lhs), QuerySurfaceCall::Discover(rhs)) => lhs.same_semantics(rhs),
-            (Self::Context(lhs), QuerySurfaceCall::Context(rhs)) => lhs.same_semantics(rhs),
-            (Self::OrderBy(lhs), QuerySurfaceCall::OrderBy(rhs)) => lhs.same_semantics(rhs),
-            (Self::Fusion(lhs), QuerySurfaceCall::Fusion(rhs)) => lhs.same_semantics(rhs),
-            (Self::Sample(lhs), QuerySurfaceCall::Sample(rhs)) => lhs.same_semantics(rhs),
-            (Self::Formula(lhs), QuerySurfaceCall::Formula(rhs)) => lhs.same_semantics(rhs),
-            (Self::NearestWithMmr(lhs), QuerySurfaceCall::NearestWithMmr(rhs)) => {
-                lhs.same_semantics(rhs)
-            }
-            (Self::RelevanceFeedback(lhs), QuerySurfaceCall::RelevanceFeedback(rhs)) => {
-                lhs.same_semantics(rhs)
-            }
-            _ => false,
+    fn filter(
+        self,
+        source: &Source,
+        filters: &mut FiltersState,
+        predicate: &Expr,
+    ) -> Result<Option<Self>> {
+        match self {
+            Self::Query(op) => op.filter(source, filters, predicate).map(|op| op.map(Self::Query)),
+            Self::Facet(_) => Ok(None),
+        }
+    }
+
+    fn sort(self, plan: &LogicalPlan) -> Result<Option<Self>> {
+        match self {
+            Self::Query(op) => op.sort(plan).map(|op| op.map(Self::Query)),
+            Self::Facet(op) => op.sort(plan).map(|op| op.map(Self::Facet)),
+        }
+    }
+
+    fn kernel(
+        self,
+        collection: String,
+        filters: FiltersState,
+        plan: &LogicalPlan,
+    ) -> Result<Option<KernelState>> {
+        match self {
+            Self::Query(op) => op.kernel(collection, filters, plan),
+            Self::Facet(op) => op.kernel(collection, filters, plan),
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct FacetOp {
-    field: QdrantPayloadPath,
-    key_outputs: OutputNames,
+    field:         QdrantPayloadPath,
+    key_outputs:   OutputNames,
     count_outputs: OutputNames,
-    sorted: bool,
+    sorted:        bool,
 }
 
 impl FacetOp {
@@ -1878,9 +2116,7 @@ impl FacetOp {
         self.is_key_expr(expr) || self.is_count_expr(expr)
     }
 
-    fn is_key_expr(&self, expr: &Expr) -> bool {
-        self.key_outputs.matches_column(expr)
-    }
+    fn is_key_expr(&self, expr: &Expr) -> bool { self.key_outputs.matches_column(expr) }
 
     fn is_count_expr(&self, expr: &Expr) -> bool {
         self.count_outputs.matches_column(expr)
@@ -1920,245 +2156,23 @@ impl KernelSpec {
 #[derive(Debug, Clone)]
 struct CountKernel {
     collection: String,
-    filters: FiltersState,
+    filters:    FiltersState,
 }
 
 #[derive(Debug, Clone)]
 struct QueryKernel {
     collection: String,
-    filters: FiltersState,
-    query: QueryOp,
-    limit: u64,
+    filters:    FiltersState,
+    query:      QueryOp,
+    limit:      u64,
 }
 
 #[derive(Debug, Clone)]
 struct FacetKernel {
     collection: String,
-    filters: FiltersState,
-    op: FacetOp,
-    limit: u64,
-}
-
-#[derive(Debug, Clone)]
-struct StateNode {
-    schema: DFSchemaRef,
-    state: State,
-}
-
-impl UserDefinedLogicalNodeCore for StateNode {
-    fn name(&self) -> &str {
-        STATE_NODE_NAME
-    }
-
-    fn inputs(&self) -> Vec<&LogicalPlan> {
-        vec![]
-    }
-
-    fn schema(&self) -> &DFSchemaRef {
-        &self.schema
-    }
-
-    fn expressions(&self) -> Vec<Expr> {
-        vec![]
-    }
-
-    fn fmt_for_explain(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match &self.state {
-            State::Processing(state) => write!(f, "{STATE_NODE_NAME}: processing {:?}", state.op),
-            State::Kernel(state) => write!(f, "{STATE_NODE_NAME}: kernel {:?}", state.spec),
-            State::Local(_) | State::Source(_) | State::Composite(_) | State::Fatal(_) => {
-                write!(f, "{STATE_NODE_NAME}: invalid materialized state")
-            }
-        }
-    }
-
-    fn with_exprs_and_inputs(&self, exprs: Vec<Expr>, inputs: Vec<LogicalPlan>) -> Result<Self> {
-        if !exprs.is_empty() {
-            return plan_err!("{STATE_NODE_NAME} expects no expressions");
-        }
-        if !inputs.is_empty() {
-            return plan_err!("{STATE_NODE_NAME} expects no inputs");
-        }
-        Ok(self.clone())
-    }
-}
-
-impl PartialEq for StateNode {
-    fn eq(&self, other: &Self) -> bool {
-        format!("{:?}", self.state) == format!("{:?}", other.state)
-            && format!("{:?}", self.schema) == format!("{:?}", other.schema)
-    }
-}
-
-impl Eq for StateNode {}
-
-impl PartialOrd for StateNode {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        (format!("{:?}", self.state), format!("{:?}", self.schema))
-            .partial_cmp(&(format!("{:?}", other.state), format!("{:?}", other.schema)))
-    }
-}
-
-impl Hash for StateNode {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        STATE_NODE_NAME.hash(state);
-        format!("{:?}", self.state).hash(state);
-        format!("{:?}", self.schema).hash(state);
-    }
-}
-
-fn analyze_root(plan: LogicalPlan) -> Result<Analysis> {
-    analyze_plan(plan)?.finish_root()
-}
-
-fn analyze_plan(plan: LogicalPlan) -> Result<Analysis> {
-    let with_subqueries = plan
-        .map_subqueries(|subquery| analyze_root(subquery).map(|analysis| analysis.transformed))?;
-    let mut child_states = vec![];
-    let rewritten = with_subqueries.transform_sibling(|plan| {
-        plan.map_children(|child| {
-            analyze_plan(child).map(|analysis| {
-                child_states.push(analysis.state.clone());
-                analysis.transformed
-            })
-        })
-    })?;
-
-    let transformed = rewritten.transformed;
-    let plan = rewritten.data;
-
-    match child_states.as_slice() {
-        [] => analyze_leaf(plan, transformed),
-        [child] => analyze_unary(plan, child.clone(), transformed),
-        children => analyze_multi(plan, children.to_vec(), transformed),
-    }
-}
-
-fn analyze_leaf(plan: LogicalPlan, transformed: bool) -> Result<Analysis> {
-    if let LogicalPlan::TableScan(scan) = &plan {
-        if let Some(state) = SourceState::from_scan(scan) {
-            return Ok(Analysis::new(plan, State::Source(state), transformed));
-        }
-        return Ok(Analysis::new(plan, State::local(), transformed));
-    }
-    if let LogicalPlan::Extension(extension) = &plan
-        && let Some(node) = extension.node.as_any().downcast_ref::<StateNode>()
-    {
-        let state = node.state.clone();
-        return Ok(Analysis::new(plan, state, transformed));
-    }
-    Ok(Analysis::new(plan, State::local(), transformed))
-}
-
-fn analyze_unary(plan: LogicalPlan, child: State, transformed: bool) -> Result<Analysis> {
-    match plan {
-        LogicalPlan::Projection(_) => child.projection(plan, transformed),
-        LogicalPlan::Filter(_) => child.filter(plan, transformed),
-        LogicalPlan::Sort(_) => child.sort(plan, transformed),
-        LogicalPlan::Limit(_) => child.limit(plan, transformed),
-        LogicalPlan::Aggregate(_) => child.aggregate(plan, transformed),
-        _ => child.unary(plan, transformed),
-    }
-}
-
-fn analyze_multi(plan: LogicalPlan, children: Vec<State>, transformed: bool) -> Result<Analysis> {
-    if let Some(fatal) = children.iter().find_map(|state| match state {
-        State::Fatal(fatal) => Some(fatal.clone()),
-        _ => None,
-    }) {
-        return Ok(Analysis::new(plan, State::Fatal(fatal), transformed));
-    }
-    if SurfaceCall::collect(&plan.expressions())?.is_some() {
-        return Ok(fatal(
-            plan,
-            transformed,
-            "qdrant surface calls may not cross multi-branch boundaries",
-        ));
-    }
-    if let Some(state) = CompositeState::from_plan(&plan, &children)? {
-        return Ok(Analysis::new(plan, State::Composite(state), transformed));
-    }
-    if children.iter().any(State::requires_composite_coordination) {
-        return Ok(Analysis::new(
-            plan,
-            State::Composite(CompositeState::Coordinated(CoordinatedState {
-                branches: children.len(),
-            })),
-            transformed,
-        ));
-    }
-    Ok(Analysis::new(plan, State::local(), transformed))
-}
-
-fn fatal(plan: LogicalPlan, transformed: bool, message: impl Into<String>) -> Analysis {
-    Analysis::new(plan, State::fatal(message), transformed)
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum AggregateSurface {
-    Local,
-    Count,
-    Facet(FacetOp),
-}
-
-impl AggregateSurface {
-    fn of(plan: &LogicalPlan, source: &Source) -> Result<Self> {
-        let LogicalPlan::Aggregate(aggregate) = plan else {
-            return plan_err!("prototype aggregate state mismatch");
-        };
-        if aggregate.group_expr.is_empty()
-            && aggregate.aggr_expr.len() == 1
-            && count_star_like(&aggregate.aggr_expr[0])
-        {
-            return Ok(Self::Count);
-        }
-        if aggregate.group_expr.len() != 1
-            || aggregate.aggr_expr.len() != 1
-            || !count_star_like(&aggregate.aggr_expr[0])
-        {
-            return Ok(Self::Local);
-        }
-        let Some(field) = QdrantPayloadPath::from_logical_expr(&aggregate.group_expr[0]) else {
-            return Ok(Self::Local);
-        };
-        let Some(field_type) = source.payload_schema.field(field.key()) else {
-            return Ok(Self::Local);
-        };
-        if !field_type.supports_facet() {
-            return Ok(Self::Local);
-        }
-        Ok(Self::Facet(FacetOp {
-            field,
-            key_outputs: OutputNames::single(aggregate.schema.field(0).name().clone()),
-            count_outputs: OutputNames::single(aggregate.schema.field(1).name().clone()),
-            sorted: false,
-        }))
-    }
-}
-
-fn projection_is_column_only(plan: &LogicalPlan) -> bool {
-    let LogicalPlan::Projection(projection) = plan else {
-        return false;
-    };
-    projection.expr.iter().all(|expr| {
-        matches!(expr.clone().unalias_nested().data, Expr::Column(_))
-            || matches!(expr, Expr::Alias(Alias { expr, .. }) if matches!(expr.clone().unalias_nested().data, Expr::Column(_)))
-    })
-}
-
-fn full_row_join_keys(join: &datafusion::logical_expr::logical_plan::Join) -> bool {
-    let left_fields = join.left.schema().fields();
-    let right_fields = join.right.schema().fields();
-    join.on.len() == left_fields.len()
-        && left_fields.len() == right_fields.len()
-        && join.on.iter().zip(left_fields.iter().zip(right_fields.iter())).all(
-            |((left, right), (left_field, right_field))| match (left, right) {
-                (Expr::Column(left), Expr::Column(right)) => {
-                    left.name == *left_field.name() && right.name == *right_field.name()
-                }
-                _ => false,
-            },
-        )
+    filters:    FiltersState,
+    op:         FacetOp,
+    limit:      u64,
 }
 
 fn limit_rows(plan: &LogicalPlan) -> Result<u64> {
@@ -2224,6 +2238,10 @@ fn numeric_literal_f32(expr: &Expr) -> Result<f32> {
         _ => plan_err!("score thresholds must be numeric"),
     }
 }
+
+// ============================================================================
+// Helpers
+// ============================================================================
 
 fn count_star_like(expr: &Expr) -> bool {
     match expr {
