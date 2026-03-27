@@ -1,48 +1,7 @@
-use std::sync::Arc;
-
 use datafusion::common::ScalarValue;
-use datafusion::datasource::{TableProvider, source_as_provider};
+use datafusion::logical_expr::Expr;
 use datafusion::logical_expr::expr::{AggregateFunction, Alias};
 use datafusion::logical_expr::utils::COUNT_STAR_EXPANSION;
-use datafusion::logical_expr::{Expr, LogicalPlan};
-
-use crate::pushdown::QdrantPayloadSchema;
-use crate::table::QdrantTableProvider;
-
-pub(crate) struct QdrantSource {
-    pub(crate) client: Arc<qdrant_client::Qdrant>,
-    pub(crate) collection: String,
-    pub(crate) schema: datafusion::arrow::datatypes::SchemaRef,
-    pub(crate) payload_schema: Arc<QdrantPayloadSchema>,
-    pub(crate) filters: Vec<Expr>,
-}
-
-impl QdrantSource {
-    pub(crate) fn from_plan(plan: &LogicalPlan) -> Option<Self> {
-        let mut filters = vec![];
-        let mut plan = plan;
-        loop {
-            match plan {
-                LogicalPlan::Filter(filter) => {
-                    filters.push(filter.predicate.clone());
-                    plan = filter.input.as_ref();
-                }
-                LogicalPlan::TableScan(scan) => {
-                    let provider = source_as_provider(&scan.source).ok()?;
-                    let provider = provider.as_any().downcast_ref::<QdrantTableProvider>()?;
-                    return Some(Self {
-                        client: Arc::clone(provider.client()),
-                        collection: provider.collection().to_owned(),
-                        schema: provider.schema(),
-                        payload_schema: Arc::clone(provider.payload_schema()),
-                        filters,
-                    });
-                }
-                _ => return None,
-            }
-        }
-    }
-}
 
 pub(crate) fn count_star_like(expr: &Expr) -> bool {
     match expr {
@@ -59,7 +18,7 @@ pub(crate) fn count_star_like(expr: &Expr) -> bool {
     }
 }
 
-fn count_like_literal(value: &ScalarValue) -> bool {
+pub(crate) fn count_like_literal(value: &ScalarValue) -> bool {
     !value.is_null()
         && (value == &COUNT_STAR_EXPANSION
             || matches!(

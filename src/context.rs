@@ -13,7 +13,7 @@ use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_planner::{DefaultPhysicalPlanner, ExtensionPlanner, PhysicalPlanner};
 use datafusion::prelude::{DataFrame, SQLOptions, SessionContext};
 
-use crate::analyzer::{QdrantOpPushdown, QdrantRelationPushdown};
+use crate::analyzer::PrototypePushdown;
 use crate::context::planner::QdrantExtensionPlanner;
 use crate::expr_fn::register_qdrant_functions;
 
@@ -23,15 +23,9 @@ pub fn prepare_session_context(ctx: SessionContext) -> SessionContext {
     let type_coercion = TypeCoercion::default();
     let pos =
         analyzer_rules.iter().position(|rule| rule.name() == type_coercion.name()).unwrap_or(0);
-    let mut insert_pos = pos;
-    let op_rule: Arc<dyn AnalyzerRule + Send + Sync> = Arc::new(QdrantOpPushdown);
-    if !analyzer_rules.iter().any(|existing| existing.name() == op_rule.name()) {
-        analyzer_rules.insert(insert_pos, op_rule);
-        insert_pos += 1;
-    }
-    let relation_rule: Arc<dyn AnalyzerRule + Send + Sync> = Arc::new(QdrantRelationPushdown);
-    if !analyzer_rules.iter().any(|existing| existing.name() == relation_rule.name()) {
-        analyzer_rules.insert(insert_pos, relation_rule);
+    let prototype_rule: Arc<dyn AnalyzerRule + Send + Sync> = Arc::new(PrototypePushdown);
+    if !analyzer_rules.iter().any(|existing| existing.name() == prototype_rule.name()) {
+        analyzer_rules.insert(pos, prototype_rule);
     }
     let ctx = SessionContext::new_with_state(
         ctx.into_state_builder()
