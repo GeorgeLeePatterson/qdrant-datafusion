@@ -49,6 +49,10 @@ impl std::fmt::Debug for Source {
 }
 
 impl Source {
+    pub(super) fn client(&self) -> &Arc<Qdrant> { &self.client }
+
+    pub(super) fn collection(&self) -> &str { &self.collection }
+
     pub(super) fn merge_compatible_with(&self, other: &Self) -> bool {
         self.collection == other.collection
             && Arc::ptr_eq(&self.client, &other.client)

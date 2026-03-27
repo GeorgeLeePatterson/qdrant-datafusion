@@ -283,7 +283,7 @@ pub(crate) enum QueryVectorBinding {
 
 impl QueryVectorBinding {
     fn from_source(source: &Source, using: &str) -> Result<Self> {
-        let field = match source.schema.field_with_name(using) {
+        let field: &datafusion::arrow::datatypes::Field = match source.schema.field_with_name(using) {
             Ok(field) => field,
             Err(_) => return plan_err!("query vector field '{}' not found", using),
         };
@@ -417,6 +417,30 @@ impl RelevanceFeedbackQuery {
 }
 
 #[derive(Debug, Clone)]
+pub(crate) enum QueryExecution {
+    NearestDense { using: Option<String>, vector: Vec<f32> },
+    NearestSparse { using: Option<String>, indices: Vec<u32>, values: Vec<f32> },
+    NearestMultiDense { using: Option<String>, vectors: Vec<Vec<f32>> },
+    NearestById { using: Option<String>, point_id: PointId },
+    NearestDocument { using: Option<String>, text: String, model: Option<String> },
+    NearestImage { using: Option<String>, image: Vec<u8>, model: Option<String> },
+    NearestObject {
+        using: Option<String>,
+        object: Vec<(String, ScalarValue)>,
+        model: Option<String>,
+    },
+    Recommend(RecommendQuery),
+    Discover(DiscoverQuery),
+    Context(ContextQuery),
+    OrderBy(OrderByQuery),
+    Fusion(FusionQuery),
+    Sample(SampleQuery),
+    Formula(FormulaQuery),
+    NearestWithMmr(NearestWithMmrQuery),
+    RelevanceFeedback(RelevanceFeedbackQuery),
+}
+
+#[derive(Debug, Clone)]
 pub(crate) enum QueryKind {
     Nearest(NearestQuery),
     Recommend(RecommendQuery),
@@ -478,6 +502,54 @@ impl QueryKind {
                 lhs.same_semantics(rhs)
             }
             _ => false,
+        }
+    }
+
+    pub(crate) fn execution(&self) -> QueryExecution {
+        match self {
+            Self::Nearest(query) => match &query.input {
+                NearestInput::Dense(input) => QueryExecution::NearestDense {
+                    using: query.using.clone(),
+                    vector: input.vector.clone(),
+                },
+                NearestInput::Sparse(input) => QueryExecution::NearestSparse {
+                    using: query.using.clone(),
+                    indices: input.indices.clone(),
+                    values: input.values.clone(),
+                },
+                NearestInput::MultiDense(input) => QueryExecution::NearestMultiDense {
+                    using: query.using.clone(),
+                    vectors: input.vectors.clone(),
+                },
+                NearestInput::Id(input) => QueryExecution::NearestById {
+                    using: query.using.clone(),
+                    point_id: input.point_id.clone(),
+                },
+                NearestInput::Document(input) => QueryExecution::NearestDocument {
+                    using: query.using.clone(),
+                    text: input.text.clone(),
+                    model: input.model.clone(),
+                },
+                NearestInput::Image(input) => QueryExecution::NearestImage {
+                    using: query.using.clone(),
+                    image: input.image.clone(),
+                    model: input.model.clone(),
+                },
+                NearestInput::Object(input) => QueryExecution::NearestObject {
+                    using: query.using.clone(),
+                    object: input.object.clone(),
+                    model: input.model.clone(),
+                },
+            },
+            Self::Recommend(query) => QueryExecution::Recommend(query.clone()),
+            Self::Discover(query) => QueryExecution::Discover(query.clone()),
+            Self::Context(query) => QueryExecution::Context(query.clone()),
+            Self::OrderBy(query) => QueryExecution::OrderBy(query.clone()),
+            Self::Fusion(query) => QueryExecution::Fusion(query.clone()),
+            Self::Sample(query) => QueryExecution::Sample(query.clone()),
+            Self::Formula(query) => QueryExecution::Formula(query.clone()),
+            Self::NearestWithMmr(query) => QueryExecution::NearestWithMmr(query.clone()),
+            Self::RelevanceFeedback(query) => QueryExecution::RelevanceFeedback(query.clone()),
         }
     }
 }

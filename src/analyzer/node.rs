@@ -5,12 +5,18 @@ use datafusion::logical_expr::{Expr, LogicalPlan, UserDefinedLogicalNodeCore};
 
 use super::state::State;
 
-pub(super) const STATE_NODE_NAME: &str = "PrototypeStateNode";
+pub(crate) const STATE_NODE_NAME: &str = "PrototypeStateNode";
 
 #[derive(Debug, Clone)]
 pub(crate) struct StateNode {
     pub(super) schema: DFSchemaRef,
     pub(super) state:  State,
+}
+
+impl StateNode {
+    pub(crate) fn state(&self) -> &State { &self.state }
+
+    pub(crate) fn output_schema(&self) -> &DFSchemaRef { &self.schema }
 }
 
 impl UserDefinedLogicalNodeCore for StateNode {

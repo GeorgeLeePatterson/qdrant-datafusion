@@ -300,13 +300,16 @@ impl SourceState {
         }
         match AggregateSurface::of(&plan, &self.source)? {
             AggregateSurface::Local => Ok(Analysis::new(plan, State::local(), transformed)),
-            AggregateSurface::Count => KernelState {
-                spec: KernelSpec::Count(CountKernel {
-                    collection: self.source.collection,
-                    filters:    self.filters,
-                }),
-            }
-            .absorb(plan, transformed),
+            AggregateSurface::Count => {
+                let exact_filters = self.filters.exact(&self.source)?;
+                KernelState {
+                    spec: KernelSpec::Count(CountKernel {
+                        source:  self.source,
+                        filters: exact_filters,
+                    }),
+                }
+                .absorb(plan, transformed)
+            },
             AggregateSurface::Facet(op) => ProcessingState {
                 source:  self.source,
                 filters: self.filters,
@@ -390,7 +393,7 @@ impl ProcessingState {
     }
 
     fn limit(self, plan: LogicalPlan, transformed: bool) -> Result<Analysis> {
-        let Some(kernel) = self.op.kernel(self.source.collection.clone(), self.filters, &plan)?
+        let Some(kernel) = self.op.kernel(self.source, self.filters, &plan)?
         else {
             return Ok(fatal(
                 plan,
@@ -431,6 +434,8 @@ pub(crate) struct KernelState {
 }
 
 impl KernelState {
+    pub(crate) fn spec(&self) -> &KernelSpec { &self.spec }
+
     fn projection(mut self, plan: LogicalPlan, transformed: bool) -> Result<Analysis> {
         let maybe_spec = self.spec.project(&plan)?;
         if let Some(spec) = maybe_spec {

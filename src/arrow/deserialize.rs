@@ -1,5 +1,5 @@
 //! Schema-driven [`RecordBatch`] builder for `Qdrant` data.
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 use datafusion::arrow::array::{
@@ -385,7 +385,7 @@ impl QdrantRecordBatchBuilder {
     pub fn new(
         schema: SchemaRef,
         point_count: usize,
-        score_field_name: Option<&str>,
+        score_field_names: Option<&BTreeSet<String>>,
     ) -> DataFusionResult<Self> {
         let field_appenders = schema
             .fields()
@@ -401,7 +401,7 @@ impl QdrantRecordBatchBuilder {
                         point_count,
                         point_count * 64,
                     )))
-                } else if score_field_name.is_some_and(|name| field.name() == name) {
+                } else if score_field_names.is_some_and(|names| names.contains(field.name())) {
                     Ok(FieldAppender::Score(Float32Builder::with_capacity(point_count)))
                 } else if let Some(width) = dense_vector_width(field) {
                     Ok(FieldAppender::DenseVector(DenseVectorRows::new(

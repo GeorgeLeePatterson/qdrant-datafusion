@@ -8,7 +8,7 @@ use datafusion::logical_expr::utils::split_conjunction_owned;
 use datafusion::logical_expr::{Expr, LogicalPlan, Operator};
 
 use super::common::count_star_like;
-use super::query::QueryKind;
+use super::query::{QueryExecution, QueryKind};
 use super::kernel::{FacetKernel, KernelSpec, QueryKernel, limit_rows, numeric_literal_f32};
 use super::source::Source;
 use super::state::{FiltersState, KernelState};
@@ -95,17 +95,18 @@ impl QueryOp {
 
     fn kernel(
         self,
-        collection: String,
+        source: Source,
         filters: FiltersState,
         plan: &LogicalPlan,
     ) -> Result<Option<KernelState>> {
         if !self.sorted {
             return Ok(None);
         }
+        let exact_filters = filters.exact(&source)?;
         Ok(Some(KernelState {
             spec: KernelSpec::Query(QueryKernel {
-                collection,
-                filters,
+                source,
+                filters: exact_filters,
                 query: self,
                 limit: limit_rows(plan)?,
             }),
@@ -121,8 +122,9 @@ impl QueryOp {
         if self.query_score_outputs.matches_column(expr) {
             return Ok(true);
         }
+        let expr = expr.clone().unalias_nested().data;
         Ok(matches!(
-            SurfaceCall::from_expr(expr)?,
+            SurfaceCall::from_expr(&expr)?,
             Some(SurfaceCall::Query(surface)) if self.query.matches_surface(&surface)
         ))
     }
@@ -139,6 +141,12 @@ impl QueryOp {
         })?;
         Ok(found)
     }
+
+    pub(crate) fn execution(&self) -> QueryExecution { self.query.execution() }
+
+    pub(crate) fn score_output_names(&self) -> BTreeSet<String> { self.query_score_outputs.names() }
+
+    pub(crate) fn score_threshold(&self) -> Option<f32> { self.score_threshold }
 
     fn query_score_threshold_expr(&self, expr: &Expr) -> Result<Option<f32>> {
         let expr = expr.clone().unalias_nested().data;
@@ -206,13 +214,13 @@ impl Op {
 
     pub(super) fn kernel(
         self,
-        collection: String,
+        source: Source,
         filters: FiltersState,
         plan: &LogicalPlan,
     ) -> Result<Option<KernelState>> {
         match self {
-            Self::Query(op) => op.kernel(collection, filters, plan),
-            Self::Facet(op) => op.kernel(collection, filters, plan),
+            Self::Query(op) => op.kernel(source, filters, plan),
+            Self::Facet(op) => op.kernel(source, filters, plan),
         }
     }
 }
@@ -252,21 +260,32 @@ impl FacetOp {
 
     pub(super) fn kernel(
         self,
-        collection: String,
+        source: Source,
         filters: FiltersState,
         plan: &LogicalPlan,
     ) -> Result<Option<KernelState>> {
         if !self.sorted {
             return Ok(None);
         }
+        let exact_filters = filters.exact(&source)?;
         Ok(Some(KernelState {
             spec: KernelSpec::Facet(FacetKernel {
-                collection,
-                filters,
+                source,
+                filters: exact_filters,
                 op: self,
                 limit: limit_rows(plan)?,
             }),
         }))
+    }
+
+    pub(crate) fn field(&self) -> &QdrantPayloadPath { &self.field }
+
+    pub(crate) fn is_key_output_name(&self, name: &str) -> bool {
+        self.key_outputs.contains_name(name)
+    }
+
+    pub(crate) fn is_count_output_name(&self, name: &str) -> bool {
+        self.count_outputs.contains_name(name)
     }
 
     fn projection_expr_supported(&self, expr: &Expr) -> bool {
@@ -288,6 +307,8 @@ impl OutputNames {
     pub(super) fn single(name: String) -> Self { Self(BTreeSet::from([name])) }
 
     fn contains_name(&self, name: &str) -> bool { self.0.contains(name) }
+
+    pub(crate) fn names(&self) -> BTreeSet<String> { self.0.clone() }
 
     fn matches_column(&self, expr: &Expr) -> bool {
         matches!(expr.clone().unalias_nested().data, Expr::Column(column) if self.contains_name(&column.name))

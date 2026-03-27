@@ -247,7 +247,7 @@ mod tests {
     use super::*;
     use crate::arrow::schema::{ID_FIELD_NAME, PAYLOAD_FIELD_NAME};
     use crate::context::QdrantSessionContext;
-    use crate::context::plan_node::{QdrantCountExec, QdrantFacetExec, QdrantQueryExec};
+    use crate::context::exec::{QdrantCountExec, QdrantFacetExec, QdrantQueryExec};
     use crate::pushdown::QdrantPayloadSchema;
     use crate::table::pushdown::QdrantPayloadOrdering;
 

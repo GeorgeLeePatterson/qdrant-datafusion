@@ -12,9 +12,13 @@ use datafusion::common::{Result, plan_err};
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::optimizer::AnalyzerRule;
 
-use self::node::StateNode;
-use self::state::{CompositeState, CoordinatedState, SourceState, State};
+use self::state::{CompositeState, CoordinatedState, SourceState};
 use self::surface::SurfaceCall;
+
+pub(crate) use self::kernel::{CountKernel, FacetKernel, KernelSpec, QueryKernel};
+pub(crate) use self::node::{STATE_NODE_NAME, StateNode};
+pub(crate) use self::query::QueryExecution;
+pub(crate) use self::state::State;
 
 
 // ============================================================================

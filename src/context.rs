@@ -1,4 +1,4 @@
-pub mod plan_node;
+pub(crate) mod exec;
 mod planner;
 
 use std::sync::Arc;
@@ -14,6 +14,7 @@ use datafusion::physical_planner::{DefaultPhysicalPlanner, ExtensionPlanner, Phy
 use datafusion::prelude::{DataFrame, SQLOptions, SessionContext};
 
 use crate::analyzer::PrototypePushdown;
+
 use crate::context::planner::QdrantExtensionPlanner;
 use crate::expr_fn::register_qdrant_functions;
 

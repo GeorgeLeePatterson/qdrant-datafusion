@@ -1,8 +1,12 @@
+use std::sync::Arc;
+
 use datafusion::common::{Result, ScalarValue, plan_err};
 use datafusion::logical_expr::{Expr, LogicalPlan};
+use qdrant_client::Qdrant;
 
 use super::op::{FacetOp, QueryOp};
-use super::state::FiltersState;
+use super::source::Source;
+use crate::pushdown::filter::QdrantFilters;
 
 #[derive(Debug, Clone)]
 pub(crate) enum KernelSpec {
@@ -35,24 +39,56 @@ impl KernelSpec {
 
 #[derive(Debug, Clone)]
 pub(crate) struct CountKernel {
-    pub(super) collection: String,
-    pub(super) filters:    FiltersState,
+    pub(super) source:  Source,
+    pub(super) filters: QdrantFilters,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct QueryKernel {
-    pub(super) collection: String,
-    pub(super) filters:    FiltersState,
-    pub(super) query:      QueryOp,
-    pub(super) limit:      u64,
+    pub(super) source:  Source,
+    pub(super) filters: QdrantFilters,
+    pub(super) query:   QueryOp,
+    pub(super) limit:   u64,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct FacetKernel {
-    pub(super) collection: String,
-    pub(super) filters:    FiltersState,
-    pub(super) op:         FacetOp,
-    pub(super) limit:      u64,
+    pub(super) source:  Source,
+    pub(super) filters: QdrantFilters,
+    pub(super) op:      FacetOp,
+    pub(super) limit:   u64,
+}
+
+impl CountKernel {
+    pub(crate) fn client(&self) -> Arc<Qdrant> { Arc::clone(self.source.client()) }
+
+    pub(crate) fn collection(&self) -> &str { self.source.collection() }
+
+    pub(crate) fn filters(&self) -> &QdrantFilters { &self.filters }
+}
+
+impl QueryKernel {
+    pub(crate) fn client(&self) -> Arc<Qdrant> { Arc::clone(self.source.client()) }
+
+    pub(crate) fn collection(&self) -> &str { self.source.collection() }
+
+    pub(crate) fn filters(&self) -> &QdrantFilters { &self.filters }
+
+    pub(crate) fn query(&self) -> &QueryOp { &self.query }
+
+    pub(crate) fn limit(&self) -> u64 { self.limit }
+}
+
+impl FacetKernel {
+    pub(crate) fn client(&self) -> Arc<Qdrant> { Arc::clone(self.source.client()) }
+
+    pub(crate) fn collection(&self) -> &str { self.source.collection() }
+
+    pub(crate) fn filters(&self) -> &QdrantFilters { &self.filters }
+
+    pub(crate) fn op(&self) -> &FacetOp { &self.op }
+
+    pub(crate) fn limit(&self) -> u64 { self.limit }
 }
 
 pub(super) fn limit_rows(plan: &LogicalPlan) -> Result<u64> {

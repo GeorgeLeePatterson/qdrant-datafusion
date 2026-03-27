@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
-use datafusion::common::plan_datafusion_err;
 use datafusion::execution::SessionState;
 use datafusion::logical_expr::{LogicalPlan, UserDefinedLogicalNode};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_planner::{ExtensionPlanner, PhysicalPlanner};
 
-use super::plan_node::{QDRANT_KERNEL_NODE_NAME, QdrantKernelNode};
+use super::exec::execution_plan_for_state_node;
+use crate::analyzer::{STATE_NODE_NAME, StateNode};
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct QdrantExtensionPlanner;
@@ -22,12 +22,12 @@ impl ExtensionPlanner for QdrantExtensionPlanner {
         _session_state: &SessionState,
     ) -> datafusion::error::Result<Option<Arc<dyn ExecutionPlan>>> {
         match node.name() {
-            QDRANT_KERNEL_NODE_NAME => {
+            STATE_NODE_NAME => {
                 let node = node
                     .as_any()
-                    .downcast_ref::<QdrantKernelNode>()
-                    .ok_or(plan_datafusion_err!("Failed to downcast QdrantKernelNode"))?;
-                Ok(Some(node.execute()))
+                    .downcast_ref::<StateNode>()
+                    .ok_or_else(|| datafusion::error::DataFusionError::Plan("Failed to downcast StateNode".to_owned()))?;
+                Ok(Some(execution_plan_for_state_node(node)?))
             }
             _ => Ok(None),
         }
