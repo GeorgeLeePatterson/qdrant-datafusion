@@ -1,35 +1,64 @@
-use datafusion::arrow::datatypes::DataType;
-use datafusion::common::{Result, ScalarValue, plan_err};
-use datafusion::logical_expr::Expr;
-use qdrant_client::qdrant::PointId;
-use qdrant_client::qdrant::point_id::PointIdOptions;
+mod context;
+mod discover;
+mod formula;
+mod fusion;
+mod nearest;
+mod nearest_with_mmr;
+mod order_by;
+mod recommend;
+mod relevance_feedback;
+mod sample;
+
+use std::collections::{BTreeSet, HashMap};
+
+use datafusion::common::{Result, ScalarValue, exec_err};
+use qdrant_client::qdrant::{
+    DenseVector, Document, Filter, PointId, PrefetchQuery, Query, QueryBatchPoints,
+    QueryPointGroups, QueryPoints, SparseVector, VectorInput, VectorsSelector,
+    WithPayloadSelector, WithVectorsSelector, with_payload_selector, with_vectors_selector,
+    vector_input,
+};
 
 use super::source::Source;
 use super::surface::QuerySurfaceCall;
-use crate::expr_fn::QdrantNearestCall;
+use crate::arrow::schema::{
+    PAYLOAD_FIELD_NAME, UNNAMED_VECTOR_FIELD_NAME, dense_vector_width, is_multi_vector_field,
+    is_sparse_vector_field,
+};
+
+pub(crate) use self::context::ContextQuery;
+pub(crate) use self::discover::DiscoverQuery;
+pub(crate) use self::formula::FormulaQuery;
+pub(crate) use self::fusion::FusionQuery;
+pub(crate) use self::nearest::NearestQuery;
+pub(crate) use self::nearest_with_mmr::NearestWithMmrQuery;
+pub(crate) use self::order_by::OrderByQuery;
+pub(crate) use self::recommend::RecommendQuery;
+pub(crate) use self::relevance_feedback::RelevanceFeedbackQuery;
+pub(crate) use self::sample::SampleQuery;
 
 #[derive(Debug, Clone)]
 pub(crate) enum QueryExecution {
     NearestDense {
-        using:  Option<String>,
+        using: Option<String>,
         vector: Vec<f32>,
     },
     NearestSparse {
-        using:   Option<String>,
+        using: Option<String>,
         indices: Vec<u32>,
-        values:  Vec<f32>,
+        values: Vec<f32>,
     },
     NearestMultiDense {
-        using:   Option<String>,
+        using: Option<String>,
         vectors: Vec<Vec<f32>>,
     },
     NearestById {
-        using:    Option<String>,
+        using: Option<String>,
         point_id: PointId,
     },
     NearestDocument {
         using: Option<String>,
-        text:  String,
+        text: String,
         model: Option<String>,
     },
     NearestImage {
@@ -38,9 +67,9 @@ pub(crate) enum QueryExecution {
         model: Option<String>,
     },
     NearestObject {
-        using:  Option<String>,
+        using: Option<String>,
         object: Vec<(String, ScalarValue)>,
-        model:  Option<String>,
+        model: Option<String>,
     },
     Recommend(RecommendQuery),
     Discover(DiscoverQuery),
@@ -51,6 +80,340 @@ pub(crate) enum QueryExecution {
     Formula(FormulaQuery),
     NearestWithMmr(NearestWithMmrQuery),
     RelevanceFeedback(RelevanceFeedbackQuery),
+}
+
+impl QueryExecution {
+    fn into_query_and_using(self) -> Result<(Query, Option<String>)> {
+        match self {
+            Self::NearestDense { using, vector } => Ok((
+                Query {
+                    variant: Some(qdrant_client::qdrant::query::Variant::Nearest(VectorInput {
+                        variant: Some(vector_input::Variant::Dense(DenseVector { data: vector })),
+                    })),
+                },
+                using,
+            )),
+            Self::NearestSparse { using, indices, values } => Ok((
+                Query {
+                    variant: Some(qdrant_client::qdrant::query::Variant::Nearest(VectorInput {
+                        variant: Some(vector_input::Variant::Sparse(SparseVector {
+                            values,
+                            indices,
+                        })),
+                    })),
+                },
+                using,
+            )),
+            Self::NearestMultiDense { .. } => {
+                exec_err!("multidense nearest execution is not yet implemented")
+            }
+            Self::NearestById { using, point_id } => Ok((
+                Query {
+                    variant: Some(qdrant_client::qdrant::query::Variant::Nearest(VectorInput {
+                        variant: Some(vector_input::Variant::Id(point_id)),
+                    })),
+                },
+                using,
+            )),
+            Self::NearestDocument { using, text, model } => Ok((
+                Query {
+                    variant: Some(qdrant_client::qdrant::query::Variant::Nearest(VectorInput {
+                        variant: Some(vector_input::Variant::Document(Document {
+                            text,
+                            model: model.unwrap_or_default(),
+                            options: HashMap::new(),
+                        })),
+                    })),
+                },
+                using,
+            )),
+            Self::NearestImage { .. } => exec_err!("image nearest execution is not yet implemented"),
+            Self::NearestObject { .. } => exec_err!("object nearest execution is not yet implemented"),
+            Self::Recommend(_) => exec_err!("recommend execution is not yet implemented"),
+            Self::Discover(_) => exec_err!("discover execution is not yet implemented"),
+            Self::Context(_) => exec_err!("context execution is not yet implemented"),
+            Self::OrderBy(_) => exec_err!("order-by execution is not yet implemented"),
+            Self::Fusion(_) => exec_err!("fusion execution is not yet implemented"),
+            Self::Sample(_) => exec_err!("sample execution is not yet implemented"),
+            Self::Formula(_) => exec_err!("formula execution is not yet implemented"),
+            Self::NearestWithMmr(_) => exec_err!("nearest-with-mmr execution is not yet implemented"),
+            Self::RelevanceFeedback(_) => exec_err!("relevance-feedback execution is not yet implemented"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum QueryVectorsSelector {
+    None,
+    All,
+    Named(Vec<String>),
+}
+
+impl QueryVectorsSelector {
+    pub(crate) fn from_schema(schema: &datafusion::arrow::datatypes::SchemaRef) -> Self {
+        let vector_names = schema
+            .fields()
+            .iter()
+            .filter(|field| {
+                dense_vector_width(field).is_some()
+                    || is_multi_vector_field(field)
+                    || is_sparse_vector_field(field)
+            })
+            .map(|field| field.name().clone())
+            .collect::<Vec<_>>();
+        if vector_names.is_empty() {
+            Self::None
+        } else if vector_names.len() == 1 && vector_names[0] == UNNAMED_VECTOR_FIELD_NAME {
+            Self::All
+        } else {
+            Self::Named(vector_names)
+        }
+    }
+
+    fn into_proto(self) -> WithVectorsSelector {
+        let selector_options = match self {
+            Self::None => with_vectors_selector::SelectorOptions::Enable(false),
+            Self::All => with_vectors_selector::SelectorOptions::Enable(true),
+            Self::Named(names) => {
+                with_vectors_selector::SelectorOptions::Include(VectorsSelector { names })
+            }
+        };
+        WithVectorsSelector { selector_options: Some(selector_options) }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct QueryBranchPlan {
+    pub(crate) prefetch: Vec<QueryBranchPlan>,
+    pub(crate) execution: Option<QueryExecution>,
+    pub(crate) filter: Option<Filter>,
+    pub(crate) score_threshold: Option<f32>,
+    pub(crate) limit: Option<u64>,
+}
+
+impl QueryBranchPlan {
+    pub(crate) fn single(
+        execution: QueryExecution,
+        filter: Option<Filter>,
+        score_threshold: Option<f32>,
+        limit: u64,
+    ) -> Self {
+        Self {
+            prefetch: vec![],
+            execution: Some(execution),
+            filter,
+            score_threshold,
+            limit: Some(limit),
+        }
+    }
+
+    fn into_prefetch_proto(self) -> Result<PrefetchQuery> {
+        let (query, using) = match self.execution {
+            Some(execution) => {
+                let (query, using) = execution.into_query_and_using()?;
+                (Some(query), using)
+            }
+            None => (None, None),
+        };
+        Ok(PrefetchQuery {
+            prefetch: self
+                .prefetch
+                .into_iter()
+                .map(Self::into_prefetch_proto)
+                .collect::<Result<Vec<_>>>()?,
+            query,
+            using,
+            filter: self.filter,
+            params: None,
+            score_threshold: self.score_threshold,
+            limit: self.limit,
+            lookup_from: None,
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct QueryPointsRequestPlan {
+    collection: String,
+    branch: QueryBranchPlan,
+    offset: Option<u64>,
+    payload: bool,
+    vectors: QueryVectorsSelector,
+}
+
+impl QueryPointsRequestPlan {
+    pub(crate) fn new(
+        collection: String,
+        branch: QueryBranchPlan,
+        output_schema: &datafusion::arrow::datatypes::SchemaRef,
+    ) -> Self {
+        let payload = output_schema.fields().iter().any(|field| field.name() == PAYLOAD_FIELD_NAME);
+        let vectors = QueryVectorsSelector::from_schema(output_schema);
+        Self { collection, branch, offset: None, payload, vectors }
+    }
+
+    fn into_proto(self) -> Result<QueryPoints> {
+        let (query, using) = match self.branch.execution {
+            Some(execution) => {
+                let (query, using) = execution.into_query_and_using()?;
+                (Some(query), using)
+            }
+            None => (None, None),
+        };
+        Ok(QueryPoints {
+            collection_name: self.collection,
+            prefetch: self
+                .branch
+                .prefetch
+                .into_iter()
+                .map(QueryBranchPlan::into_prefetch_proto)
+                .collect::<Result<Vec<_>>>()?,
+            query,
+            using,
+            filter: self.branch.filter,
+            params: None,
+            score_threshold: self.branch.score_threshold,
+            limit: self.branch.limit,
+            offset: self.offset,
+            with_vectors: Some(self.vectors.into_proto()),
+            with_payload: Some(WithPayloadSelector {
+                selector_options: Some(with_payload_selector::SelectorOptions::Enable(self.payload)),
+            }),
+            read_consistency: None,
+            shard_key_selector: None,
+            lookup_from: None,
+            timeout: None,
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct QueryBatchRequestPlan {
+    collection: String,
+    queries: Vec<QueryPointsRequestPlan>,
+}
+
+impl QueryBatchRequestPlan {
+    pub(crate) fn new(collection: String, queries: Vec<QueryPointsRequestPlan>) -> Self {
+        Self { collection, queries }
+    }
+
+    fn into_proto(self) -> Result<QueryBatchPoints> {
+        Ok(QueryBatchPoints {
+            collection_name: self.collection,
+            query_points: self
+                .queries
+                .into_iter()
+                .map(QueryPointsRequestPlan::into_proto)
+                .collect::<Result<Vec<_>>>()?,
+            read_consistency: None,
+            timeout: None,
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct QueryGroupsRequestPlan {
+    collection: String,
+    branch: QueryBranchPlan,
+    payload: bool,
+    vectors: QueryVectorsSelector,
+    group_by: String,
+    group_size: u64,
+}
+
+impl QueryGroupsRequestPlan {
+    pub(crate) fn new(
+        collection: String,
+        branch: QueryBranchPlan,
+        output_schema: &datafusion::arrow::datatypes::SchemaRef,
+        group_by: String,
+        group_size: u64,
+    ) -> Self {
+        let payload = output_schema.fields().iter().any(|field| field.name() == PAYLOAD_FIELD_NAME);
+        let vectors = QueryVectorsSelector::from_schema(output_schema);
+        Self { collection, branch, payload, vectors, group_by, group_size }
+    }
+
+    fn into_proto(self) -> Result<QueryPointGroups> {
+        let (query, using) = match self.branch.execution {
+            Some(execution) => {
+                let (query, using) = execution.into_query_and_using()?;
+                (Some(query), using)
+            }
+            None => (None, None),
+        };
+        Ok(QueryPointGroups {
+            collection_name: self.collection,
+            prefetch: self
+                .branch
+                .prefetch
+                .into_iter()
+                .map(QueryBranchPlan::into_prefetch_proto)
+                .collect::<Result<Vec<_>>>()?,
+            query,
+            using,
+            filter: self.branch.filter,
+            params: None,
+            score_threshold: self.branch.score_threshold,
+            with_payload: Some(WithPayloadSelector {
+                selector_options: Some(with_payload_selector::SelectorOptions::Enable(self.payload)),
+            }),
+            with_vectors: Some(self.vectors.into_proto()),
+            lookup_from: None,
+            limit: self.branch.limit,
+            group_size: Some(self.group_size),
+            group_by: self.group_by,
+            read_consistency: None,
+            with_lookup: None,
+            timeout: None,
+            shard_key_selector: None,
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum QueryRequest {
+    Points(QueryPoints),
+    Batch(QueryBatchPoints),
+    Groups(QueryPointGroups),
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct QueryRequestPlan {
+    request: QueryRequest,
+    score_output_names: BTreeSet<String>,
+}
+
+impl QueryRequestPlan {
+    pub(crate) fn points(
+        request: QueryPointsRequestPlan,
+        score_output_names: BTreeSet<String>,
+    ) -> Result<Self> {
+        Ok(Self { request: QueryRequest::Points(request.into_proto()?), score_output_names })
+    }
+
+    pub(crate) fn batch(
+        request: QueryBatchRequestPlan,
+        score_output_names: BTreeSet<String>,
+    ) -> Result<Self> {
+        Ok(Self { request: QueryRequest::Batch(request.into_proto()?), score_output_names })
+    }
+
+    pub(crate) fn groups(
+        request: QueryGroupsRequestPlan,
+        score_output_names: BTreeSet<String>,
+    ) -> Result<Self> {
+        Ok(Self { request: QueryRequest::Groups(request.into_proto()?), score_output_names })
+    }
+
+    pub(crate) fn request(&self) -> &QueryRequest {
+        &self.request
+    }
+
+    pub(crate) fn score_output_names(&self) -> &BTreeSet<String> {
+        &self.score_output_names
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -120,40 +483,7 @@ impl QueryKind {
 
     pub(crate) fn execution(&self) -> QueryExecution {
         match self {
-            Self::Nearest(query) => match &query.input {
-                NearestInput::Dense(input) => QueryExecution::NearestDense {
-                    using:  query.using.clone(),
-                    vector: input.vector.clone(),
-                },
-                NearestInput::Sparse(input) => QueryExecution::NearestSparse {
-                    using:   query.using.clone(),
-                    indices: input.indices.clone(),
-                    values:  input.values.clone(),
-                },
-                NearestInput::MultiDense(input) => QueryExecution::NearestMultiDense {
-                    using:   query.using.clone(),
-                    vectors: input.vectors.clone(),
-                },
-                NearestInput::Id(input) => QueryExecution::NearestById {
-                    using:    query.using.clone(),
-                    point_id: input.point_id.clone(),
-                },
-                NearestInput::Document(input) => QueryExecution::NearestDocument {
-                    using: query.using.clone(),
-                    text:  input.text.clone(),
-                    model: input.model.clone(),
-                },
-                NearestInput::Image(input) => QueryExecution::NearestImage {
-                    using: query.using.clone(),
-                    image: input.image.clone(),
-                    model: input.model.clone(),
-                },
-                NearestInput::Object(input) => QueryExecution::NearestObject {
-                    using:  query.using.clone(),
-                    object: input.object.clone(),
-                    model:  input.model.clone(),
-                },
-            },
+            Self::Nearest(query) => query.execution(),
             Self::Recommend(query) => QueryExecution::Recommend(query.clone()),
             Self::Discover(query) => QueryExecution::Discover(query.clone()),
             Self::Context(query) => QueryExecution::Context(query.clone()),
@@ -165,413 +495,4 @@ impl QueryKind {
             Self::RelevanceFeedback(query) => QueryExecution::RelevanceFeedback(query.clone()),
         }
     }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct NearestQuery {
-    using: Option<String>,
-    input: NearestInput,
-}
-
-impl NearestQuery {
-    pub(super) fn from_expr(expr: &Expr) -> Result<Option<Self>> {
-        QdrantNearestCall::from_expr(expr).map(|call| call.map(Into::into))
-    }
-
-    pub(super) fn same_semantics(&self, other: &Self) -> bool {
-        self.using == other.using && self.input.same_semantics(&other.input)
-    }
-
-    fn validate_on_source(&self, source: &Source) -> Result<()> {
-        let Some(using) = self.using.as_deref() else {
-            return Ok(());
-        };
-        self.input.validate_on_source(source, using)
-    }
-}
-
-impl From<QdrantNearestCall> for NearestQuery {
-    fn from(call: QdrantNearestCall) -> Self {
-        Self {
-            using: Some(call.vector_field),
-            input: NearestInput::Dense(DenseNearestInput { vector: call.vector }),
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) enum NearestInput {
-    Dense(DenseNearestInput),
-    Sparse(SparseNearestInput),
-    MultiDense(MultiDenseNearestInput),
-    Id(IdNearestInput),
-    Document(DocumentNearestInput),
-    Image(ImageNearestInput),
-    Object(ObjectNearestInput),
-}
-
-impl NearestInput {
-    fn same_semantics(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Self::Dense(lhs), Self::Dense(rhs)) => lhs.same_semantics(rhs),
-            (Self::Sparse(lhs), Self::Sparse(rhs)) => lhs.same_semantics(rhs),
-            (Self::MultiDense(lhs), Self::MultiDense(rhs)) => lhs.same_semantics(rhs),
-            (Self::Id(lhs), Self::Id(rhs)) => lhs.same_semantics(rhs),
-            (Self::Document(lhs), Self::Document(rhs)) => lhs.same_semantics(rhs),
-            (Self::Image(lhs), Self::Image(rhs)) => lhs.same_semantics(rhs),
-            (Self::Object(lhs), Self::Object(rhs)) => lhs.same_semantics(rhs),
-            _ => false,
-        }
-    }
-
-    fn validate_on_source(&self, source: &Source, using: &str) -> Result<()> {
-        match self {
-            Self::Dense(input) => input.validate_on_source(source, using),
-            Self::Sparse(input) => input.validate_on_source(source, using),
-            Self::MultiDense(input) => input.validate_on_source(source, using),
-            Self::Id(input) => input.validate_on_source(source, using),
-            Self::Document(input) => input.validate_on_source(source, using),
-            Self::Image(input) => input.validate_on_source(source, using),
-            Self::Object(input) => input.validate_on_source(source, using),
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct DenseNearestInput {
-    vector: Vec<f32>,
-}
-
-impl DenseNearestInput {
-    fn same_semantics(&self, other: &Self) -> bool {
-        self.vector
-            .iter()
-            .map(|value| value.to_bits())
-            .eq(other.vector.iter().map(|value| value.to_bits()))
-    }
-
-    fn validate_on_source(&self, source: &Source, using: &str) -> Result<()> {
-        match QueryVectorBinding::from_source(source, using)? {
-            QueryVectorBinding::DenseFixed { width } => {
-                if width != self.vector.len() {
-                    return plan_err!("query vector width does not match source vector width");
-                }
-                Ok(())
-            }
-            QueryVectorBinding::DenseVariable => Ok(()),
-            QueryVectorBinding::Sparse => {
-                plan_err!("dense query input requires a dense vector binding")
-            }
-            QueryVectorBinding::MultiDense => {
-                plan_err!("dense query input requires a single dense vector binding")
-            }
-            QueryVectorBinding::Document => {
-                plan_err!("dense query input does not bind to a document inference field")
-            }
-            QueryVectorBinding::Image => {
-                plan_err!("dense query input does not bind to an image inference field")
-            }
-            QueryVectorBinding::Object => {
-                plan_err!("dense query input does not bind to an object inference field")
-            }
-            QueryVectorBinding::Unsupported(data_type) => plan_err!(
-                "dense query input does not bind to source field '{}' of type {:?}",
-                using,
-                data_type
-            ),
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct SparseNearestInput {
-    indices: Vec<u32>,
-    values:  Vec<f32>,
-}
-
-impl SparseNearestInput {
-    fn same_semantics(&self, other: &Self) -> bool {
-        self.indices == other.indices
-            && self
-                .values
-                .iter()
-                .map(|value| value.to_bits())
-                .eq(other.values.iter().map(|value| value.to_bits()))
-    }
-
-    fn validate_on_source(&self, source: &Source, using: &str) -> Result<()> {
-        if self.indices.len() != self.values.len() {
-            return plan_err!("sparse query input requires matching index and value lengths");
-        }
-        match QueryVectorBinding::from_source(source, using)? {
-            QueryVectorBinding::Sparse => Ok(()),
-            QueryVectorBinding::DenseFixed { .. } | QueryVectorBinding::DenseVariable => {
-                plan_err!("sparse query input requires a sparse vector binding")
-            }
-            QueryVectorBinding::MultiDense => {
-                plan_err!("sparse query input does not bind to a multivector field")
-            }
-            QueryVectorBinding::Document => {
-                plan_err!("sparse query input does not bind to a document inference field")
-            }
-            QueryVectorBinding::Image => {
-                plan_err!("sparse query input does not bind to an image inference field")
-            }
-            QueryVectorBinding::Object => {
-                plan_err!("sparse query input does not bind to an object inference field")
-            }
-            QueryVectorBinding::Unsupported(data_type) => plan_err!(
-                "sparse query input does not bind to source field '{}' of type {:?}",
-                using,
-                data_type
-            ),
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct MultiDenseNearestInput {
-    vectors: Vec<Vec<f32>>,
-}
-
-impl MultiDenseNearestInput {
-    fn same_semantics(&self, other: &Self) -> bool {
-        self.vectors.len() == other.vectors.len()
-            && self.vectors.iter().zip(&other.vectors).all(|(lhs, rhs)| {
-                lhs.iter().map(|value| value.to_bits()).eq(rhs.iter().map(|value| value.to_bits()))
-            })
-    }
-
-    fn validate_on_source(&self, source: &Source, using: &str) -> Result<()> {
-        match QueryVectorBinding::from_source(source, using)? {
-            QueryVectorBinding::MultiDense => Ok(()),
-            QueryVectorBinding::DenseFixed { .. }
-            | QueryVectorBinding::DenseVariable
-            | QueryVectorBinding::Sparse => {
-                plan_err!("multivector query input requires a multivector binding")
-            }
-            QueryVectorBinding::Document => {
-                plan_err!("multivector query input does not bind to a document inference field")
-            }
-            QueryVectorBinding::Image => {
-                plan_err!("multivector query input does not bind to an image inference field")
-            }
-            QueryVectorBinding::Object => {
-                plan_err!("multivector query input does not bind to an object inference field")
-            }
-            QueryVectorBinding::Unsupported(data_type) => plan_err!(
-                "multivector query input does not bind to source field '{}' of type {:?}",
-                using,
-                data_type
-            ),
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct IdNearestInput {
-    point_id: PointId,
-}
-
-impl IdNearestInput {
-    fn same_semantics(&self, other: &Self) -> bool {
-        match (&self.point_id.point_id_options, &other.point_id.point_id_options) {
-            (Some(PointIdOptions::Num(lhs)), Some(PointIdOptions::Num(rhs))) => lhs == rhs,
-            (Some(PointIdOptions::Uuid(lhs)), Some(PointIdOptions::Uuid(rhs))) => lhs == rhs,
-            (None, None) => true,
-            _ => false,
-        }
-    }
-
-    fn validate_on_source(&self, _source: &Source, _using: &str) -> Result<()> { Ok(()) }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct DocumentNearestInput {
-    text:  String,
-    model: Option<String>,
-}
-
-impl DocumentNearestInput {
-    fn same_semantics(&self, other: &Self) -> bool {
-        self.text == other.text && self.model == other.model
-    }
-
-    fn validate_on_source(&self, _source: &Source, _using: &str) -> Result<()> { Ok(()) }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct ImageNearestInput {
-    image: Vec<u8>,
-    model: Option<String>,
-}
-
-impl ImageNearestInput {
-    fn same_semantics(&self, other: &Self) -> bool {
-        self.image == other.image && self.model == other.model
-    }
-
-    fn validate_on_source(&self, _source: &Source, _using: &str) -> Result<()> { Ok(()) }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct ObjectNearestInput {
-    object: Vec<(String, ScalarValue)>,
-    model:  Option<String>,
-}
-
-impl ObjectNearestInput {
-    fn same_semantics(&self, other: &Self) -> bool {
-        self.object == other.object && self.model == other.model
-    }
-
-    fn validate_on_source(&self, _source: &Source, _using: &str) -> Result<()> { Ok(()) }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) enum QueryVectorBinding {
-    DenseFixed { width: usize },
-    DenseVariable,
-    Sparse,
-    MultiDense,
-    Document,
-    Image,
-    Object,
-    Unsupported(DataType),
-}
-
-impl QueryVectorBinding {
-    fn from_source(source: &Source, using: &str) -> Result<Self> {
-        let field: &datafusion::arrow::datatypes::Field = match source.schema.field_with_name(using)
-        {
-            Ok(field) => field,
-            Err(_) => return plan_err!("query vector field '{}' not found", using),
-        };
-        Ok(Self::from_data_type(field.data_type()))
-    }
-
-    fn from_data_type(data_type: &DataType) -> Self {
-        match data_type {
-            DataType::FixedSizeList(field, width)
-                if matches!(
-                    field.data_type(),
-                    DataType::Float16 | DataType::Float32 | DataType::Float64
-                ) =>
-            {
-                Self::DenseFixed { width: usize::try_from(*width).unwrap_or_default() }
-            }
-            DataType::List(field) | DataType::LargeList(field)
-                if matches!(
-                    field.data_type(),
-                    DataType::Float16 | DataType::Float32 | DataType::Float64
-                ) =>
-            {
-                Self::DenseVariable
-            }
-            DataType::List(field) | DataType::LargeList(field)
-                if matches!(
-                    field.data_type(),
-                    DataType::FixedSizeList(_, _) | DataType::List(_) | DataType::LargeList(_)
-                ) =>
-            {
-                Self::MultiDense
-            }
-            DataType::List(field) | DataType::LargeList(field)
-                if matches!(field.data_type(), DataType::Struct(_)) =>
-            {
-                Self::Sparse
-            }
-            DataType::Struct(fields)
-                if fields.iter().any(|field| field.name() == "indices")
-                    && fields.iter().any(|field| field.name() == "values") =>
-            {
-                Self::Sparse
-            }
-            DataType::Utf8 | DataType::LargeUtf8 => Self::Document,
-            DataType::Binary | DataType::LargeBinary => Self::Image,
-            DataType::Struct(_) => Self::Object,
-            other => Self::Unsupported(other.clone()),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Default)]
-pub(crate) struct RecommendQuery;
-
-impl RecommendQuery {
-    pub(super) fn same_semantics(&self, _other: &Self) -> bool { true }
-
-    fn validate_on_source(&self, _source: &Source) -> Result<()> { Ok(()) }
-}
-
-#[derive(Debug, Clone, Default)]
-pub(crate) struct DiscoverQuery;
-
-impl DiscoverQuery {
-    pub(super) fn same_semantics(&self, _other: &Self) -> bool { true }
-
-    fn validate_on_source(&self, _source: &Source) -> Result<()> { Ok(()) }
-}
-
-#[derive(Debug, Clone, Default)]
-pub(crate) struct ContextQuery;
-
-impl ContextQuery {
-    pub(super) fn same_semantics(&self, _other: &Self) -> bool { true }
-
-    fn validate_on_source(&self, _source: &Source) -> Result<()> { Ok(()) }
-}
-
-#[derive(Debug, Clone, Default)]
-pub(crate) struct OrderByQuery;
-
-impl OrderByQuery {
-    pub(super) fn same_semantics(&self, _other: &Self) -> bool { true }
-
-    fn validate_on_source(&self, _source: &Source) -> Result<()> { Ok(()) }
-}
-
-#[derive(Debug, Clone, Default)]
-pub(crate) struct FusionQuery;
-
-impl FusionQuery {
-    pub(super) fn same_semantics(&self, _other: &Self) -> bool { true }
-
-    fn validate_on_source(&self, _source: &Source) -> Result<()> { Ok(()) }
-}
-
-#[derive(Debug, Clone, Default)]
-pub(crate) struct SampleQuery;
-
-impl SampleQuery {
-    pub(super) fn same_semantics(&self, _other: &Self) -> bool { true }
-
-    fn validate_on_source(&self, _source: &Source) -> Result<()> { Ok(()) }
-}
-
-#[derive(Debug, Clone, Default)]
-pub(crate) struct FormulaQuery;
-
-impl FormulaQuery {
-    pub(super) fn same_semantics(&self, _other: &Self) -> bool { true }
-
-    fn validate_on_source(&self, _source: &Source) -> Result<()> { Ok(()) }
-}
-
-#[derive(Debug, Clone, Default)]
-pub(crate) struct NearestWithMmrQuery;
-
-impl NearestWithMmrQuery {
-    pub(super) fn same_semantics(&self, _other: &Self) -> bool { true }
-
-    fn validate_on_source(&self, _source: &Source) -> Result<()> { Ok(()) }
-}
-
-#[derive(Debug, Clone, Default)]
-pub(crate) struct RelevanceFeedbackQuery;
-
-impl RelevanceFeedbackQuery {
-    pub(super) fn same_semantics(&self, _other: &Self) -> bool { true }
-
-    fn validate_on_source(&self, _source: &Source) -> Result<()> { Ok(()) }
 }

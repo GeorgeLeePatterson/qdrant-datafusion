@@ -247,7 +247,9 @@ mod tests {
     use super::*;
     use crate::arrow::schema::{ID_FIELD_NAME, PAYLOAD_FIELD_NAME};
     use crate::context::QdrantSessionContext;
-    use crate::context::exec::{QdrantCountExec, QdrantFacetExec, QdrantQueryExec};
+    use crate::context::exec::{
+        QdrantCountExec, QdrantFacetExec, QdrantQueryBatchExec, QdrantQueryExec,
+    };
     use crate::pushdown::QdrantPayloadSchema;
     use crate::table::pushdown::QdrantPayloadOrdering;
 
@@ -372,6 +374,20 @@ mod tests {
             return qdrant_query(cooperative.input());
         }
         panic!("expected qdrant query exec in plan:\n{}", displayable(plan.as_ref()).indent(true));
+    }
+
+    fn qdrant_query_batch(plan: &Arc<dyn ExecutionPlan>) -> &QdrantQueryBatchExec {
+        if let Some(query) = plan.as_any().downcast_ref::<QdrantQueryBatchExec>() {
+            return query;
+        }
+        if let Some(cooperative) = plan.as_any().downcast_ref::<CooperativeExec>() {
+            return qdrant_query_batch(cooperative.input());
+        }
+        panic!(
+            "expected qdrant query batch exec in plan:
+{}",
+            displayable(plan.as_ref()).indent(true)
+        );
     }
 
     #[test]
@@ -1092,6 +1108,41 @@ mod tests {
         let _query = qdrant_query(&plan);
 
         assert!(display.contains("QdrantQueryExec"), "{display}");
+    }
+
+    #[test]
+    fn physical_plan_uses_qdrant_query_batch_exec_for_union_all_of_nearest_queries() {
+        let provider = test_provider(Schema::new(vec![
+            Field::new(ID_FIELD_NAME, DataType::Utf8, false),
+            Field::new(PAYLOAD_FIELD_NAME, DataType::Utf8, true),
+            Field::new(
+                "embedding",
+                DataType::new_fixed_size_list(DataType::Float32, 2, false),
+                true,
+            ),
+        ]));
+        let ctx = QdrantSessionContext::from(SessionContext::new());
+        drop(
+            ctx.session_context()
+                .register_table("vectors", Arc::new(provider))
+                .expect("register table"),
+        );
+        let dataframe = ctx
+            .sql(
+                "SELECT * FROM (SELECT id, payload, embedding, qdrant_nearest_score(embedding, 1.0, 0.0) AS score FROM vectors ORDER BY score DESC LIMIT 2) a UNION ALL SELECT * FROM (SELECT id, payload, embedding, qdrant_nearest_score(embedding, 0.0, 1.0) AS score FROM vectors ORDER BY score DESC LIMIT 2) b",
+            )
+            .now_or_never()
+            .expect("sql future is ready")
+            .expect("dataframe");
+        let plan = dataframe
+            .create_physical_plan()
+            .now_or_never()
+            .expect("plan future is ready")
+            .expect("physical plan");
+        let display = displayable(plan.as_ref()).indent(true).to_string();
+        let _query = qdrant_query_batch(&plan);
+
+        assert!(display.contains("QdrantQueryBatchExec"), "{display}");
     }
 
     #[test]

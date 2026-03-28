@@ -1,25 +1,26 @@
 mod common;
+mod kernel;
 mod node;
 mod op;
 mod query;
 mod source;
 mod state;
 mod surface;
-mod kernel;
 
 use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::common::{Result, plan_err};
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::optimizer::AnalyzerRule;
 
-use self::state::{CompositeState, CoordinatedState, SourceState};
+use self::state::{CompositeState, SourceState};
 use self::surface::SurfaceCall;
 
-pub(crate) use self::kernel::{CountKernel, FacetKernel, KernelSpec, QueryKernel};
-pub(crate) use self::node::{STATE_NODE_NAME, StateNode};
-pub(crate) use self::query::QueryExecution;
+pub(crate) use self::kernel::{
+    CountKernel, FacetKernel, KernelSpec, QueryBatchKernel, QueryGroupsKernel, QueryKernel,
+};
+pub(crate) use self::node::{KERNEL_NODE_NAME, KernelNode};
+pub(crate) use self::query::QueryRequest;
 pub(crate) use self::state::State;
-
 
 // ============================================================================
 // Analyzer
@@ -37,11 +38,13 @@ impl AnalyzerRule for PrototypePushdown {
         analyze_root(plan).map(|analysis| analysis.transformed.data)
     }
 
-    fn name(&self) -> &'static str { "prototype_qdrant_pushdown" }
+    fn name(&self) -> &'static str {
+        "prototype_qdrant_pushdown"
+    }
 }
 
 struct Analysis {
-    state:       State,
+    state: State,
     transformed: Transformed<LogicalPlan>,
 }
 
@@ -60,7 +63,9 @@ impl Analysis {
     }
 }
 
-fn analyze_root(plan: LogicalPlan) -> Result<Analysis> { analyze_plan(plan)?.finish_root() }
+fn analyze_root(plan: LogicalPlan) -> Result<Analysis> {
+    analyze_plan(plan)?.finish_root()
+}
 
 fn analyze_plan(plan: LogicalPlan) -> Result<Analysis> {
     let with_subqueries = plan
@@ -93,9 +98,9 @@ fn analyze_leaf(plan: LogicalPlan, transformed: bool) -> Result<Analysis> {
         return Ok(Analysis::new(plan, State::local(), transformed));
     }
     if let LogicalPlan::Extension(extension) = &plan
-        && let Some(node) = extension.node.as_any().downcast_ref::<StateNode>()
+        && let Some(node) = extension.node.as_any().downcast_ref::<KernelNode>()
     {
-        let state = node.state.clone();
+        let state = State::Kernel(state::KernelState::new(node.spec().clone()));
         return Ok(Analysis::new(plan, state, transformed));
     }
     Ok(Analysis::new(plan, State::local(), transformed))
@@ -132,9 +137,7 @@ fn analyze_multi(plan: LogicalPlan, children: Vec<State>, transformed: bool) -> 
     if children.iter().any(State::requires_composite_coordination) {
         return Ok(Analysis::new(
             plan,
-            State::Composite(CompositeState::Coordinated(CoordinatedState {
-                branches: children.len(),
-            })),
+            State::Composite(CompositeState::coordinated(children.len())),
             transformed,
         ));
     }

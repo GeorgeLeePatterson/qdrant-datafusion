@@ -1,28 +1,26 @@
 use std::any::Any;
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use datafusion::arrow::array::{ArrayRef, Int64Array, RecordBatch, StringArray};
 use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::common::{Result, exec_err, plan_err};
 use datafusion::common::tree_node::TreeNodeRecursion;
+use datafusion::common::{Result, exec_err};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::execution_plan::Boundedness;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
 use futures_util::stream;
-use qdrant_client::qdrant::{CountPointsBuilder, FacetCountsBuilder, QueryPointsBuilder, facet_value};
+use qdrant_client::qdrant::{CountPointsBuilder, FacetCountsBuilder, ScoredPoint, facet_value};
 
-use crate::analyzer::{CountKernel, FacetKernel, QueryExecution, QueryKernel, STATE_NODE_NAME, State, StateNode};
+use crate::analyzer::{
+    CountKernel, FacetKernel, KernelNode, QueryBatchKernel, QueryGroupsKernel, QueryKernel,
+    QueryRequest,
+};
 use crate::arrow::deserialize::QdrantRecordBatchBuilder;
 
-pub(crate) fn execution_plan_for_state_node(node: &StateNode) -> Result<Arc<dyn ExecutionPlan>> {
-    match node.state() {
-        State::Kernel(kernel) => execution_plan_for_kernel(kernel.spec(), Arc::clone(node.output_schema().inner())),
-        State::Processing(_) => plan_err!("{STATE_NODE_NAME} reached physical planning with unfinished processing state"),
-        State::Local(_) | State::Source(_) | State::Composite(_) | State::Fatal(_) => {
-            plan_err!("{STATE_NODE_NAME} reached physical planning with non-executable state")
-        }
-    }
+pub(crate) fn execution_plan_for_kernel_node(node: &KernelNode) -> Result<Arc<dyn ExecutionPlan>> {
+    execution_plan_for_kernel(node.spec(), Arc::clone(node.output_schema().inner()))
 }
 
 fn execution_plan_for_kernel(
@@ -38,6 +36,12 @@ fn execution_plan_for_kernel(
         }
         crate::analyzer::KernelSpec::Query(spec) => {
             Ok(Arc::new(QdrantQueryExec::new(spec.clone(), schema)))
+        }
+        crate::analyzer::KernelSpec::QueryBatch(spec) => {
+            Ok(Arc::new(QdrantQueryBatchExec::new(spec.clone(), schema)))
+        }
+        crate::analyzer::KernelSpec::QueryGroups(spec) => {
+            Ok(Arc::new(QdrantQueryGroupsExec::new(spec.clone(), schema)))
         }
     }
 }
@@ -63,39 +67,56 @@ pub(crate) struct QdrantQueryExec {
     properties: Arc<PlanProperties>,
 }
 
+#[derive(Clone)]
+pub(crate) struct QdrantQueryBatchExec {
+    spec: QueryBatchKernel,
+    schema: SchemaRef,
+    properties: Arc<PlanProperties>,
+}
+
+#[derive(Clone)]
+pub(crate) struct QdrantQueryGroupsExec {
+    spec: QueryGroupsKernel,
+    schema: SchemaRef,
+    properties: Arc<PlanProperties>,
+}
+
+fn leaf_properties(schema: &SchemaRef) -> Arc<PlanProperties> {
+    Arc::new(PlanProperties::new(
+        datafusion::physical_expr::EquivalenceProperties::new(Arc::clone(schema)),
+        datafusion::physical_plan::Partitioning::UnknownPartitioning(1),
+        datafusion::physical_plan::execution_plan::EmissionType::Final,
+        Boundedness::Bounded,
+    ))
+}
+
 impl QdrantCountExec {
     fn new(spec: CountKernel, schema: SchemaRef) -> Self {
-        let properties = PlanProperties::new(
-            datafusion::physical_expr::EquivalenceProperties::new(Arc::clone(&schema)),
-            datafusion::physical_plan::Partitioning::UnknownPartitioning(1),
-            datafusion::physical_plan::execution_plan::EmissionType::Final,
-            Boundedness::Bounded,
-        );
-        Self { spec, schema, properties: Arc::new(properties) }
+        Self { spec, schema: Arc::clone(&schema), properties: leaf_properties(&schema) }
     }
 }
 
 impl QdrantFacetExec {
     fn new(spec: FacetKernel, schema: SchemaRef) -> Self {
-        let properties = PlanProperties::new(
-            datafusion::physical_expr::EquivalenceProperties::new(Arc::clone(&schema)),
-            datafusion::physical_plan::Partitioning::UnknownPartitioning(1),
-            datafusion::physical_plan::execution_plan::EmissionType::Final,
-            Boundedness::Bounded,
-        );
-        Self { spec, schema, properties: Arc::new(properties) }
+        Self { spec, schema: Arc::clone(&schema), properties: leaf_properties(&schema) }
     }
 }
 
 impl QdrantQueryExec {
     fn new(spec: QueryKernel, schema: SchemaRef) -> Self {
-        let properties = PlanProperties::new(
-            datafusion::physical_expr::EquivalenceProperties::new(Arc::clone(&schema)),
-            datafusion::physical_plan::Partitioning::UnknownPartitioning(1),
-            datafusion::physical_plan::execution_plan::EmissionType::Final,
-            Boundedness::Bounded,
-        );
-        Self { spec, schema, properties: Arc::new(properties) }
+        Self { spec, schema: Arc::clone(&schema), properties: leaf_properties(&schema) }
+    }
+}
+
+impl QdrantQueryBatchExec {
+    fn new(spec: QueryBatchKernel, schema: SchemaRef) -> Self {
+        Self { spec, schema: Arc::clone(&schema), properties: leaf_properties(&schema) }
+    }
+}
+
+impl QdrantQueryGroupsExec {
+    fn new(spec: QueryGroupsKernel, schema: SchemaRef) -> Self {
+        Self { spec, schema: Arc::clone(&schema), properties: leaf_properties(&schema) }
     }
 }
 
@@ -131,12 +152,34 @@ impl std::fmt::Debug for QdrantQueryExec {
     }
 }
 
+impl std::fmt::Debug for QdrantQueryBatchExec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("QdrantQueryBatchExec")
+            .field("collection", &self.spec.collection())
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for QdrantQueryGroupsExec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("QdrantQueryGroupsExec")
+            .field("collection", &self.spec.collection())
+            .finish_non_exhaustive()
+    }
+}
+
 impl ExecutionPlan for QdrantCountExec {
-    fn name(&self) -> &'static str { "QdrantCountExec" }
+    fn name(&self) -> &'static str {
+        "QdrantCountExec"
+    }
 
-    fn as_any(&self) -> &dyn Any { self }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 
-    fn properties(&self) -> &Arc<PlanProperties> { &self.properties }
+    fn properties(&self) -> &Arc<PlanProperties> {
+        &self.properties
+    }
 
     fn apply_expressions(
         &self,
@@ -145,9 +188,14 @@ impl ExecutionPlan for QdrantCountExec {
         Ok(TreeNodeRecursion::Continue)
     }
 
-    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> { vec![] }
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+        vec![]
+    }
 
-    fn with_new_children(self: Arc<Self>, children: Vec<Arc<dyn ExecutionPlan>>) -> Result<Arc<dyn ExecutionPlan>> {
+    fn with_new_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
         if !children.is_empty() {
             return exec_err!("QdrantCountExec expects no children");
         }
@@ -198,11 +246,17 @@ impl ExecutionPlan for QdrantCountExec {
 }
 
 impl ExecutionPlan for QdrantFacetExec {
-    fn name(&self) -> &'static str { "QdrantFacetExec" }
+    fn name(&self) -> &'static str {
+        "QdrantFacetExec"
+    }
 
-    fn as_any(&self) -> &dyn Any { self }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 
-    fn properties(&self) -> &Arc<PlanProperties> { &self.properties }
+    fn properties(&self) -> &Arc<PlanProperties> {
+        &self.properties
+    }
 
     fn apply_expressions(
         &self,
@@ -211,9 +265,14 @@ impl ExecutionPlan for QdrantFacetExec {
         Ok(TreeNodeRecursion::Continue)
     }
 
-    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> { vec![] }
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+        vec![]
+    }
 
-    fn with_new_children(self: Arc<Self>, children: Vec<Arc<dyn ExecutionPlan>>) -> Result<Arc<dyn ExecutionPlan>> {
+    fn with_new_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
         if !children.is_empty() {
             return exec_err!("QdrantFacetExec expects no children");
         }
@@ -277,7 +336,10 @@ impl ExecutionPlan for QdrantFacetExec {
                     } else if op.is_count_output_name(field.name()) {
                         Ok(Arc::clone(&count_array))
                     } else {
-                        exec_err!("unsupported facet output field '{}' in kernel schema", field.name())
+                        exec_err!(
+                            "unsupported facet output field '{}' in kernel schema",
+                            field.name()
+                        )
                     }
                 })
                 .collect::<Result<Vec<_>>>()?;
@@ -287,12 +349,32 @@ impl ExecutionPlan for QdrantFacetExec {
     }
 }
 
+fn append_scored_points_to_batch(
+    schema: &SchemaRef,
+    point_count: usize,
+    score_output_names: &BTreeSet<String>,
+    points: impl IntoIterator<Item = ScoredPoint>,
+) -> Result<RecordBatch> {
+    let mut builder =
+        QdrantRecordBatchBuilder::new(Arc::clone(schema), point_count, Some(score_output_names))?;
+    for point in points {
+        builder.append_point(point)?;
+    }
+    builder.finish()
+}
+
 impl ExecutionPlan for QdrantQueryExec {
-    fn name(&self) -> &'static str { "QdrantQueryExec" }
+    fn name(&self) -> &'static str {
+        "QdrantQueryExec"
+    }
 
-    fn as_any(&self) -> &dyn Any { self }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 
-    fn properties(&self) -> &Arc<PlanProperties> { &self.properties }
+    fn properties(&self) -> &Arc<PlanProperties> {
+        &self.properties
+    }
 
     fn apply_expressions(
         &self,
@@ -301,9 +383,14 @@ impl ExecutionPlan for QdrantQueryExec {
         Ok(TreeNodeRecursion::Continue)
     }
 
-    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> { vec![] }
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+        vec![]
+    }
 
-    fn with_new_children(self: Arc<Self>, children: Vec<Arc<dyn ExecutionPlan>>) -> Result<Arc<dyn ExecutionPlan>> {
+    fn with_new_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
         if !children.is_empty() {
             return exec_err!("QdrantQueryExec expects no children");
         }
@@ -320,74 +407,141 @@ impl ExecutionPlan for QdrantQueryExec {
         }
 
         let client = self.spec.client();
-        let collection = self.spec.collection().to_owned();
-        let filters = self.spec.filters().clone();
-        let execution = self.spec.query().execution();
-        let score_threshold = self.spec.query().score_threshold();
-        let score_output_names = self.spec.query().score_output_names();
+        let request_plan = self.spec.request_plan(&self.schema)?;
+        let score_output_names = request_plan.score_output_names().clone();
         let limit = self.spec.limit();
         let schema = Arc::clone(&self.schema);
         let fut = async move {
             if limit == 0 {
                 return Ok(RecordBatch::new_empty(schema));
             }
-            let mut request = match execution {
-                QueryExecution::NearestDense { using, vector } => {
-                    let mut request = QueryPointsBuilder::new(collection).query(vector).limit(limit).with_payload(true).with_vectors(true);
-                    if let Some(using) = using {
-                        request = request.using(using);
-                    }
-                    request
-                }
-                QueryExecution::NearestSparse { .. } => {
-                    return exec_err!("sparse nearest execution is not yet implemented");
-                }
-                QueryExecution::NearestMultiDense { .. } => {
-                    return exec_err!("multidense nearest execution is not yet implemented");
-                }
-                QueryExecution::NearestById { .. } => {
-                    return exec_err!("point-id nearest execution is not yet implemented");
-                }
-                QueryExecution::NearestDocument { .. } => {
-                    return exec_err!("document nearest execution is not yet implemented");
-                }
-                QueryExecution::NearestImage { .. } => {
-                    return exec_err!("image nearest execution is not yet implemented");
-                }
-                QueryExecution::NearestObject { .. } => {
-                    return exec_err!("object nearest execution is not yet implemented");
-                }
-                QueryExecution::Recommend(_) => return exec_err!("recommend execution is not yet implemented"),
-                QueryExecution::Discover(_) => return exec_err!("discover execution is not yet implemented"),
-                QueryExecution::Context(_) => return exec_err!("context execution is not yet implemented"),
-                QueryExecution::OrderBy(_) => return exec_err!("order-by execution is not yet implemented"),
-                QueryExecution::Fusion(_) => return exec_err!("fusion execution is not yet implemented"),
-                QueryExecution::Sample(_) => return exec_err!("sample execution is not yet implemented"),
-                QueryExecution::Formula(_) => return exec_err!("formula execution is not yet implemented"),
-                QueryExecution::NearestWithMmr(_) => return exec_err!("nearest-with-mmr execution is not yet implemented"),
-                QueryExecution::RelevanceFeedback(_) => return exec_err!("relevance-feedback execution is not yet implemented"),
+            let QueryRequest::Points(request) = request_plan.request() else {
+                return exec_err!("qdrant query exec received a non-point request plan");
             };
-            if let Some(filter) = filters.to_filter() {
-                request = request.filter(filter);
-            }
-            if let Some(threshold) = score_threshold {
-                request = request.score_threshold(threshold);
-            }
             let response = client
-                .query(request)
+                .query((*request).clone())
                 .await
                 .map_err(|error| datafusion::error::DataFusionError::External(Box::new(error)))?;
-            let mut builder = QdrantRecordBatchBuilder::new(
-                Arc::clone(&schema),
-                response.result.len(),
-                Some(&score_output_names),
-            )?;
-            for point in response.result {
-                builder.append_point(point)?;
-            }
-            builder.finish()
+            append_scored_points_to_batch(&schema, response.result.len(), &score_output_names, response.result)
         };
         Ok(Box::pin(RecordBatchStreamAdapter::new(Arc::clone(&self.schema), stream::once(fut))))
+    }
+}
+
+impl ExecutionPlan for QdrantQueryBatchExec {
+    fn name(&self) -> &'static str {
+        "QdrantQueryBatchExec"
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn properties(&self) -> &Arc<PlanProperties> {
+        &self.properties
+    }
+
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&dyn PhysicalExpr) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
+    }
+
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+        vec![]
+    }
+
+    fn with_new_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        if !children.is_empty() {
+            return exec_err!("QdrantQueryBatchExec expects no children");
+        }
+        Ok(self)
+    }
+
+    fn execute(
+        &self,
+        partition: usize,
+        _context: Arc<datafusion::execution::TaskContext>,
+    ) -> Result<datafusion::execution::SendableRecordBatchStream> {
+        if partition != 0 {
+            return exec_err!("QdrantQueryBatchExec invalid partition {partition}");
+        }
+
+        let client = self.spec.client();
+        let request_plan = self.spec.request_plan(&self.schema)?;
+        let score_output_names = request_plan.score_output_names().clone();
+        let schema = Arc::clone(&self.schema);
+        let fut = async move {
+            let QueryRequest::Batch(request) = request_plan.request() else {
+                return exec_err!("qdrant query batch exec received a non-batch request plan");
+            };
+            let response = client
+                .query_batch((*request).clone())
+                .await
+                .map_err(|error| datafusion::error::DataFusionError::External(Box::new(error)))?;
+            let point_count = response.result.iter().map(|batch| batch.result.len()).sum();
+            let points = response
+                .result
+                .into_iter()
+                .flat_map(|batch| batch.result)
+                .collect::<Vec<_>>();
+            append_scored_points_to_batch(&schema, point_count, &score_output_names, points)
+        };
+        Ok(Box::pin(RecordBatchStreamAdapter::new(Arc::clone(&self.schema), stream::once(fut))))
+    }
+}
+
+impl ExecutionPlan for QdrantQueryGroupsExec {
+    fn name(&self) -> &'static str {
+        "QdrantQueryGroupsExec"
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn properties(&self) -> &Arc<PlanProperties> {
+        &self.properties
+    }
+
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&dyn PhysicalExpr) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
+    }
+
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+        vec![]
+    }
+
+    fn with_new_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        if !children.is_empty() {
+            return exec_err!("QdrantQueryGroupsExec expects no children");
+        }
+        Ok(self)
+    }
+
+    fn execute(
+        &self,
+        partition: usize,
+        _context: Arc<datafusion::execution::TaskContext>,
+    ) -> Result<datafusion::execution::SendableRecordBatchStream> {
+        if partition != 0 {
+            return exec_err!("QdrantQueryGroupsExec invalid partition {partition}");
+        }
+
+        let _request_plan = self.spec.request_plan(&self.schema)?;
+        let schema = Arc::clone(&self.schema);
+        let fut = async move { exec_err!("query groups execution is not yet implemented") };
+        Ok(Box::pin(RecordBatchStreamAdapter::new(Arc::clone(&schema), stream::once(fut))))
     }
 }
 
@@ -405,13 +559,10 @@ impl DisplayAs for QdrantCountExec {
 impl DisplayAs for QdrantFacetExec {
     fn fmt_as(&self, t: DisplayFormatType, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match t {
-            DisplayFormatType::Default | DisplayFormatType::Verbose => write!(
-                f,
-                "QdrantFacetExec: collection={}, field={}, limit={}",
-                self.spec.collection(),
-                self.spec.op().field().key(),
-                self.spec.limit(),
-            ),
+            DisplayFormatType::Default | DisplayFormatType::Verbose => {
+                write!(f, "QdrantFacetExec: collection={}, field={}", self.spec.collection(), self.spec.op().field().key())?;
+                write!(f, ", limit={}", self.spec.limit())
+            }
             DisplayFormatType::TreeRender => write!(f, "QdrantFacetExec"),
         }
     }
@@ -428,6 +579,28 @@ impl DisplayAs for QdrantQueryExec {
                 write!(f, ", score_outputs={:?}", self.spec.query().score_output_names())
             }
             DisplayFormatType::TreeRender => write!(f, "QdrantQueryExec"),
+        }
+    }
+}
+
+impl DisplayAs for QdrantQueryBatchExec {
+    fn fmt_as(&self, t: DisplayFormatType, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match t {
+            DisplayFormatType::Default | DisplayFormatType::Verbose => {
+                write!(f, "QdrantQueryBatchExec: collection={}", self.spec.collection())
+            }
+            DisplayFormatType::TreeRender => write!(f, "QdrantQueryBatchExec"),
+        }
+    }
+}
+
+impl DisplayAs for QdrantQueryGroupsExec {
+    fn fmt_as(&self, t: DisplayFormatType, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match t {
+            DisplayFormatType::Default | DisplayFormatType::Verbose => {
+                write!(f, "QdrantQueryGroupsExec: collection={}", self.spec.collection())
+            }
+            DisplayFormatType::TreeRender => write!(f, "QdrantQueryGroupsExec"),
         }
     }
 }

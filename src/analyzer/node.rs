@@ -3,72 +3,82 @@ use std::hash::{Hash, Hasher};
 use datafusion::common::{DFSchemaRef, Result, plan_err};
 use datafusion::logical_expr::{Expr, LogicalPlan, UserDefinedLogicalNodeCore};
 
-use super::state::State;
+use super::kernel::KernelSpec;
 
-pub(crate) const STATE_NODE_NAME: &str = "PrototypeStateNode";
+pub(crate) const KERNEL_NODE_NAME: &str = "QdrantKernelNode";
 
 #[derive(Debug, Clone)]
-pub(crate) struct StateNode {
-    pub(super) schema: DFSchemaRef,
-    pub(super) state:  State,
+pub(crate) struct KernelNode {
+    schema: DFSchemaRef,
+    spec: KernelSpec,
 }
 
-impl StateNode {
-    pub(crate) fn state(&self) -> &State { &self.state }
+impl KernelNode {
+    pub(crate) fn new(schema: DFSchemaRef, spec: KernelSpec) -> Self {
+        Self { schema, spec }
+    }
 
-    pub(crate) fn output_schema(&self) -> &DFSchemaRef { &self.schema }
+    pub(crate) fn spec(&self) -> &KernelSpec {
+        &self.spec
+    }
+
+    pub(crate) fn output_schema(&self) -> &DFSchemaRef {
+        &self.schema
+    }
 }
 
-impl UserDefinedLogicalNodeCore for StateNode {
-    fn name(&self) -> &str { STATE_NODE_NAME }
+impl UserDefinedLogicalNodeCore for KernelNode {
+    fn name(&self) -> &str {
+        KERNEL_NODE_NAME
+    }
 
-    fn inputs(&self) -> Vec<&LogicalPlan> { vec![] }
+    fn inputs(&self) -> Vec<&LogicalPlan> {
+        vec![]
+    }
 
-    fn schema(&self) -> &DFSchemaRef { &self.schema }
+    fn schema(&self) -> &DFSchemaRef {
+        &self.schema
+    }
 
-    fn expressions(&self) -> Vec<Expr> { vec![] }
+    fn expressions(&self) -> Vec<Expr> {
+        vec![]
+    }
 
     fn fmt_for_explain(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match &self.state {
-            State::Processing(state) => write!(f, "{STATE_NODE_NAME}: processing {:?}", state.op),
-            State::Kernel(state) => write!(f, "{STATE_NODE_NAME}: kernel {:?}", state.spec),
-            State::Local(_) | State::Source(_) | State::Composite(_) | State::Fatal(_) => {
-                write!(f, "{STATE_NODE_NAME}: invalid materialized state")
-            }
-        }
+        write!(f, "{KERNEL_NODE_NAME}: {:?}", self.spec)
     }
 
     fn with_exprs_and_inputs(&self, exprs: Vec<Expr>, inputs: Vec<LogicalPlan>) -> Result<Self> {
         if !exprs.is_empty() {
-            return plan_err!("{STATE_NODE_NAME} expects no expressions");
+            return plan_err!("{KERNEL_NODE_NAME} expects no expressions");
         }
         if !inputs.is_empty() {
-            return plan_err!("{STATE_NODE_NAME} expects no inputs");
+            return plan_err!("{KERNEL_NODE_NAME} expects no inputs");
         }
         Ok(self.clone())
     }
 }
 
-impl PartialEq for StateNode {
+impl PartialEq for KernelNode {
     fn eq(&self, other: &Self) -> bool {
-        format!("{:?}", self.state) == format!("{:?}", other.state)
+        format!("{:?}", self.spec) == format!("{:?}", other.spec)
             && format!("{:?}", self.schema) == format!("{:?}", other.schema)
     }
 }
 
-impl Eq for StateNode {}
+impl Eq for KernelNode {}
 
-impl PartialOrd for StateNode {
+impl PartialOrd for KernelNode {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        (format!("{:?}", self.state), format!("{:?}", self.schema))
-            .partial_cmp(&(format!("{:?}", other.state), format!("{:?}", other.schema)))
+        (format!("{:?}", self.spec), format!("{:?}", self.schema))
+            .partial_cmp(&(format!("{:?}", other.spec), format!("{:?}", other.schema)))
     }
 }
 
-impl Hash for StateNode {
+impl Hash for KernelNode {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        STATE_NODE_NAME.hash(state);
-        format!("{:?}", self.state).hash(state);
+        KERNEL_NODE_NAME.hash(state);
+        format!("{:?}", self.spec).hash(state);
         format!("{:?}", self.schema).hash(state);
     }
 }

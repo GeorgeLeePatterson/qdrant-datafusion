@@ -5,8 +5,8 @@ use datafusion::logical_expr::{LogicalPlan, UserDefinedLogicalNode};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_planner::{ExtensionPlanner, PhysicalPlanner};
 
-use super::exec::execution_plan_for_state_node;
-use crate::analyzer::{STATE_NODE_NAME, StateNode};
+use super::exec::execution_plan_for_kernel_node;
+use crate::analyzer::{KERNEL_NODE_NAME, KernelNode};
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct QdrantExtensionPlanner;
@@ -22,12 +22,13 @@ impl ExtensionPlanner for QdrantExtensionPlanner {
         _session_state: &SessionState,
     ) -> datafusion::error::Result<Option<Arc<dyn ExecutionPlan>>> {
         match node.name() {
-            STATE_NODE_NAME => {
-                let node = node
-                    .as_any()
-                    .downcast_ref::<StateNode>()
-                    .ok_or_else(|| datafusion::error::DataFusionError::Plan("Failed to downcast StateNode".to_owned()))?;
-                Ok(Some(execution_plan_for_state_node(node)?))
+            KERNEL_NODE_NAME => {
+                let node = node.as_any().downcast_ref::<KernelNode>().ok_or_else(|| {
+                    datafusion::error::DataFusionError::Plan(
+                        "Failed to downcast KernelNode".to_owned(),
+                    )
+                })?;
+                Ok(Some(execution_plan_for_kernel_node(node)?))
             }
             _ => Ok(None),
         }

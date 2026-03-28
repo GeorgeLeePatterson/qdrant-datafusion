@@ -1,94 +1,31 @@
-use std::sync::Arc;
+mod count;
+mod facet;
+mod query;
 
 use datafusion::common::{Result, ScalarValue, plan_err};
 use datafusion::logical_expr::{Expr, LogicalPlan};
-use qdrant_client::Qdrant;
 
-use super::op::{FacetOp, QueryOp};
-use super::source::Source;
-use crate::pushdown::filter::QdrantFilters;
+pub(crate) use self::count::CountKernel;
+pub(crate) use self::facet::FacetKernel;
+pub(crate) use self::query::{QueryBatchKernel, QueryGroupsKernel, QueryKernel};
 
 #[derive(Debug, Clone)]
 pub(crate) enum KernelSpec {
     Count(CountKernel),
     Query(QueryKernel),
+    QueryBatch(QueryBatchKernel),
+    QueryGroups(QueryGroupsKernel),
     Facet(FacetKernel),
 }
 
 impl KernelSpec {
     pub(super) fn project(self, plan: &LogicalPlan) -> Result<Option<Self>> {
         match self {
-            Self::Count(_) => Ok(None),
-            Self::Query(mut kernel) => {
-                let Some(query) = kernel.query.project(plan)? else {
-                    return Ok(None);
-                };
-                kernel.query = query;
-                Ok(Some(Self::Query(kernel)))
-            }
-            Self::Facet(mut kernel) => {
-                let Some(op) = kernel.op.project(plan)? else {
-                    return Ok(None);
-                };
-                kernel.op = op;
-                Ok(Some(Self::Facet(kernel)))
-            }
+            Self::Count(_) | Self::QueryBatch(_) | Self::QueryGroups(_) => Ok(None),
+            Self::Query(kernel) => kernel.project(plan).map(|kernel| kernel.map(Self::Query)),
+            Self::Facet(kernel) => kernel.project(plan).map(|kernel| kernel.map(Self::Facet)),
         }
     }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct CountKernel {
-    pub(super) source:  Source,
-    pub(super) filters: QdrantFilters,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct QueryKernel {
-    pub(super) source:  Source,
-    pub(super) filters: QdrantFilters,
-    pub(super) query:   QueryOp,
-    pub(super) limit:   u64,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct FacetKernel {
-    pub(super) source:  Source,
-    pub(super) filters: QdrantFilters,
-    pub(super) op:      FacetOp,
-    pub(super) limit:   u64,
-}
-
-impl CountKernel {
-    pub(crate) fn client(&self) -> Arc<Qdrant> { Arc::clone(self.source.client()) }
-
-    pub(crate) fn collection(&self) -> &str { self.source.collection() }
-
-    pub(crate) fn filters(&self) -> &QdrantFilters { &self.filters }
-}
-
-impl QueryKernel {
-    pub(crate) fn client(&self) -> Arc<Qdrant> { Arc::clone(self.source.client()) }
-
-    pub(crate) fn collection(&self) -> &str { self.source.collection() }
-
-    pub(crate) fn filters(&self) -> &QdrantFilters { &self.filters }
-
-    pub(crate) fn query(&self) -> &QueryOp { &self.query }
-
-    pub(crate) fn limit(&self) -> u64 { self.limit }
-}
-
-impl FacetKernel {
-    pub(crate) fn client(&self) -> Arc<Qdrant> { Arc::clone(self.source.client()) }
-
-    pub(crate) fn collection(&self) -> &str { self.source.collection() }
-
-    pub(crate) fn filters(&self) -> &QdrantFilters { &self.filters }
-
-    pub(crate) fn op(&self) -> &FacetOp { &self.op }
-
-    pub(crate) fn limit(&self) -> u64 { self.limit }
 }
 
 pub(super) fn limit_rows(plan: &LogicalPlan) -> Result<u64> {
