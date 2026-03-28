@@ -9,6 +9,165 @@ use super::surface::QuerySurfaceCall;
 use crate::expr_fn::QdrantNearestCall;
 
 #[derive(Debug, Clone)]
+pub(crate) enum QueryExecution {
+    NearestDense {
+        using:  Option<String>,
+        vector: Vec<f32>,
+    },
+    NearestSparse {
+        using:   Option<String>,
+        indices: Vec<u32>,
+        values:  Vec<f32>,
+    },
+    NearestMultiDense {
+        using:   Option<String>,
+        vectors: Vec<Vec<f32>>,
+    },
+    NearestById {
+        using:    Option<String>,
+        point_id: PointId,
+    },
+    NearestDocument {
+        using: Option<String>,
+        text:  String,
+        model: Option<String>,
+    },
+    NearestImage {
+        using: Option<String>,
+        image: Vec<u8>,
+        model: Option<String>,
+    },
+    NearestObject {
+        using:  Option<String>,
+        object: Vec<(String, ScalarValue)>,
+        model:  Option<String>,
+    },
+    Recommend(RecommendQuery),
+    Discover(DiscoverQuery),
+    Context(ContextQuery),
+    OrderBy(OrderByQuery),
+    Fusion(FusionQuery),
+    Sample(SampleQuery),
+    Formula(FormulaQuery),
+    NearestWithMmr(NearestWithMmrQuery),
+    RelevanceFeedback(RelevanceFeedbackQuery),
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum QueryKind {
+    Nearest(NearestQuery),
+    Recommend(RecommendQuery),
+    Discover(DiscoverQuery),
+    Context(ContextQuery),
+    OrderBy(OrderByQuery),
+    Fusion(FusionQuery),
+    Sample(SampleQuery),
+    Formula(FormulaQuery),
+    NearestWithMmr(NearestWithMmrQuery),
+    RelevanceFeedback(RelevanceFeedbackQuery),
+}
+
+impl QueryKind {
+    pub(super) fn from_surface(surface: QuerySurfaceCall) -> Self {
+        match surface {
+            QuerySurfaceCall::Nearest(query) => Self::Nearest(query),
+            QuerySurfaceCall::Recommend(query) => Self::Recommend(query),
+            QuerySurfaceCall::Discover(query) => Self::Discover(query),
+            QuerySurfaceCall::Context(query) => Self::Context(query),
+            QuerySurfaceCall::OrderBy(query) => Self::OrderBy(query),
+            QuerySurfaceCall::Fusion(query) => Self::Fusion(query),
+            QuerySurfaceCall::Sample(query) => Self::Sample(query),
+            QuerySurfaceCall::Formula(query) => Self::Formula(query),
+            QuerySurfaceCall::NearestWithMmr(query) => Self::NearestWithMmr(query),
+            QuerySurfaceCall::RelevanceFeedback(query) => Self::RelevanceFeedback(query),
+        }
+    }
+
+    pub(super) fn validate_on_source(&self, source: &Source) -> Result<()> {
+        match self {
+            Self::Nearest(query) => query.validate_on_source(source),
+            Self::Recommend(query) => query.validate_on_source(source),
+            Self::Discover(query) => query.validate_on_source(source),
+            Self::Context(query) => query.validate_on_source(source),
+            Self::OrderBy(query) => query.validate_on_source(source),
+            Self::Fusion(query) => query.validate_on_source(source),
+            Self::Sample(query) => query.validate_on_source(source),
+            Self::Formula(query) => query.validate_on_source(source),
+            Self::NearestWithMmr(query) => query.validate_on_source(source),
+            Self::RelevanceFeedback(query) => query.validate_on_source(source),
+        }
+    }
+
+    pub(super) fn matches_surface(&self, surface: &QuerySurfaceCall) -> bool {
+        match (self, surface) {
+            (Self::Nearest(lhs), QuerySurfaceCall::Nearest(rhs)) => lhs.same_semantics(rhs),
+            (Self::Recommend(lhs), QuerySurfaceCall::Recommend(rhs)) => lhs.same_semantics(rhs),
+            (Self::Discover(lhs), QuerySurfaceCall::Discover(rhs)) => lhs.same_semantics(rhs),
+            (Self::Context(lhs), QuerySurfaceCall::Context(rhs)) => lhs.same_semantics(rhs),
+            (Self::OrderBy(lhs), QuerySurfaceCall::OrderBy(rhs)) => lhs.same_semantics(rhs),
+            (Self::Fusion(lhs), QuerySurfaceCall::Fusion(rhs)) => lhs.same_semantics(rhs),
+            (Self::Sample(lhs), QuerySurfaceCall::Sample(rhs)) => lhs.same_semantics(rhs),
+            (Self::Formula(lhs), QuerySurfaceCall::Formula(rhs)) => lhs.same_semantics(rhs),
+            (Self::NearestWithMmr(lhs), QuerySurfaceCall::NearestWithMmr(rhs)) => {
+                lhs.same_semantics(rhs)
+            }
+            (Self::RelevanceFeedback(lhs), QuerySurfaceCall::RelevanceFeedback(rhs)) => {
+                lhs.same_semantics(rhs)
+            }
+            _ => false,
+        }
+    }
+
+    pub(crate) fn execution(&self) -> QueryExecution {
+        match self {
+            Self::Nearest(query) => match &query.input {
+                NearestInput::Dense(input) => QueryExecution::NearestDense {
+                    using:  query.using.clone(),
+                    vector: input.vector.clone(),
+                },
+                NearestInput::Sparse(input) => QueryExecution::NearestSparse {
+                    using:   query.using.clone(),
+                    indices: input.indices.clone(),
+                    values:  input.values.clone(),
+                },
+                NearestInput::MultiDense(input) => QueryExecution::NearestMultiDense {
+                    using:   query.using.clone(),
+                    vectors: input.vectors.clone(),
+                },
+                NearestInput::Id(input) => QueryExecution::NearestById {
+                    using:    query.using.clone(),
+                    point_id: input.point_id.clone(),
+                },
+                NearestInput::Document(input) => QueryExecution::NearestDocument {
+                    using: query.using.clone(),
+                    text:  input.text.clone(),
+                    model: input.model.clone(),
+                },
+                NearestInput::Image(input) => QueryExecution::NearestImage {
+                    using: query.using.clone(),
+                    image: input.image.clone(),
+                    model: input.model.clone(),
+                },
+                NearestInput::Object(input) => QueryExecution::NearestObject {
+                    using:  query.using.clone(),
+                    object: input.object.clone(),
+                    model:  input.model.clone(),
+                },
+            },
+            Self::Recommend(query) => QueryExecution::Recommend(query.clone()),
+            Self::Discover(query) => QueryExecution::Discover(query.clone()),
+            Self::Context(query) => QueryExecution::Context(query.clone()),
+            Self::OrderBy(query) => QueryExecution::OrderBy(query.clone()),
+            Self::Fusion(query) => QueryExecution::Fusion(query.clone()),
+            Self::Sample(query) => QueryExecution::Sample(query.clone()),
+            Self::Formula(query) => QueryExecution::Formula(query.clone()),
+            Self::NearestWithMmr(query) => QueryExecution::NearestWithMmr(query.clone()),
+            Self::RelevanceFeedback(query) => QueryExecution::RelevanceFeedback(query.clone()),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct NearestQuery {
     using: Option<String>,
     input: NearestInput,
@@ -283,7 +442,8 @@ pub(crate) enum QueryVectorBinding {
 
 impl QueryVectorBinding {
     fn from_source(source: &Source, using: &str) -> Result<Self> {
-        let field: &datafusion::arrow::datatypes::Field = match source.schema.field_with_name(using) {
+        let field: &datafusion::arrow::datatypes::Field = match source.schema.field_with_name(using)
+        {
             Ok(field) => field,
             Err(_) => return plan_err!("query vector field '{}' not found", using),
         };
@@ -414,142 +574,4 @@ impl RelevanceFeedbackQuery {
     pub(super) fn same_semantics(&self, _other: &Self) -> bool { true }
 
     fn validate_on_source(&self, _source: &Source) -> Result<()> { Ok(()) }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) enum QueryExecution {
-    NearestDense { using: Option<String>, vector: Vec<f32> },
-    NearestSparse { using: Option<String>, indices: Vec<u32>, values: Vec<f32> },
-    NearestMultiDense { using: Option<String>, vectors: Vec<Vec<f32>> },
-    NearestById { using: Option<String>, point_id: PointId },
-    NearestDocument { using: Option<String>, text: String, model: Option<String> },
-    NearestImage { using: Option<String>, image: Vec<u8>, model: Option<String> },
-    NearestObject {
-        using: Option<String>,
-        object: Vec<(String, ScalarValue)>,
-        model: Option<String>,
-    },
-    Recommend(RecommendQuery),
-    Discover(DiscoverQuery),
-    Context(ContextQuery),
-    OrderBy(OrderByQuery),
-    Fusion(FusionQuery),
-    Sample(SampleQuery),
-    Formula(FormulaQuery),
-    NearestWithMmr(NearestWithMmrQuery),
-    RelevanceFeedback(RelevanceFeedbackQuery),
-}
-
-#[derive(Debug, Clone)]
-pub(crate) enum QueryKind {
-    Nearest(NearestQuery),
-    Recommend(RecommendQuery),
-    Discover(DiscoverQuery),
-    Context(ContextQuery),
-    OrderBy(OrderByQuery),
-    Fusion(FusionQuery),
-    Sample(SampleQuery),
-    Formula(FormulaQuery),
-    NearestWithMmr(NearestWithMmrQuery),
-    RelevanceFeedback(RelevanceFeedbackQuery),
-}
-
-impl QueryKind {
-    pub(super) fn from_surface(surface: QuerySurfaceCall) -> Self {
-        match surface {
-            QuerySurfaceCall::Nearest(query) => Self::Nearest(query),
-            QuerySurfaceCall::Recommend(query) => Self::Recommend(query),
-            QuerySurfaceCall::Discover(query) => Self::Discover(query),
-            QuerySurfaceCall::Context(query) => Self::Context(query),
-            QuerySurfaceCall::OrderBy(query) => Self::OrderBy(query),
-            QuerySurfaceCall::Fusion(query) => Self::Fusion(query),
-            QuerySurfaceCall::Sample(query) => Self::Sample(query),
-            QuerySurfaceCall::Formula(query) => Self::Formula(query),
-            QuerySurfaceCall::NearestWithMmr(query) => Self::NearestWithMmr(query),
-            QuerySurfaceCall::RelevanceFeedback(query) => Self::RelevanceFeedback(query),
-        }
-    }
-
-    pub(super) fn validate_on_source(&self, source: &Source) -> Result<()> {
-        match self {
-            Self::Nearest(query) => query.validate_on_source(source),
-            Self::Recommend(query) => query.validate_on_source(source),
-            Self::Discover(query) => query.validate_on_source(source),
-            Self::Context(query) => query.validate_on_source(source),
-            Self::OrderBy(query) => query.validate_on_source(source),
-            Self::Fusion(query) => query.validate_on_source(source),
-            Self::Sample(query) => query.validate_on_source(source),
-            Self::Formula(query) => query.validate_on_source(source),
-            Self::NearestWithMmr(query) => query.validate_on_source(source),
-            Self::RelevanceFeedback(query) => query.validate_on_source(source),
-        }
-    }
-
-    pub(super) fn matches_surface(&self, surface: &QuerySurfaceCall) -> bool {
-        match (self, surface) {
-            (Self::Nearest(lhs), QuerySurfaceCall::Nearest(rhs)) => lhs.same_semantics(rhs),
-            (Self::Recommend(lhs), QuerySurfaceCall::Recommend(rhs)) => lhs.same_semantics(rhs),
-            (Self::Discover(lhs), QuerySurfaceCall::Discover(rhs)) => lhs.same_semantics(rhs),
-            (Self::Context(lhs), QuerySurfaceCall::Context(rhs)) => lhs.same_semantics(rhs),
-            (Self::OrderBy(lhs), QuerySurfaceCall::OrderBy(rhs)) => lhs.same_semantics(rhs),
-            (Self::Fusion(lhs), QuerySurfaceCall::Fusion(rhs)) => lhs.same_semantics(rhs),
-            (Self::Sample(lhs), QuerySurfaceCall::Sample(rhs)) => lhs.same_semantics(rhs),
-            (Self::Formula(lhs), QuerySurfaceCall::Formula(rhs)) => lhs.same_semantics(rhs),
-            (Self::NearestWithMmr(lhs), QuerySurfaceCall::NearestWithMmr(rhs)) => {
-                lhs.same_semantics(rhs)
-            }
-            (Self::RelevanceFeedback(lhs), QuerySurfaceCall::RelevanceFeedback(rhs)) => {
-                lhs.same_semantics(rhs)
-            }
-            _ => false,
-        }
-    }
-
-    pub(crate) fn execution(&self) -> QueryExecution {
-        match self {
-            Self::Nearest(query) => match &query.input {
-                NearestInput::Dense(input) => QueryExecution::NearestDense {
-                    using: query.using.clone(),
-                    vector: input.vector.clone(),
-                },
-                NearestInput::Sparse(input) => QueryExecution::NearestSparse {
-                    using: query.using.clone(),
-                    indices: input.indices.clone(),
-                    values: input.values.clone(),
-                },
-                NearestInput::MultiDense(input) => QueryExecution::NearestMultiDense {
-                    using: query.using.clone(),
-                    vectors: input.vectors.clone(),
-                },
-                NearestInput::Id(input) => QueryExecution::NearestById {
-                    using: query.using.clone(),
-                    point_id: input.point_id.clone(),
-                },
-                NearestInput::Document(input) => QueryExecution::NearestDocument {
-                    using: query.using.clone(),
-                    text: input.text.clone(),
-                    model: input.model.clone(),
-                },
-                NearestInput::Image(input) => QueryExecution::NearestImage {
-                    using: query.using.clone(),
-                    image: input.image.clone(),
-                    model: input.model.clone(),
-                },
-                NearestInput::Object(input) => QueryExecution::NearestObject {
-                    using: query.using.clone(),
-                    object: input.object.clone(),
-                    model: input.model.clone(),
-                },
-            },
-            Self::Recommend(query) => QueryExecution::Recommend(query.clone()),
-            Self::Discover(query) => QueryExecution::Discover(query.clone()),
-            Self::Context(query) => QueryExecution::Context(query.clone()),
-            Self::OrderBy(query) => QueryExecution::OrderBy(query.clone()),
-            Self::Fusion(query) => QueryExecution::Fusion(query.clone()),
-            Self::Sample(query) => QueryExecution::Sample(query.clone()),
-            Self::Formula(query) => QueryExecution::Formula(query.clone()),
-            Self::NearestWithMmr(query) => QueryExecution::NearestWithMmr(query.clone()),
-            Self::RelevanceFeedback(query) => QueryExecution::RelevanceFeedback(query.clone()),
-        }
-    }
 }
