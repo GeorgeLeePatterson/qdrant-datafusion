@@ -96,11 +96,11 @@ pub async fn create_container(conf: Option<&str>) -> Arc<QdrantContainer> {
 }
 
 pub struct QdrantContainer {
-    pub endpoint: String,
+    pub endpoint:  String,
     pub rest_port: u16,
     pub grpc_port: u16,
-    pub api_key: String,
-    container: RwLock<Option<ContainerAsync<GenericImage>>>,
+    pub api_key:   String,
+    container:     RwLock<Option<ContainerAsync<GenericImage>>>,
 }
 
 impl QdrantContainer {
@@ -152,13 +152,9 @@ impl QdrantContainer {
         Ok(QdrantContainer { endpoint, rest_port, grpc_port, api_key: api_key.clone(), container })
     }
 
-    pub fn get_url(&self) -> String {
-        format!("http://{}:{}", self.endpoint, self.grpc_port)
-    }
+    pub fn get_url(&self) -> String { format!("http://{}:{}", self.endpoint, self.grpc_port) }
 
-    pub fn get_api_key(&self) -> &str {
-        &self.api_key
-    }
+    pub fn get_api_key(&self) -> &str { &self.api_key }
 
     /// # Errors
     pub async fn shutdown(&self) -> Result<(), TestcontainersError> {

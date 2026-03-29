@@ -8,8 +8,10 @@ use datafusion::logical_expr::utils::split_conjunction_owned;
 use datafusion::logical_expr::{Distinct, Expr, LogicalPlan, Operator, SortExpr};
 
 use super::common::count_star_like;
-use super::kernel::{FacetKernel, KernelSpec, QueryGroupsKernel, QueryKernel, limit_rows, numeric_literal_f32};
-use super::query::{QueryDescriptor, QueryKind};
+use super::kernel::{
+    FacetKernel, KernelSpec, QueryGroupsKernel, QueryKernel, limit_rows, numeric_literal_f32,
+};
+use super::query::{QueryBranchPlan, QueryDescriptor, QueryKind};
 use super::source::Source;
 use super::state::{FiltersState, KernelState};
 use super::surface::QuerySurfaceCall;
@@ -19,19 +21,21 @@ use crate::pushdown::filter::QdrantFilters;
 
 #[derive(Debug, Clone)]
 pub(crate) struct QueryOp {
-    query: QueryKind,
+    query:               QueryKind,
     query_score_outputs: OutputNames,
-    score_threshold: Option<f32>,
-    sorted: bool,
+    score_threshold:     Option<f32>,
+    sorted:              bool,
+    prefetch:            Vec<QueryBranchPlan>,
 }
 
 impl QueryOp {
     fn from_surface(surface: QuerySurfaceCall) -> Self {
         Self {
-            query: QueryKind::from_surface(surface),
+            query:               QueryKind::from_surface(surface),
             query_score_outputs: OutputNames::default(),
-            score_threshold: None,
-            sorted: false,
+            score_threshold:     None,
+            sorted:              false,
+            prefetch:            vec![],
         }
     }
 
@@ -123,7 +127,8 @@ impl QueryOp {
         if distinct_on.on_expr.len() != 1 {
             return Ok(None);
         }
-        let Some(group_field) = QdrantPayloadPath::from_logical_expr(&distinct_on.on_expr[0]) else {
+        let Some(group_field) = QdrantPayloadPath::from_logical_expr(&distinct_on.on_expr[0])
+        else {
             return Ok(None);
         };
         if !source
@@ -143,7 +148,8 @@ impl QueryOp {
         let Some(group_descending) = self.query_groups_sort_supported(
             distinct_on.sort_expr.as_deref().unwrap_or(&[]),
             &group_field,
-        )? else {
+        )?
+        else {
             return Ok(None);
         };
         self.query_score_outputs = OutputNames::from_exprs_and_schema(
@@ -193,16 +199,34 @@ impl QueryOp {
     }
 
     pub(crate) fn descriptor(&self) -> Result<QueryDescriptor> {
-        self.query.descriptor()
+        self.query.descriptor(self.prefetch.len())
     }
 
-    pub(crate) fn score_output_names(&self) -> BTreeSet<String> {
-        self.query_score_outputs.names()
+    pub(crate) fn branch_plan(
+        &self,
+        filter: Option<QdrantFilters>,
+        limit: Option<u64>,
+    ) -> Result<QueryBranchPlan> {
+        let mut branch = QueryBranchPlan::descriptor(
+            self.descriptor()?,
+            filter.and_then(|filters| filters.to_filter()),
+            self.score_threshold,
+            limit,
+        );
+        branch.prefetch = self.prefetch.clone();
+        Ok(branch)
     }
 
-    pub(crate) fn score_threshold(&self) -> Option<f32> {
-        self.score_threshold
+    pub(crate) fn with_prefetch(mut self, prefetch: Vec<QueryBranchPlan>) -> Self {
+        self.prefetch = prefetch;
+        self
     }
+
+    pub(crate) fn prefetch_count(&self) -> usize { self.prefetch.len() }
+
+    pub(crate) fn score_output_names(&self) -> BTreeSet<String> { self.query_score_outputs.names() }
+
+    pub(crate) fn score_threshold(&self) -> Option<f32> { self.score_threshold }
 
     fn query_score_threshold_expr(&self, expr: &Expr) -> Result<Option<f32>> {
         let expr = expr.clone().unalias_nested().data;
@@ -232,7 +256,8 @@ impl QueryOp {
         if sort_exprs.len() != 2 {
             return Ok(None);
         }
-        let Some(group_sort_field) = QdrantPayloadPath::from_logical_expr(&sort_exprs[0].expr) else {
+        let Some(group_sort_field) = QdrantPayloadPath::from_logical_expr(&sort_exprs[0].expr)
+        else {
             return Ok(None);
         };
         if &group_sort_field != group_field {
@@ -311,14 +336,21 @@ impl Op {
             Self::Facet(_) => Ok(None),
         }
     }
+
+    pub(super) fn with_prefetch(self, prefetch: Vec<QueryBranchPlan>) -> Result<Self> {
+        match self {
+            Self::Query(op) => Ok(Self::Query(op.with_prefetch(prefetch))),
+            Self::Facet(_) => plan_err!("facet operations do not admit query prefetch branches"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct FacetOp {
-    pub(super) field: QdrantPayloadPath,
-    pub(super) key_outputs: OutputNames,
+    pub(super) field:         QdrantPayloadPath,
+    pub(super) key_outputs:   OutputNames,
     pub(super) count_outputs: OutputNames,
-    pub(super) sorted: bool,
+    pub(super) sorted:        bool,
 }
 
 impl FacetOp {
@@ -364,9 +396,7 @@ impl FacetOp {
         )))))
     }
 
-    pub(crate) fn field(&self) -> &QdrantPayloadPath {
-        &self.field
-    }
+    pub(crate) fn field(&self) -> &QdrantPayloadPath { &self.field }
 
     pub(crate) fn is_key_output_name(&self, name: &str) -> bool {
         self.key_outputs.contains_name(name)
@@ -380,9 +410,7 @@ impl FacetOp {
         self.is_key_expr(expr) || self.is_count_expr(expr)
     }
 
-    fn is_key_expr(&self, expr: &Expr) -> bool {
-        self.key_outputs.matches_column(expr)
-    }
+    fn is_key_expr(&self, expr: &Expr) -> bool { self.key_outputs.matches_column(expr) }
 
     fn is_count_expr(&self, expr: &Expr) -> bool {
         self.count_outputs.matches_column(expr)
@@ -394,17 +422,11 @@ impl FacetOp {
 pub(crate) struct OutputNames(BTreeSet<String>);
 
 impl OutputNames {
-    pub(super) fn single(name: String) -> Self {
-        Self(BTreeSet::from([name]))
-    }
+    pub(super) fn single(name: String) -> Self { Self(BTreeSet::from([name])) }
 
-    fn contains_name(&self, name: &str) -> bool {
-        self.0.contains(name)
-    }
+    fn contains_name(&self, name: &str) -> bool { self.0.contains(name) }
 
-    pub(crate) fn names(&self) -> BTreeSet<String> {
-        self.0.clone()
-    }
+    pub(crate) fn names(&self) -> BTreeSet<String> { self.0.clone() }
 
     fn matches_column(&self, expr: &Expr) -> bool {
         matches!(expr.clone().unalias_nested().data, Expr::Column(column) if self.contains_name(&column.name))

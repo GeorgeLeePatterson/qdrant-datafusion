@@ -21,17 +21,11 @@ use crate::arrow::schema::{ID_FIELD_NAME, PAYLOAD_FIELD_NAME};
 use crate::stream::QdrantQueryStream;
 
 impl ExecutionPlan for QdrantScanExec {
-    fn name(&self) -> &'static str {
-        "QdrantScanExec"
-    }
+    fn name(&self) -> &'static str { "QdrantScanExec" }
 
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
+    fn as_any(&self) -> &dyn Any { self }
 
-    fn properties(&self) -> &Arc<PlanProperties> {
-        &self.properties
-    }
+    fn properties(&self) -> &Arc<PlanProperties> { &self.properties }
 
     fn apply_expressions(
         &self,
@@ -40,9 +34,7 @@ impl ExecutionPlan for QdrantScanExec {
         Ok(TreeNodeRecursion::Continue)
     }
 
-    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
-        vec![]
-    }
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> { vec![] }
 
     fn with_new_children(
         self: Arc<Self>,
@@ -142,10 +134,10 @@ impl ExecutionPlan for QdrantScanExec {
         _context: Arc<TaskContext>,
     ) -> DataFusionResult<SendableRecordBatchStream> {
         let state = Some(QdrantScrollState {
-            client: Arc::clone(&self.client),
-            collection: self.collection.clone(),
-            pushdown: Arc::clone(&self.pushdown),
-            remaining: self.pushdown.limit,
+            client:       Arc::clone(&self.client),
+            collection:   self.collection.clone(),
+            pushdown:     Arc::clone(&self.pushdown),
+            remaining:    self.pushdown.limit,
             continuation: self.pushdown.initial_continuation(),
         });
         let inner = Box::pin(futures_util::stream::try_unfold(state, |state| async move {

@@ -12,15 +12,14 @@ use datafusion::common::{Result, plan_err};
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::optimizer::AnalyzerRule;
 
-use self::state::{CompositeState, SourceState};
-use self::surface::SurfaceCall;
-
 pub(crate) use self::kernel::{
     CountKernel, FacetKernel, KernelSpec, QueryBatchKernel, QueryGroupsKernel, QueryKernel,
 };
 pub(crate) use self::node::{KERNEL_NODE_NAME, KernelNode};
-pub(crate) use self::query::QueryRequest;
+pub(crate) use self::query::{QueryRequest, QueryRequestPlan};
 pub(crate) use self::state::State;
+use self::state::{CompositeState, SourceState};
+use self::surface::SurfaceCall;
 
 // ============================================================================
 // Analyzer
@@ -38,13 +37,11 @@ impl AnalyzerRule for PrototypePushdown {
         analyze_root(plan).map(|analysis| analysis.transformed.data)
     }
 
-    fn name(&self) -> &'static str {
-        "prototype_qdrant_pushdown"
-    }
+    fn name(&self) -> &'static str { "prototype_qdrant_pushdown" }
 }
 
 struct Analysis {
-    state: State,
+    state:       State,
     transformed: Transformed<LogicalPlan>,
 }
 
@@ -63,9 +60,7 @@ impl Analysis {
     }
 }
 
-fn analyze_root(plan: LogicalPlan) -> Result<Analysis> {
-    analyze_plan(plan)?.finish_root()
-}
+fn analyze_root(plan: LogicalPlan) -> Result<Analysis> { analyze_plan(plan)?.finish_root() }
 
 fn analyze_plan(plan: LogicalPlan) -> Result<Analysis> {
     let with_subqueries = plan

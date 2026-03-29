@@ -21,9 +21,21 @@ pub(crate) enum KernelSpec {
 impl KernelSpec {
     pub(super) fn project(self, plan: &LogicalPlan) -> Result<Option<Self>> {
         match self {
-            Self::Count(_) | Self::QueryBatch(_) | Self::QueryGroups(_) => Ok(None),
+            Self::Count(_) | Self::QueryBatch(_) => Ok(None),
             Self::Query(kernel) => kernel.project(plan).map(|kernel| kernel.map(Self::Query)),
+            Self::QueryGroups(kernel) => {
+                kernel.project(plan).map(|kernel| kernel.map(Self::QueryGroups))
+            }
             Self::Facet(kernel) => kernel.project(plan).map(|kernel| kernel.map(Self::Facet)),
+        }
+    }
+
+    pub(super) fn limit(self, plan: &LogicalPlan) -> Result<Option<Self>> {
+        match self {
+            Self::QueryGroups(kernel) => {
+                Ok(Some(Self::QueryGroups(kernel.with_limit(Some(limit_rows(plan)?)))))
+            }
+            Self::Count(_) | Self::Query(_) | Self::QueryBatch(_) | Self::Facet(_) => Ok(None),
         }
     }
 }

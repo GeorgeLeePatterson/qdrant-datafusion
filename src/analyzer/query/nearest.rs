@@ -1,9 +1,9 @@
 use datafusion::arrow::datatypes::DataType;
-use datafusion::common::{Result, ScalarValue, plan_err, exec_err};
+use datafusion::common::{Result, ScalarValue, exec_err, plan_err};
 use datafusion::logical_expr::Expr;
+use qdrant_client::qdrant::point_id::PointIdOptions;
 use qdrant_client::qdrant::{
-    DenseVector, Document, MultiDenseVector, PointId, Query, VectorInput, point_id::PointIdOptions,
-    vector_input,
+    DenseVector, Document, MultiDenseVector, PointId, Query, VectorInput, vector_input,
 };
 
 use super::super::source::Source;
@@ -32,7 +32,7 @@ impl NearestQuery {
         self.input.validate_on_source(source, using)
     }
 
-    pub(super) fn descriptor(&self) -> Result<QueryDescriptor> {
+    pub(super) fn descriptor(&self, _prefetch_count: usize) -> Result<QueryDescriptor> {
         self.input.descriptor(self.using.clone())
     }
 }
@@ -69,10 +69,12 @@ impl NearestInput {
             },
             Self::Sparse(input) => Query {
                 variant: Some(qdrant_client::qdrant::query::Variant::Nearest(VectorInput {
-                    variant: Some(vector_input::Variant::Sparse(qdrant_client::qdrant::SparseVector {
-                        values: input.values.clone(),
-                        indices: input.indices.clone(),
-                    })),
+                    variant: Some(vector_input::Variant::Sparse(
+                        qdrant_client::qdrant::SparseVector {
+                            values:  input.values.clone(),
+                            indices: input.indices.clone(),
+                        },
+                    )),
                 })),
             },
             Self::MultiDense(input) => Query {
@@ -95,8 +97,8 @@ impl NearestInput {
             Self::Document(input) => Query {
                 variant: Some(qdrant_client::qdrant::query::Variant::Nearest(VectorInput {
                     variant: Some(vector_input::Variant::Document(Document {
-                        text: input.text.clone(),
-                        model: input.model.clone().unwrap_or_default(),
+                        text:    input.text.clone(),
+                        model:   input.model.clone().unwrap_or_default(),
                         options: std::collections::HashMap::new(),
                     })),
                 })),
@@ -182,7 +184,7 @@ impl DenseNearestInput {
 #[derive(Debug, Clone)]
 pub(crate) struct SparseNearestInput {
     indices: Vec<u32>,
-    values: Vec<f32>,
+    values:  Vec<f32>,
 }
 
 impl SparseNearestInput {
@@ -279,14 +281,12 @@ impl IdNearestInput {
         }
     }
 
-    fn validate_on_source(&self, _source: &Source, _using: &str) -> Result<()> {
-        Ok(())
-    }
+    fn validate_on_source(&self, _source: &Source, _using: &str) -> Result<()> { Ok(()) }
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct DocumentNearestInput {
-    text: String,
+    text:  String,
     model: Option<String>,
 }
 
@@ -295,9 +295,7 @@ impl DocumentNearestInput {
         self.text == other.text && self.model == other.model
     }
 
-    fn validate_on_source(&self, _source: &Source, _using: &str) -> Result<()> {
-        Ok(())
-    }
+    fn validate_on_source(&self, _source: &Source, _using: &str) -> Result<()> { Ok(()) }
 }
 
 #[derive(Debug, Clone)]
@@ -311,15 +309,13 @@ impl ImageNearestInput {
         self.image == other.image && self.model == other.model
     }
 
-    fn validate_on_source(&self, _source: &Source, _using: &str) -> Result<()> {
-        Ok(())
-    }
+    fn validate_on_source(&self, _source: &Source, _using: &str) -> Result<()> { Ok(()) }
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct ObjectNearestInput {
     object: Vec<(String, ScalarValue)>,
-    model: Option<String>,
+    model:  Option<String>,
 }
 
 impl ObjectNearestInput {
@@ -327,9 +323,7 @@ impl ObjectNearestInput {
         self.object == other.object && self.model == other.model
     }
 
-    fn validate_on_source(&self, _source: &Source, _using: &str) -> Result<()> {
-        Ok(())
-    }
+    fn validate_on_source(&self, _source: &Source, _using: &str) -> Result<()> { Ok(()) }
 }
 
 #[derive(Debug, Clone)]
@@ -345,7 +339,7 @@ pub(crate) enum QueryVectorBinding {
 }
 
 impl QueryVectorBinding {
-    fn from_source(source: &Source, using: &str) -> Result<Self> {
+    pub(crate) fn from_source(source: &Source, using: &str) -> Result<Self> {
         let field: &datafusion::arrow::datatypes::Field = match source.schema.field_with_name(using)
         {
             Ok(field) => field,

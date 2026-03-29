@@ -67,13 +67,9 @@ impl QdrantFilters {
         (Self::from_exprs(exprs), support)
     }
 
-    pub(crate) fn len(&self) -> usize {
-        self.exprs.iter().map(QdrantFilterExpr::leaf_count).sum()
-    }
+    pub(crate) fn len(&self) -> usize { self.exprs.iter().map(QdrantFilterExpr::leaf_count).sum() }
 
-    pub(crate) fn is_empty(&self) -> bool {
-        self.exprs.is_empty()
-    }
+    pub(crate) fn is_empty(&self) -> bool { self.exprs.is_empty() }
 
     pub(crate) fn to_filter(&self) -> Option<Filter> {
         match self.exprs.as_slice() {
@@ -131,7 +127,7 @@ enum QdrantPredicate {
         value: QdrantFilterValue,
     },
     PayloadIn {
-        field: QdrantPayloadPath,
+        field:  QdrantPayloadPath,
         values: Vec<QdrantFilterValue>,
     },
     PayloadRange {
@@ -200,10 +196,10 @@ impl QdrantPredicate {
             Self::HasVector(name) => Condition::has_vector(name.clone()),
             Self::PayloadIsNull(field) => Condition::is_null(field.key()),
             Self::PayloadIsEmpty(field) => Condition::is_empty(field.key()),
-            Self::PayloadExists(field) => Condition::values_count(
-                field.key(),
-                ValuesCount { gte: Some(0), ..Default::default() },
-            ),
+            Self::PayloadExists(field) => Condition::values_count(field.key(), ValuesCount {
+                gte: Some(0),
+                ..Default::default()
+            }),
             Self::PayloadEq { field, value } => field.eq_condition(value),
             Self::PayloadIn { field, values } => field.in_condition(values),
             Self::PayloadRange { field, lower, upper } => {
@@ -301,52 +297,41 @@ mod tests {
     use crate::arrow::schema::{ID_FIELD_NAME, PAYLOAD_FIELD_NAME, UNNAMED_VECTOR_FIELD_NAME};
     use crate::pushdown::QdrantPayloadSchema;
 
-    fn schema(fields: Vec<Field>) -> SchemaRef {
-        Arc::new(Schema::new(fields))
-    }
+    fn schema(fields: Vec<Field>) -> SchemaRef { Arc::new(Schema::new(fields)) }
 
     fn payload_schema() -> QdrantPayloadSchema {
         QdrantPayloadSchema::from(HashMap::from([
-            (
-                "rank".to_owned(),
-                PayloadSchemaInfo {
-                    data_type: PayloadSchemaType::Integer as i32,
-                    params: Some(qdrant_client::qdrant::PayloadIndexParams {
-                        index_params: Some(payload_index_params::IndexParams::IntegerIndexParams(
-                            IntegerIndexParams { range: Some(true), ..Default::default() },
-                        )),
-                    }),
-                    points: None,
-                },
-            ),
-            (
-                "tag".to_owned(),
-                PayloadSchemaInfo {
-                    data_type: PayloadSchemaType::Keyword as i32,
-                    params: Some(qdrant_client::qdrant::PayloadIndexParams {
-                        index_params: Some(payload_index_params::IndexParams::KeywordIndexParams(
-                            KeywordIndexParams::default(),
-                        )),
-                    }),
-                    points: None,
-                },
-            ),
-            (
-                "range_only".to_owned(),
-                PayloadSchemaInfo {
-                    data_type: PayloadSchemaType::Integer as i32,
-                    params: Some(qdrant_client::qdrant::PayloadIndexParams {
-                        index_params: Some(payload_index_params::IndexParams::IntegerIndexParams(
-                            IntegerIndexParams {
-                                lookup: Some(false),
-                                range: Some(true),
-                                ..Default::default()
-                            },
-                        )),
-                    }),
-                    points: None,
-                },
-            ),
+            ("rank".to_owned(), PayloadSchemaInfo {
+                data_type: PayloadSchemaType::Integer as i32,
+                params:    Some(qdrant_client::qdrant::PayloadIndexParams {
+                    index_params: Some(payload_index_params::IndexParams::IntegerIndexParams(
+                        IntegerIndexParams { range: Some(true), ..Default::default() },
+                    )),
+                }),
+                points:    None,
+            }),
+            ("tag".to_owned(), PayloadSchemaInfo {
+                data_type: PayloadSchemaType::Keyword as i32,
+                params:    Some(qdrant_client::qdrant::PayloadIndexParams {
+                    index_params: Some(payload_index_params::IndexParams::KeywordIndexParams(
+                        KeywordIndexParams::default(),
+                    )),
+                }),
+                points:    None,
+            }),
+            ("range_only".to_owned(), PayloadSchemaInfo {
+                data_type: PayloadSchemaType::Integer as i32,
+                params:    Some(qdrant_client::qdrant::PayloadIndexParams {
+                    index_params: Some(payload_index_params::IndexParams::IntegerIndexParams(
+                        IntegerIndexParams {
+                            lookup: Some(false),
+                            range: Some(true),
+                            ..Default::default()
+                        },
+                    )),
+                }),
+                points:    None,
+            }),
         ]))
     }
 
@@ -572,10 +557,8 @@ mod tests {
             Field::new(ID_FIELD_NAME, DataType::Utf8, false),
             Field::new(PAYLOAD_FIELD_NAME, DataType::Utf8, true),
         ]);
-        let filters = QdrantFilters::try_new(
-            &schema,
-            &payload_schema(),
-            &[Expr::BinaryExpr(BinaryExpr::new(
+        let filters = QdrantFilters::try_new(&schema, &payload_schema(), &[Expr::BinaryExpr(
+            BinaryExpr::new(
                 Box::new(Expr::InList(InList::new(
                     Box::new(Expr::Column(Column::from_name(ID_FIELD_NAME))),
                     vec![
@@ -590,8 +573,8 @@ mod tests {
                     Operator::Eq,
                     Box::new(Expr::Literal(ScalarValue::Utf8(Some("blue".to_owned())), None)),
                 ))),
-            ))],
-        )
+            ),
+        )])
         .expect("filters");
         let ids = filters.possible_point_ids().expect("point ids");
         assert_eq!(ids.len(), 2);
@@ -600,16 +583,15 @@ mod tests {
     #[test]
     fn possible_point_ids_rejects_unbounded_not_branch() {
         let schema = schema(vec![Field::new(ID_FIELD_NAME, DataType::Utf8, false)]);
-        let filters = QdrantFilters::try_new(
-            &schema,
-            &QdrantPayloadSchema::default(),
-            &[Expr::Not(Box::new(Expr::BinaryExpr(BinaryExpr::new(
-                Box::new(Expr::Column(Column::from_name(ID_FIELD_NAME))),
-                Operator::Eq,
-                Box::new(Expr::Literal(ScalarValue::Utf8(Some("1".to_owned())), None)),
-            ))))],
-        )
-        .expect("filters");
+        let filters =
+            QdrantFilters::try_new(&schema, &QdrantPayloadSchema::default(), &[Expr::Not(
+                Box::new(Expr::BinaryExpr(BinaryExpr::new(
+                    Box::new(Expr::Column(Column::from_name(ID_FIELD_NAME))),
+                    Operator::Eq,
+                    Box::new(Expr::Literal(ScalarValue::Utf8(Some("1".to_owned())), None)),
+                ))),
+            )])
+            .expect("filters");
         assert!(filters.possible_point_ids().is_none());
     }
 }

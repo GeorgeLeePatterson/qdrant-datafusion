@@ -11,30 +11,32 @@ mod sample;
 
 use std::collections::BTreeSet;
 
-use datafusion::common::Result;
+use datafusion::arrow::array::Array;
+use datafusion::common::{Result, ScalarValue, plan_err};
+use datafusion::logical_expr::Expr;
+use qdrant_client::qdrant::point_id::PointIdOptions;
 use qdrant_client::qdrant::{
-    Filter, PrefetchQuery, Query, QueryBatchPoints, QueryPointGroups, QueryPoints,
-    VectorsSelector, WithPayloadSelector, WithVectorsSelector, with_payload_selector,
-    with_vectors_selector,
-};
-
-use super::source::Source;
-use super::surface::QuerySurfaceCall;
-use crate::arrow::schema::{
-    PAYLOAD_FIELD_NAME, UNNAMED_VECTOR_FIELD_NAME, dense_vector_width, is_multi_vector_field,
-    is_sparse_vector_field,
+    Filter, PointId, PrefetchQuery, Query, QueryBatchPoints, QueryPointGroups, QueryPoints,
+    VectorInput, VectorsSelector, WithPayloadSelector, WithVectorsSelector, vector_input,
+    with_payload_selector, with_vectors_selector,
 };
 
 pub(crate) use self::context::ContextQuery;
 pub(crate) use self::discover::DiscoverQuery;
 pub(crate) use self::formula::FormulaQuery;
 pub(crate) use self::fusion::FusionQuery;
-pub(crate) use self::nearest::NearestQuery;
+pub(crate) use self::nearest::{NearestQuery, QueryVectorBinding};
 pub(crate) use self::nearest_with_mmr::NearestWithMmrQuery;
 pub(crate) use self::order_by::OrderByQuery;
 pub(crate) use self::recommend::RecommendQuery;
 pub(crate) use self::relevance_feedback::RelevanceFeedbackQuery;
 pub(crate) use self::sample::SampleQuery;
+use super::source::Source;
+use super::surface::QuerySurfaceCall;
+use crate::arrow::schema::{
+    PAYLOAD_FIELD_NAME, UNNAMED_VECTOR_FIELD_NAME, dense_vector_width, is_multi_vector_field,
+    is_sparse_vector_field,
+};
 
 #[derive(Debug, Clone)]
 pub(crate) struct QueryDescriptor {
@@ -43,12 +45,368 @@ pub(crate) struct QueryDescriptor {
 }
 
 impl QueryDescriptor {
-    pub(crate) fn new(query: Query, using: Option<String>) -> Self {
-        Self { query, using }
+    pub(crate) fn new(query: Query, using: Option<String>) -> Self { Self { query, using } }
+
+    fn into_parts(self) -> (Query, Option<String>) { (self.query, self.using) }
+}
+
+pub(super) fn function_args<'a>(expr: &'a Expr, name: &str) -> Option<&'a [Expr]> {
+    let Expr::ScalarFunction(function) = expr else {
+        return None;
+    };
+    (function.name() == name).then_some(function.args.as_slice())
+}
+
+pub(super) fn column_name(expr: &Expr, function_name: &str) -> Result<String> {
+    let expr = expr.clone().unalias_nested().data;
+    let Expr::Column(column) = expr else {
+        return plan_err!("{function_name} requires a column reference");
+    };
+    Ok(column.name)
+}
+
+pub(super) fn string_literal(expr: &Expr, function_name: &str, argument: &str) -> Result<String> {
+    match expr.clone().unalias_nested().data {
+        Expr::Literal(ScalarValue::Utf8(Some(value)), _)
+        | Expr::Literal(ScalarValue::LargeUtf8(Some(value)), _) => Ok(value),
+        Expr::Cast(cast) => string_literal(&cast.expr, function_name, argument),
+        Expr::TryCast(cast) => string_literal(&cast.expr, function_name, argument),
+        _ => plan_err!("{function_name} requires {argument} to be a string literal"),
+    }
+}
+
+pub(super) fn bool_literal(expr: &Expr, function_name: &str, argument: &str) -> Result<bool> {
+    match expr.clone().unalias_nested().data {
+        Expr::Literal(ScalarValue::Boolean(Some(value)), _) => Ok(value),
+        Expr::Cast(cast) => bool_literal(&cast.expr, function_name, argument),
+        Expr::TryCast(cast) => bool_literal(&cast.expr, function_name, argument),
+        _ => plan_err!("{function_name} requires {argument} to be a boolean literal"),
+    }
+}
+
+pub(super) fn f32_literal(expr: &Expr, function_name: &str, argument: &str) -> Result<f32> {
+    match expr.clone().unalias_nested().data {
+        Expr::Negative(expr) => Ok(-f32_literal(&expr, function_name, argument)?),
+        Expr::Cast(cast) => f32_literal(&cast.expr, function_name, argument),
+        Expr::TryCast(cast) => f32_literal(&cast.expr, function_name, argument),
+        Expr::Literal(value, _) => match value {
+            ScalarValue::Float32(Some(value)) => Ok(value),
+            ScalarValue::Float64(Some(value)) => Ok(value as f32),
+            ScalarValue::Int8(Some(value)) => Ok(f32::from(value)),
+            ScalarValue::Int16(Some(value)) => Ok(f32::from(value)),
+            ScalarValue::Int32(Some(value)) => Ok(value as f32),
+            ScalarValue::Int64(Some(value)) => Ok(value as f32),
+            ScalarValue::UInt8(Some(value)) => Ok(f32::from(value)),
+            ScalarValue::UInt16(Some(value)) => Ok(f32::from(value)),
+            ScalarValue::UInt32(Some(value)) => Ok(value as f32),
+            ScalarValue::UInt64(Some(value)) => Ok(value as f32),
+            _ => plan_err!("{function_name} requires {argument} to be numeric"),
+        },
+        _ => plan_err!("{function_name} requires {argument} to be numeric"),
+    }
+}
+
+pub(super) fn u32_literal(expr: &Expr, function_name: &str, argument: &str) -> Result<u32> {
+    match expr.clone().unalias_nested().data {
+        Expr::Cast(cast) => u32_literal(&cast.expr, function_name, argument),
+        Expr::TryCast(cast) => u32_literal(&cast.expr, function_name, argument),
+        Expr::Literal(value, _) => match value {
+            ScalarValue::Int8(Some(value)) if value >= 0 => Ok(value as u32),
+            ScalarValue::Int16(Some(value)) if value >= 0 => Ok(value as u32),
+            ScalarValue::Int32(Some(value)) if value >= 0 => Ok(value as u32),
+            ScalarValue::Int64(Some(value)) if value >= 0 => u32::try_from(value).map_err(|_| {
+                datafusion::error::DataFusionError::Plan(format!(
+                    "{function_name} requires {argument} to fit in u32"
+                ))
+            }),
+            ScalarValue::UInt8(Some(value)) => Ok(u32::from(value)),
+            ScalarValue::UInt16(Some(value)) => Ok(u32::from(value)),
+            ScalarValue::UInt32(Some(value)) => Ok(value),
+            ScalarValue::UInt64(Some(value)) => u32::try_from(value).map_err(|_| {
+                datafusion::error::DataFusionError::Plan(format!(
+                    "{function_name} requires {argument} to fit in u32"
+                ))
+            }),
+            _ => plan_err!("{function_name} requires {argument} to be a non-negative integer"),
+        },
+        _ => plan_err!("{function_name} requires {argument} to be a non-negative integer"),
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(super) enum VectorQueryInput {
+    Dense(Vec<f32>),
+    Id(PointId),
+}
+
+impl VectorQueryInput {
+    pub(super) fn same_semantics(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Dense(lhs), Self::Dense(rhs)) => {
+                lhs.iter().map(|value| value.to_bits()).eq(rhs.iter().map(|value| value.to_bits()))
+            }
+            (Self::Id(lhs), Self::Id(rhs)) => {
+                match (&lhs.point_id_options, &rhs.point_id_options) {
+                    (Some(PointIdOptions::Num(lhs)), Some(PointIdOptions::Num(rhs))) => lhs == rhs,
+                    (Some(PointIdOptions::Uuid(lhs)), Some(PointIdOptions::Uuid(rhs))) => {
+                        lhs == rhs
+                    }
+                    (None, None) => true,
+                    _ => false,
+                }
+            }
+            _ => false,
+        }
     }
 
-    fn into_parts(self) -> (Query, Option<String>) {
-        (self.query, self.using)
+    pub(super) fn validate_on_source(
+        &self,
+        source: &Source,
+        using: &str,
+        function_name: &str,
+        argument: &str,
+    ) -> Result<()> {
+        match self {
+            Self::Dense(vector) => match QueryVectorBinding::from_source(source, using)? {
+                QueryVectorBinding::DenseFixed { width } => {
+                    if width != vector.len() {
+                        return plan_err!(
+                            "{function_name} requires {argument} width to match source vector \
+                             width"
+                        );
+                    }
+                    Ok(())
+                }
+                QueryVectorBinding::DenseVariable => Ok(()),
+                QueryVectorBinding::MultiDense => plan_err!(
+                    "{function_name} requires {argument} to target a single dense vector field"
+                ),
+                QueryVectorBinding::Sparse => {
+                    plan_err!("{function_name} requires {argument} to target a dense vector field")
+                }
+                QueryVectorBinding::Document => plan_err!(
+                    "{function_name} requires {argument} to target a dense vector field, not a \
+                     document field"
+                ),
+                QueryVectorBinding::Image => plan_err!(
+                    "{function_name} requires {argument} to target a dense vector field, not an \
+                     image field"
+                ),
+                QueryVectorBinding::Object => plan_err!(
+                    "{function_name} requires {argument} to target a dense vector field, not an \
+                     object field"
+                ),
+                QueryVectorBinding::Unsupported(data_type) => plan_err!(
+                    "{function_name} requires {argument} to target a supported vector field, \
+                     found {:?}",
+                    data_type
+                ),
+            },
+            Self::Id(_) => Ok(()),
+        }
+    }
+
+    pub(super) fn into_proto(self) -> VectorInput {
+        match self {
+            Self::Dense(vector) => VectorInput {
+                variant: Some(vector_input::Variant::Dense(qdrant_client::qdrant::DenseVector {
+                    data: vector,
+                })),
+            },
+            Self::Id(point_id) => {
+                VectorInput { variant: Some(vector_input::Variant::Id(point_id)) }
+            }
+        }
+    }
+}
+
+pub(super) fn vector_input_literal(
+    expr: &Expr,
+    function_name: &str,
+    argument: &str,
+) -> Result<VectorQueryInput> {
+    match expr.clone().unalias_nested().data {
+        Expr::Cast(cast) => vector_input_literal(&cast.expr, function_name, argument),
+        Expr::TryCast(cast) => vector_input_literal(&cast.expr, function_name, argument),
+        Expr::Literal(value, _) => vector_input_from_scalar(&value, function_name, argument),
+        _ => {
+            plan_err!("{function_name} requires {argument} to be an id literal or an array literal")
+        }
+    }
+}
+
+pub(super) fn vector_input_list(
+    expr: &Expr,
+    function_name: &str,
+    argument: &str,
+) -> Result<Vec<VectorQueryInput>> {
+    list_literal(expr, function_name, argument)?
+        .iter()
+        .map(|value| vector_input_from_scalar(value, function_name, argument))
+        .collect()
+}
+
+pub(super) fn vector_input_pair_list(
+    expr: &Expr,
+    function_name: &str,
+    argument: &str,
+) -> Result<Vec<(VectorQueryInput, VectorQueryInput)>> {
+    list_literal(expr, function_name, argument)?
+        .iter()
+        .map(|value| {
+            let values = list_from_scalar(value, function_name, argument)?;
+            if values.len() != 2 {
+                return plan_err!(
+                    "{function_name} requires each {argument} entry to contain exactly two vector \
+                     inputs"
+                );
+            }
+            Ok((
+                vector_input_from_scalar(&values[0], function_name, argument)?,
+                vector_input_from_scalar(&values[1], function_name, argument)?,
+            ))
+        })
+        .collect()
+}
+
+pub(super) fn feedback_input_list(
+    expr: &Expr,
+    function_name: &str,
+    argument: &str,
+) -> Result<Vec<(VectorQueryInput, f32)>> {
+    list_literal(expr, function_name, argument)?
+        .iter()
+        .map(|value| {
+            let values = list_from_scalar(value, function_name, argument)?;
+            if values.len() != 2 {
+                return plan_err!(
+                    "{function_name} requires each {argument} entry to contain an example and a \
+                     score"
+                );
+            }
+            Ok((
+                vector_input_from_scalar(&values[0], function_name, argument)?,
+                scalar_f32(&values[1], function_name, argument)?,
+            ))
+        })
+        .collect()
+}
+
+fn vector_input_from_scalar(
+    value: &ScalarValue,
+    function_name: &str,
+    argument: &str,
+) -> Result<VectorQueryInput> {
+    match value {
+        ScalarValue::List(_) | ScalarValue::LargeList(_) => {
+            let vector = list_from_scalar(value, function_name, argument)?
+                .iter()
+                .map(|value| scalar_f32(value, function_name, argument))
+                .collect::<Result<Vec<_>>>()?;
+            Ok(VectorQueryInput::Dense(vector))
+        }
+        _ => Ok(VectorQueryInput::Id(point_id_from_scalar(value, function_name, argument)?)),
+    }
+}
+
+pub(super) fn list_literal(
+    expr: &Expr,
+    function_name: &str,
+    argument: &str,
+) -> Result<Vec<ScalarValue>> {
+    match expr.clone().unalias_nested().data {
+        Expr::Cast(cast) => list_literal(&cast.expr, function_name, argument),
+        Expr::TryCast(cast) => list_literal(&cast.expr, function_name, argument),
+        Expr::Literal(value, _) => list_from_scalar(&value, function_name, argument),
+        _ => plan_err!("{function_name} requires {argument} to be an array literal"),
+    }
+}
+
+pub(super) fn list_from_scalar(
+    value: &ScalarValue,
+    function_name: &str,
+    argument: &str,
+) -> Result<Vec<ScalarValue>> {
+    match value {
+        ScalarValue::List(array) => {
+            if array.is_empty() {
+                Ok(vec![])
+            } else {
+                list_values_from_array(array.value(0).as_ref())
+            }
+        }
+        ScalarValue::LargeList(array) => {
+            if array.is_empty() {
+                Ok(vec![])
+            } else {
+                list_values_from_array(array.value(0).as_ref())
+            }
+        }
+        _ => plan_err!("{function_name} requires {argument} to be an array literal"),
+    }
+}
+
+fn list_values_from_array(array: &dyn Array) -> Result<Vec<ScalarValue>> {
+    (0..array.len()).map(|index| ScalarValue::try_from_array(array, index)).collect()
+}
+
+fn point_id_from_scalar(
+    value: &ScalarValue,
+    function_name: &str,
+    argument: &str,
+) -> Result<PointId> {
+    let point_id_options = match value {
+        ScalarValue::Utf8(Some(value)) | ScalarValue::LargeUtf8(Some(value)) => {
+            Some(PointIdOptions::Uuid(value.clone()))
+        }
+        ScalarValue::Int8(Some(value)) if *value >= 0 => Some(PointIdOptions::Num(*value as u64)),
+        ScalarValue::Int16(Some(value)) if *value >= 0 => Some(PointIdOptions::Num(*value as u64)),
+        ScalarValue::Int32(Some(value)) if *value >= 0 => Some(PointIdOptions::Num(*value as u64)),
+        ScalarValue::Int64(Some(value)) if *value >= 0 => {
+            Some(PointIdOptions::Num(u64::try_from(*value).map_err(|_| {
+                datafusion::error::DataFusionError::Plan(format!(
+                    "{function_name} requires {argument} ids to fit in u64"
+                ))
+            })?))
+        }
+        ScalarValue::UInt8(Some(value)) => Some(PointIdOptions::Num(u64::from(*value))),
+        ScalarValue::UInt16(Some(value)) => Some(PointIdOptions::Num(u64::from(*value))),
+        ScalarValue::UInt32(Some(value)) => Some(PointIdOptions::Num(u64::from(*value))),
+        ScalarValue::UInt64(Some(value)) => Some(PointIdOptions::Num(*value)),
+        _ => None,
+    };
+    match point_id_options {
+        Some(point_id_options) => Ok(PointId { point_id_options: Some(point_id_options) }),
+        None => plan_err!(
+            "{function_name} requires {argument} ids to be string or non-negative integer literals"
+        ),
+    }
+}
+
+pub(super) fn scalar_string(
+    value: &ScalarValue,
+    function_name: &str,
+    argument: &str,
+) -> Result<String> {
+    match value {
+        ScalarValue::Utf8(Some(value)) | ScalarValue::LargeUtf8(Some(value)) => Ok(value.clone()),
+        _ => plan_err!("{function_name} requires {argument} to be a string literal"),
+    }
+}
+
+pub(super) fn scalar_f32(value: &ScalarValue, function_name: &str, argument: &str) -> Result<f32> {
+    match value {
+        ScalarValue::Float32(Some(value)) => Ok(*value),
+        ScalarValue::Float64(Some(value)) => Ok(*value as f32),
+        ScalarValue::Int8(Some(value)) => Ok(f32::from(*value)),
+        ScalarValue::Int16(Some(value)) => Ok(f32::from(*value)),
+        ScalarValue::Int32(Some(value)) => Ok(*value as f32),
+        ScalarValue::Int64(Some(value)) => Ok(*value as f32),
+        ScalarValue::UInt8(Some(value)) => Ok(f32::from(*value)),
+        ScalarValue::UInt16(Some(value)) => Ok(f32::from(*value)),
+        ScalarValue::UInt32(Some(value)) => Ok(*value as f32),
+        ScalarValue::UInt64(Some(value)) => Ok(*value as f32),
+        _ => plan_err!("{function_name} requires {argument} to be numeric"),
     }
 }
 
@@ -94,11 +452,11 @@ impl QueryVectorsSelector {
 
 #[derive(Debug, Clone)]
 pub(crate) struct QueryBranchPlan {
-    pub(crate) prefetch: Vec<QueryBranchPlan>,
-    pub(crate) descriptor: Option<QueryDescriptor>,
-    pub(crate) filter: Option<Filter>,
+    pub(crate) prefetch:        Vec<QueryBranchPlan>,
+    pub(crate) descriptor:      Option<QueryDescriptor>,
+    pub(crate) filter:          Option<Filter>,
     pub(crate) score_threshold: Option<f32>,
-    pub(crate) limit: Option<u64>,
+    pub(crate) limit:           Option<u64>,
 }
 
 impl QueryBranchPlan {
@@ -108,22 +466,7 @@ impl QueryBranchPlan {
         score_threshold: Option<f32>,
         limit: Option<u64>,
     ) -> Self {
-        Self {
-            prefetch: vec![],
-            descriptor: Some(descriptor),
-            filter,
-            score_threshold,
-            limit,
-        }
-    }
-
-    pub(crate) fn single(
-        descriptor: QueryDescriptor,
-        filter: Option<Filter>,
-        score_threshold: Option<f32>,
-        limit: u64,
-    ) -> Self {
-        Self::descriptor(descriptor, filter, score_threshold, Some(limit))
+        Self { prefetch: vec![], descriptor: Some(descriptor), filter, score_threshold, limit }
     }
 
     fn into_prefetch_proto(self) -> Result<PrefetchQuery> {
@@ -154,10 +497,10 @@ impl QueryBranchPlan {
 #[derive(Debug, Clone)]
 pub(crate) struct QueryPointsRequestPlan {
     collection: String,
-    branch: QueryBranchPlan,
-    offset: Option<u64>,
-    payload: bool,
-    vectors: QueryVectorsSelector,
+    branch:     QueryBranchPlan,
+    offset:     Option<u64>,
+    payload:    bool,
+    vectors:    QueryVectorsSelector,
 }
 
 impl QueryPointsRequestPlan {
@@ -196,7 +539,9 @@ impl QueryPointsRequestPlan {
             offset: self.offset,
             with_vectors: Some(self.vectors.into_proto()),
             with_payload: Some(WithPayloadSelector {
-                selector_options: Some(with_payload_selector::SelectorOptions::Enable(self.payload)),
+                selector_options: Some(with_payload_selector::SelectorOptions::Enable(
+                    self.payload,
+                )),
             }),
             read_consistency: None,
             shard_key_selector: None,
@@ -209,7 +554,7 @@ impl QueryPointsRequestPlan {
 #[derive(Debug, Clone)]
 pub(crate) struct QueryBatchRequestPlan {
     collection: String,
-    queries: Vec<QueryPointsRequestPlan>,
+    queries:    Vec<QueryPointsRequestPlan>,
 }
 
 impl QueryBatchRequestPlan {
@@ -219,14 +564,14 @@ impl QueryBatchRequestPlan {
 
     fn into_proto(self) -> Result<QueryBatchPoints> {
         Ok(QueryBatchPoints {
-            collection_name: self.collection,
-            query_points: self
+            collection_name:  self.collection,
+            query_points:     self
                 .queries
                 .into_iter()
                 .map(QueryPointsRequestPlan::into_proto)
                 .collect::<Result<Vec<_>>>()?,
             read_consistency: None,
-            timeout: None,
+            timeout:          None,
         })
     }
 }
@@ -234,10 +579,10 @@ impl QueryBatchRequestPlan {
 #[derive(Debug, Clone)]
 pub(crate) struct QueryGroupsRequestPlan {
     collection: String,
-    branch: QueryBranchPlan,
-    payload: bool,
-    vectors: QueryVectorsSelector,
-    group_by: String,
+    branch:     QueryBranchPlan,
+    payload:    bool,
+    vectors:    QueryVectorsSelector,
+    group_by:   String,
     group_size: u64,
 }
 
@@ -276,7 +621,9 @@ impl QueryGroupsRequestPlan {
             params: None,
             score_threshold: self.branch.score_threshold,
             with_payload: Some(WithPayloadSelector {
-                selector_options: Some(with_payload_selector::SelectorOptions::Enable(self.payload)),
+                selector_options: Some(with_payload_selector::SelectorOptions::Enable(
+                    self.payload,
+                )),
             }),
             with_vectors: Some(self.vectors.into_proto()),
             lookup_from: None,
@@ -300,7 +647,7 @@ pub(crate) enum QueryRequest {
 
 #[derive(Debug, Clone)]
 pub(crate) struct QueryRequestPlan {
-    request: QueryRequest,
+    request:            QueryRequest,
     score_output_names: BTreeSet<String>,
 }
 
@@ -326,13 +673,9 @@ impl QueryRequestPlan {
         Ok(Self { request: QueryRequest::Groups(request.into_proto()?), score_output_names })
     }
 
-    pub(crate) fn request(&self) -> &QueryRequest {
-        &self.request
-    }
+    pub(crate) fn request(&self) -> &QueryRequest { &self.request }
 
-    pub(crate) fn score_output_names(&self) -> &BTreeSet<String> {
-        &self.score_output_names
-    }
+    pub(crate) fn score_output_names(&self) -> &BTreeSet<String> { &self.score_output_names }
 }
 
 #[derive(Debug, Clone)]
@@ -400,18 +743,18 @@ impl QueryKind {
         }
     }
 
-    pub(crate) fn descriptor(&self) -> Result<QueryDescriptor> {
+    pub(crate) fn descriptor(&self, prefetch_count: usize) -> Result<QueryDescriptor> {
         match self {
-            Self::Nearest(query) => query.descriptor(),
-            Self::Recommend(query) => query.descriptor(),
-            Self::Discover(query) => query.descriptor(),
-            Self::Context(query) => query.descriptor(),
-            Self::OrderBy(query) => query.descriptor(),
-            Self::Fusion(query) => query.descriptor(),
-            Self::Sample(query) => query.descriptor(),
-            Self::Formula(query) => query.descriptor(),
-            Self::NearestWithMmr(query) => query.descriptor(),
-            Self::RelevanceFeedback(query) => query.descriptor(),
+            Self::Nearest(query) => query.descriptor(prefetch_count),
+            Self::Recommend(query) => query.descriptor(prefetch_count),
+            Self::Discover(query) => query.descriptor(prefetch_count),
+            Self::Context(query) => query.descriptor(prefetch_count),
+            Self::OrderBy(query) => query.descriptor(prefetch_count),
+            Self::Fusion(query) => query.descriptor(prefetch_count),
+            Self::Sample(query) => query.descriptor(prefetch_count),
+            Self::Formula(query) => query.descriptor(prefetch_count),
+            Self::NearestWithMmr(query) => query.descriptor(prefetch_count),
+            Self::RelevanceFeedback(query) => query.descriptor(prefetch_count),
         }
     }
 }

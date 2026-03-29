@@ -6,8 +6,7 @@ use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_planner::{ExtensionPlanner, PhysicalPlanner};
 
 use super::exec::{
-    QdrantCountExec, QdrantFacetExec, QdrantQueryBatchExec, QdrantQueryExec,
-    QdrantQueryGroupsExec,
+    QdrantCountExec, QdrantFacetExec, QdrantQueryBatchExec, QdrantQueryExec, QdrantQueryGroupsExec,
 };
 use crate::analyzer::{KERNEL_NODE_NAME, KernelNode, KernelSpec};
 

@@ -30,11 +30,11 @@ fn vector_kind(vector: &vector_output::Vector) -> &'static str {
 }
 
 struct DenseVectorRows {
-    name: String,
+    name:    String,
     unnamed: bool,
-    width: usize,
-    values: Vec<f32>,
-    nulls: NullBufferBuilder,
+    width:   usize,
+    values:  Vec<f32>,
+    nulls:   NullBufferBuilder,
 }
 
 impl DenseVectorRows {
@@ -98,15 +98,15 @@ impl DenseVectorRows {
 }
 
 struct MultiVectorRows {
-    name: String,
-    unnamed: bool,
-    width: usize,
-    width_i32: i32,
+    name:         String,
+    unnamed:      bool,
+    width:        usize,
+    width_i32:    i32,
     data_offsets: Vec<i32>,
     running_size: i32,
-    values: Vec<f32>,
-    shapes: Vec<i32>,
-    nulls: NullBufferBuilder,
+    values:       Vec<f32>,
+    shapes:       Vec<i32>,
+    nulls:        NullBufferBuilder,
 }
 
 impl MultiVectorRows {
@@ -205,16 +205,16 @@ impl MultiVectorRows {
 }
 
 struct SparseVectorRows {
-    name: String,
-    unnamed: bool,
-    shapes: Vec<i32>,
-    row_ptrs: Vec<i32>,
+    name:          String,
+    unnamed:       bool,
+    shapes:        Vec<i32>,
+    row_ptrs:      Vec<i32>,
     row_ptrs_offs: Vec<i32>,
-    col_indices: Vec<u32>,
-    col_offs: Vec<i32>,
-    values: Vec<f32>,
-    value_offs: Vec<i32>,
-    nulls: NullBufferBuilder,
+    col_indices:   Vec<u32>,
+    col_offs:      Vec<i32>,
+    values:        Vec<f32>,
+    value_offs:    Vec<i32>,
+    nulls:         NullBufferBuilder,
 }
 
 impl SparseVectorRows {
@@ -373,7 +373,7 @@ enum FieldAppender {
 }
 
 pub struct QdrantRecordBatchBuilder {
-    schema: SchemaRef,
+    schema:          SchemaRef,
     field_appenders: Vec<FieldAppender>,
 }
 
@@ -659,19 +659,19 @@ mod tests {
 
         builder
             .append_retrieved_point(RetrievedPoint {
-                id: Some(1_u64.into()),
-                payload: HashMap::new(),
-                vectors: Some(VectorsOutput {
+                id:          Some(1_u64.into()),
+                payload:     HashMap::new(),
+                vectors:     Some(VectorsOutput {
                     vectors_options: Some(vectors_output::VectorsOptions::Vector(VectorOutput {
-                        vector: Some(vector_output::Vector::Dense(DenseVector {
+                        vector:        Some(vector_output::Vector::Dense(DenseVector {
                             data: vec![1.0, 2.0, 3.0],
                         })),
-                        data: vec![],
-                        indices: None,
+                        data:          vec![],
+                        indices:       None,
                         vectors_count: None,
                     })),
                 }),
-                shard_key: None,
+                shard_key:   None,
                 order_value: None,
             })
             .expect("append point");
@@ -698,17 +698,17 @@ mod tests {
         let mut builder = QdrantRecordBatchBuilder::new(schema, 1, None).expect("builder");
 
         let result = builder.append_retrieved_point(RetrievedPoint {
-            id: Some(1_u64.into()),
-            payload: HashMap::new(),
-            vectors: Some(VectorsOutput {
+            id:          Some(1_u64.into()),
+            payload:     HashMap::new(),
+            vectors:     Some(VectorsOutput {
                 vectors_options: Some(vectors_output::VectorsOptions::Vector(VectorOutput {
-                    vector: None,
-                    data: vec![],
-                    indices: None,
+                    vector:        None,
+                    data:          vec![],
+                    indices:       None,
                     vectors_count: None,
                 })),
             }),
-            shard_key: None,
+            shard_key:   None,
             order_value: None,
         });
 
@@ -759,10 +759,9 @@ mod tests {
         let mut rows =
             MultiVectorRows::new("multi".to_string(), false, 2, 2).expect("multivector rows");
         rows.push(Some(vector_output::Vector::MultiDense(MultiDenseVector {
-            vectors: vec![
-                DenseVector { data: vec![1.0, 2.0] },
-                DenseVector { data: vec![3.0, 4.0] },
-            ],
+            vectors: vec![DenseVector { data: vec![1.0, 2.0] }, DenseVector {
+                data: vec![3.0, 4.0],
+            }],
         })))
         .expect("row 0");
         rows.push(Some(vector_output::Vector::MultiDense(MultiDenseVector {
@@ -792,10 +791,9 @@ mod tests {
         let mut rows =
             MultiVectorRows::new("multi".to_string(), false, 2, 3).expect("multivector rows");
         rows.push(Some(vector_output::Vector::MultiDense(MultiDenseVector {
-            vectors: vec![
-                DenseVector { data: vec![1.0, 2.0] },
-                DenseVector { data: vec![3.0, 4.0] },
-            ],
+            vectors: vec![DenseVector { data: vec![1.0, 2.0] }, DenseVector {
+                data: vec![3.0, 4.0],
+            }],
         })))
         .expect("row 0");
         rows.push(None).expect("row 1");
@@ -817,12 +815,12 @@ mod tests {
         let mut rows = SparseVectorRows::new("keywords".to_string(), false, 2);
         rows.push(Some(vector_output::Vector::Sparse(SparseVector {
             indices: vec![0, 5],
-            values: vec![0.1, 0.9],
+            values:  vec![0.1, 0.9],
         })))
         .expect("row 0");
         rows.push(Some(vector_output::Vector::Sparse(SparseVector {
             indices: vec![1, 3, 4],
-            values: vec![0.2, 0.3, 0.4],
+            values:  vec![0.2, 0.3, 0.4],
         })))
         .expect("row 1");
         let array = rows.finish().expect("sparse array");
@@ -856,13 +854,13 @@ mod tests {
         let mut rows = SparseVectorRows::new("keywords".to_string(), false, 3);
         rows.push(Some(vector_output::Vector::Sparse(SparseVector {
             indices: vec![0, 5],
-            values: vec![0.1, 0.9],
+            values:  vec![0.1, 0.9],
         })))
         .expect("row 0");
         rows.push(None).expect("row 1");
         rows.push(Some(vector_output::Vector::Sparse(SparseVector {
             indices: vec![1, 3, 4],
-            values: vec![0.2, 0.3, 0.4],
+            values:  vec![0.2, 0.3, 0.4],
         })))
         .expect("row 2");
         let array = rows.finish().expect("sparse array");

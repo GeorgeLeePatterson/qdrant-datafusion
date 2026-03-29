@@ -73,13 +73,9 @@ pub(crate) struct QdrantPayloadPath {
 }
 
 impl QdrantPayloadPath {
-    pub(crate) fn new(path: String) -> Option<Self> {
-        (!path.is_empty()).then_some(Self { path })
-    }
+    pub(crate) fn new(path: String) -> Option<Self> { (!path.is_empty()).then_some(Self { path }) }
 
-    pub(crate) fn key(&self) -> &str {
-        &self.path
-    }
+    pub(crate) fn key(&self) -> &str { &self.path }
 
     pub(crate) fn from_logical_expr(expr: &Expr) -> Option<Self> {
         match expr {
@@ -129,7 +125,7 @@ impl From<HashMap<String, PayloadSchemaInfo>> for QdrantPayloadSchema {
                         Some(payload_index_params::IndexParams::IntegerIndexParams(params)) => {
                             QdrantPayloadField::Integer {
                                 lookup: params.lookup.unwrap_or(true),
-                                range: params.range.unwrap_or(true),
+                                range:  params.range.unwrap_or(true),
                             }
                         }
                         _ => return None,
@@ -180,106 +176,82 @@ mod tests {
     #[expect(clippy::too_many_lines)]
     fn payload_schema_keeps_filterable_and_orderable_scalar_indexes() {
         let schema = QdrantPayloadSchema::from(HashMap::from([
-            (
-                "rank".to_owned(),
-                PayloadSchemaInfo {
-                    data_type: PayloadSchemaType::Integer as i32,
-                    params: Some(qdrant_client::qdrant::PayloadIndexParams {
-                        index_params: Some(payload_index_params::IndexParams::IntegerIndexParams(
-                            IntegerIndexParams { range: Some(true), ..Default::default() },
-                        )),
-                    }),
-                    points: None,
-                },
-            ),
-            (
-                "match_only".to_owned(),
-                PayloadSchemaInfo {
-                    data_type: PayloadSchemaType::Integer as i32,
-                    params: Some(qdrant_client::qdrant::PayloadIndexParams {
-                        index_params: Some(payload_index_params::IndexParams::IntegerIndexParams(
-                            IntegerIndexParams {
-                                lookup: Some(true),
-                                range: Some(false),
-                                ..Default::default()
-                            },
-                        )),
-                    }),
-                    points: None,
-                },
-            ),
-            (
-                "range_only".to_owned(),
-                PayloadSchemaInfo {
-                    data_type: PayloadSchemaType::Integer as i32,
-                    params: Some(qdrant_client::qdrant::PayloadIndexParams {
-                        index_params: Some(payload_index_params::IndexParams::IntegerIndexParams(
-                            IntegerIndexParams {
-                                lookup: Some(false),
-                                range: Some(true),
-                                ..Default::default()
-                            },
-                        )),
-                    }),
-                    points: None,
-                },
-            ),
-            (
-                "regular_int".to_owned(),
-                PayloadSchemaInfo {
-                    data_type: PayloadSchemaType::Integer as i32,
-                    params: None,
-                    points: None,
-                },
-            ),
-            (
-                "score".to_owned(),
-                PayloadSchemaInfo {
-                    data_type: PayloadSchemaType::Float as i32,
-                    params: Some(qdrant_client::qdrant::PayloadIndexParams {
-                        index_params: Some(payload_index_params::IndexParams::FloatIndexParams(
-                            FloatIndexParams::default(),
-                        )),
-                    }),
-                    points: None,
-                },
-            ),
-            (
-                "active".to_owned(),
-                PayloadSchemaInfo {
-                    data_type: PayloadSchemaType::Bool as i32,
-                    params: Some(qdrant_client::qdrant::PayloadIndexParams {
-                        index_params: Some(payload_index_params::IndexParams::BoolIndexParams(
-                            BoolIndexParams::default(),
-                        )),
-                    }),
-                    points: None,
-                },
-            ),
-            (
-                "tag".to_owned(),
-                PayloadSchemaInfo {
-                    data_type: PayloadSchemaType::Keyword as i32,
-                    params: Some(qdrant_client::qdrant::PayloadIndexParams {
-                        index_params: Some(payload_index_params::IndexParams::KeywordIndexParams(
-                            KeywordIndexParams::default(),
-                        )),
-                    }),
-                    points: None,
-                },
-            ),
-            (
-                "doc_id".to_owned(),
-                PayloadSchemaInfo {
-                    data_type: PayloadSchemaType::Uuid as i32,
-                    params: Some(qdrant_client::qdrant::PayloadIndexParams {
-                        index_params: Some(payload_index_params::IndexParams::UuidIndexParams(
-                            UuidIndexParams::default(),
-                        )),
-                    }),
-                    points: None,
-                },
-            ),
+            ("rank".to_owned(), PayloadSchemaInfo {
+                data_type: PayloadSchemaType::Integer as i32,
+                params:    Some(qdrant_client::qdrant::PayloadIndexParams {
+                    index_params: Some(payload_index_params::IndexParams::IntegerIndexParams(
+                        IntegerIndexParams { range: Some(true), ..Default::default() },
+                    )),
+                }),
+                points:    None,
+            }),
+            ("match_only".to_owned(), PayloadSchemaInfo {
+                data_type: PayloadSchemaType::Integer as i32,
+                params:    Some(qdrant_client::qdrant::PayloadIndexParams {
+                    index_params: Some(payload_index_params::IndexParams::IntegerIndexParams(
+                        IntegerIndexParams {
+                            lookup: Some(true),
+                            range: Some(false),
+                            ..Default::default()
+                        },
+                    )),
+                }),
+                points:    None,
+            }),
+            ("range_only".to_owned(), PayloadSchemaInfo {
+                data_type: PayloadSchemaType::Integer as i32,
+                params:    Some(qdrant_client::qdrant::PayloadIndexParams {
+                    index_params: Some(payload_index_params::IndexParams::IntegerIndexParams(
+                        IntegerIndexParams {
+                            lookup: Some(false),
+                            range: Some(true),
+                            ..Default::default()
+                        },
+                    )),
+                }),
+                points:    None,
+            }),
+            ("regular_int".to_owned(), PayloadSchemaInfo {
+                data_type: PayloadSchemaType::Integer as i32,
+                params:    None,
+                points:    None,
+            }),
+            ("score".to_owned(), PayloadSchemaInfo {
+                data_type: PayloadSchemaType::Float as i32,
+                params:    Some(qdrant_client::qdrant::PayloadIndexParams {
+                    index_params: Some(payload_index_params::IndexParams::FloatIndexParams(
+                        FloatIndexParams::default(),
+                    )),
+                }),
+                points:    None,
+            }),
+            ("active".to_owned(), PayloadSchemaInfo {
+                data_type: PayloadSchemaType::Bool as i32,
+                params:    Some(qdrant_client::qdrant::PayloadIndexParams {
+                    index_params: Some(payload_index_params::IndexParams::BoolIndexParams(
+                        BoolIndexParams::default(),
+                    )),
+                }),
+                points:    None,
+            }),
+            ("tag".to_owned(), PayloadSchemaInfo {
+                data_type: PayloadSchemaType::Keyword as i32,
+                params:    Some(qdrant_client::qdrant::PayloadIndexParams {
+                    index_params: Some(payload_index_params::IndexParams::KeywordIndexParams(
+                        KeywordIndexParams::default(),
+                    )),
+                }),
+                points:    None,
+            }),
+            ("doc_id".to_owned(), PayloadSchemaInfo {
+                data_type: PayloadSchemaType::Uuid as i32,
+                params:    Some(qdrant_client::qdrant::PayloadIndexParams {
+                    index_params: Some(payload_index_params::IndexParams::UuidIndexParams(
+                        UuidIndexParams::default(),
+                    )),
+                }),
+                points:    None,
+            }),
         ]));
 
         assert_eq!(

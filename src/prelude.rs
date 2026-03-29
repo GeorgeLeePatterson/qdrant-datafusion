@@ -11,5 +11,9 @@ pub use reexports::*;
 
 pub use crate::context::{QdrantSessionContext, prepare_session_context};
 pub use crate::error::Result;
-pub use crate::expr_fn::qdrant_nearest_score;
+pub use crate::expr_fn::{
+    qdrant_context_score, qdrant_discover_score, qdrant_formula_score, qdrant_fusion_score,
+    qdrant_nearest_score, qdrant_nearest_with_mmr_score, qdrant_order_by_score,
+    qdrant_recommend_score, qdrant_relevance_feedback_score, qdrant_sample_score,
+};
 pub use crate::table::{QdrantScanExec, QdrantTableProvider};

@@ -1,6 +1,7 @@
 use std::any::Any;
 use std::cmp::Ordering;
 use std::collections::BTreeSet;
+use std::future::Future;
 use std::sync::Arc;
 
 use datafusion::arrow::array::{ArrayRef, Int64Array, RecordBatch, StringArray};
@@ -13,82 +14,65 @@ use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
 use futures_util::stream;
 use qdrant_client::qdrant::{
-    CountPointsBuilder, FacetCountsBuilder, GroupId, PointGroup, ScoredPoint, facet_value,
-    group_id,
+    CountPointsBuilder, FacetCountsBuilder, GroupId, PointGroup, ScoredPoint, facet_value, group_id,
 };
 
 use crate::analyzer::{
     CountKernel, FacetKernel, QueryBatchKernel, QueryGroupsKernel, QueryKernel, QueryRequest,
+    QueryRequestPlan,
 };
 use crate::arrow::deserialize::QdrantRecordBatchBuilder;
 
 #[derive(Clone)]
 pub(crate) struct QdrantCountExec {
-    spec: CountKernel,
-    schema: SchemaRef,
+    spec:       CountKernel,
+    schema:     SchemaRef,
     properties: Arc<PlanProperties>,
 }
 
 #[derive(Clone)]
 pub(crate) struct QdrantFacetExec {
-    spec: FacetKernel,
-    schema: SchemaRef,
+    spec:       FacetKernel,
+    schema:     SchemaRef,
     properties: Arc<PlanProperties>,
 }
 
 #[derive(Clone)]
 pub(crate) struct QdrantQueryExec {
-    spec: QueryKernel,
-    schema: SchemaRef,
+    spec:       QueryKernel,
+    schema:     SchemaRef,
     properties: Arc<PlanProperties>,
 }
 
 #[derive(Clone)]
 pub(crate) struct QdrantQueryBatchExec {
-    spec: QueryBatchKernel,
-    schema: SchemaRef,
+    spec:       QueryBatchKernel,
+    schema:     SchemaRef,
     properties: Arc<PlanProperties>,
 }
 
 #[derive(Clone)]
 pub(crate) struct QdrantQueryGroupsExec {
-    spec: QueryGroupsKernel,
-    schema: SchemaRef,
+    spec:       QueryGroupsKernel,
+    schema:     SchemaRef,
     properties: Arc<PlanProperties>,
 }
 
-fn expect_no_children(
-    name: &'static str,
-    children: &[Arc<dyn ExecutionPlan>],
-) -> Result<()> {
-    if children.is_empty() {
-        Ok(())
-    } else {
-        exec_err!("{name} expects no children")
-    }
+fn expect_no_children(name: &'static str, children: &[Arc<dyn ExecutionPlan>]) -> Result<()> {
+    if children.is_empty() { Ok(()) } else { exec_err!("{name} expects no children") }
 }
 
 fn expect_partition_zero(name: &'static str, partition: usize) -> Result<()> {
-    if partition == 0 {
-        Ok(())
-    } else {
-        exec_err!("{name} invalid partition {partition}")
-    }
+    if partition == 0 { Ok(()) } else { exec_err!("{name} invalid partition {partition}") }
 }
 
 macro_rules! impl_leaf_execution_plan {
     ($ty:ty, $name:literal) => {
-        fn name(&self) -> &'static str {
-            $name
-        }
+        fn name(&self) -> &'static str { $name }
 
-        fn as_any(&self) -> &dyn Any {
-            self
-        }
+        fn as_any(&self) -> &dyn Any { self }
 
-        fn properties(&self) -> &Arc<PlanProperties> {
-            &self.properties
-        }
+        fn properties(&self) -> &Arc<PlanProperties> { &self.properties }
 
         fn apply_expressions(
             &self,
@@ -97,9 +81,7 @@ macro_rules! impl_leaf_execution_plan {
             Ok(TreeNodeRecursion::Continue)
         }
 
-        fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
-            vec![]
-        }
+        fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> { vec![] }
 
         fn with_new_children(
             self: Arc<Self>,
@@ -118,6 +100,13 @@ fn leaf_properties(schema: &SchemaRef) -> Arc<PlanProperties> {
         datafusion::physical_plan::execution_plan::EmissionType::Final,
         Boundedness::Bounded,
     ))
+}
+
+fn stream_once_batch(
+    schema: &SchemaRef,
+    fut: impl Future<Output = Result<RecordBatch>> + Send + 'static,
+) -> datafusion::execution::SendableRecordBatchStream {
+    Box::pin(RecordBatchStreamAdapter::new(Arc::clone(schema), stream::once(fut)))
 }
 
 impl QdrantCountExec {
@@ -177,6 +166,7 @@ impl std::fmt::Debug for QdrantQueryExec {
             .field("limit", &self.spec.limit())
             .field("score_threshold", &self.spec.query().score_threshold())
             .field("score_output_names", &self.spec.query().score_output_names())
+            .field("prefetch_count", &self.spec.query().prefetch_count())
             .field("filters", &self.spec.filters())
             .finish_non_exhaustive()
     }
@@ -196,6 +186,7 @@ impl std::fmt::Debug for QdrantQueryGroupsExec {
             .field("collection", &self.spec.collection())
             .field("group_by", &self.spec.group_by())
             .field("group_size", &self.spec.group_size())
+            .field("limit", &self.spec.limit())
             .finish_non_exhaustive()
     }
 }
@@ -234,10 +225,9 @@ impl ExecutionPlan for QdrantCountExec {
             let count = i64::try_from(count).map_err(|_| {
                 datafusion::error::DataFusionError::Execution("Qdrant count exceeds i64".to_owned())
             })?;
-            let batch = RecordBatch::try_new(
-                Arc::clone(&schema),
-                vec![Arc::new(Int64Array::from(vec![count])) as ArrayRef],
-            )?;
+            let batch = RecordBatch::try_new(Arc::clone(&schema), vec![
+                Arc::new(Int64Array::from(vec![count])) as ArrayRef,
+            ])?;
             Ok(batch)
         };
         Ok(Box::pin(RecordBatchStreamAdapter::new(Arc::clone(&self.schema), stream::once(fut))))
@@ -330,19 +320,34 @@ fn append_scored_points_to_batch(
 }
 
 fn group_id_cmp(lhs: Option<&GroupId>, rhs: Option<&GroupId>) -> Ordering {
-    match (
-        lhs.and_then(|id| id.kind.as_ref()),
-        rhs.and_then(|id| id.kind.as_ref()),
-    ) {
-        (Some(group_id::Kind::UnsignedValue(lhs)), Some(group_id::Kind::UnsignedValue(rhs))) => lhs.cmp(rhs),
-        (Some(group_id::Kind::IntegerValue(lhs)), Some(group_id::Kind::IntegerValue(rhs))) => lhs.cmp(rhs),
-        (Some(group_id::Kind::StringValue(lhs)), Some(group_id::Kind::StringValue(rhs))) => lhs.cmp(rhs),
-        (Some(group_id::Kind::UnsignedValue(_)), Some(group_id::Kind::IntegerValue(_))) => Ordering::Less,
-        (Some(group_id::Kind::UnsignedValue(_)), Some(group_id::Kind::StringValue(_))) => Ordering::Less,
-        (Some(group_id::Kind::IntegerValue(_)), Some(group_id::Kind::UnsignedValue(_))) => Ordering::Greater,
-        (Some(group_id::Kind::IntegerValue(_)), Some(group_id::Kind::StringValue(_))) => Ordering::Less,
-        (Some(group_id::Kind::StringValue(_)), Some(group_id::Kind::UnsignedValue(_))) => Ordering::Greater,
-        (Some(group_id::Kind::StringValue(_)), Some(group_id::Kind::IntegerValue(_))) => Ordering::Greater,
+    match (lhs.and_then(|id| id.kind.as_ref()), rhs.and_then(|id| id.kind.as_ref())) {
+        (Some(group_id::Kind::UnsignedValue(lhs)), Some(group_id::Kind::UnsignedValue(rhs))) => {
+            lhs.cmp(rhs)
+        }
+        (Some(group_id::Kind::IntegerValue(lhs)), Some(group_id::Kind::IntegerValue(rhs))) => {
+            lhs.cmp(rhs)
+        }
+        (Some(group_id::Kind::StringValue(lhs)), Some(group_id::Kind::StringValue(rhs))) => {
+            lhs.cmp(rhs)
+        }
+        (Some(group_id::Kind::UnsignedValue(_)), Some(group_id::Kind::IntegerValue(_))) => {
+            Ordering::Less
+        }
+        (Some(group_id::Kind::UnsignedValue(_)), Some(group_id::Kind::StringValue(_))) => {
+            Ordering::Less
+        }
+        (Some(group_id::Kind::IntegerValue(_)), Some(group_id::Kind::UnsignedValue(_))) => {
+            Ordering::Greater
+        }
+        (Some(group_id::Kind::IntegerValue(_)), Some(group_id::Kind::StringValue(_))) => {
+            Ordering::Less
+        }
+        (Some(group_id::Kind::StringValue(_)), Some(group_id::Kind::UnsignedValue(_))) => {
+            Ordering::Greater
+        }
+        (Some(group_id::Kind::StringValue(_)), Some(group_id::Kind::IntegerValue(_))) => {
+            Ordering::Greater
+        }
         (None, None) => Ordering::Equal,
         (None, Some(_)) => Ordering::Less,
         (Some(_), None) => Ordering::Greater,
@@ -354,6 +359,61 @@ fn sort_point_groups(groups: &mut [PointGroup], descending: bool) {
         let order = group_id_cmp(lhs.id.as_ref(), rhs.id.as_ref());
         if descending { order.reverse() } else { order }
     });
+}
+
+async fn execute_query_request_plan(
+    client: Arc<qdrant_client::Qdrant>,
+    request_plan: QueryRequestPlan,
+    schema: SchemaRef,
+    query_limit: Option<u64>,
+    group_descending: bool,
+) -> Result<RecordBatch> {
+    let score_output_names = request_plan.score_output_names().clone();
+    match request_plan.request() {
+        QueryRequest::Points(request) => {
+            if query_limit == Some(0) {
+                return Ok(RecordBatch::new_empty(schema));
+            }
+            let response = client
+                .query(request.clone())
+                .await
+                .map_err(|error| datafusion::error::DataFusionError::External(Box::new(error)))?;
+            append_scored_points_to_batch(
+                &schema,
+                response.result.len(),
+                &score_output_names,
+                response.result,
+            )
+        }
+        QueryRequest::Batch(request) => {
+            let response = client
+                .query_batch(request.clone())
+                .await
+                .map_err(|error| datafusion::error::DataFusionError::External(Box::new(error)))?;
+            let point_count = response.result.iter().map(|batch| batch.result.len()).sum();
+            let points =
+                response.result.into_iter().flat_map(|batch| batch.result).collect::<Vec<_>>();
+            append_scored_points_to_batch(&schema, point_count, &score_output_names, points)
+        }
+        QueryRequest::Groups(request) => {
+            let response = client
+                .query_groups(request.clone())
+                .await
+                .map_err(|error| datafusion::error::DataFusionError::External(Box::new(error)))?;
+            let mut groups = response
+                .result
+                .ok_or_else(|| {
+                    datafusion::error::DataFusionError::Execution(
+                        "Qdrant query groups response missing result".to_owned(),
+                    )
+                })?
+                .groups;
+            sort_point_groups(&mut groups, group_descending);
+            let point_count = groups.iter().map(|group| group.hits.len()).sum();
+            let points = groups.into_iter().flat_map(|group| group.hits).collect::<Vec<_>>();
+            append_scored_points_to_batch(&schema, point_count, &score_output_names, points)
+        }
+    }
 }
 
 impl ExecutionPlan for QdrantQueryExec {
@@ -368,23 +428,16 @@ impl ExecutionPlan for QdrantQueryExec {
 
         let client = self.spec.client();
         let request_plan = self.spec.request_plan(&self.schema)?;
-        let score_output_names = request_plan.score_output_names().clone();
         let limit = self.spec.limit();
         let schema = Arc::clone(&self.schema);
-        let fut = async move {
-            if limit == 0 {
-                return Ok(RecordBatch::new_empty(schema));
-            }
-            let QueryRequest::Points(request) = request_plan.request() else {
-                return exec_err!("qdrant query exec received a non-point request plan");
-            };
-            let response = client
-                .query((*request).clone())
-                .await
-                .map_err(|error| datafusion::error::DataFusionError::External(Box::new(error)))?;
-            append_scored_points_to_batch(&schema, response.result.len(), &score_output_names, response.result)
-        };
-        Ok(Box::pin(RecordBatchStreamAdapter::new(Arc::clone(&self.schema), stream::once(fut))))
+        let fut = execute_query_request_plan(
+            client,
+            request_plan,
+            Arc::clone(&schema),
+            Some(limit),
+            false,
+        );
+        Ok(stream_once_batch(&self.schema, fut))
     }
 }
 
@@ -400,25 +453,10 @@ impl ExecutionPlan for QdrantQueryBatchExec {
 
         let client = self.spec.client();
         let request_plan = self.spec.request_plan(&self.schema)?;
-        let score_output_names = request_plan.score_output_names().clone();
         let schema = Arc::clone(&self.schema);
-        let fut = async move {
-            let QueryRequest::Batch(request) = request_plan.request() else {
-                return exec_err!("qdrant query batch exec received a non-batch request plan");
-            };
-            let response = client
-                .query_batch((*request).clone())
-                .await
-                .map_err(|error| datafusion::error::DataFusionError::External(Box::new(error)))?;
-            let point_count = response.result.iter().map(|batch| batch.result.len()).sum();
-            let points = response
-                .result
-                .into_iter()
-                .flat_map(|batch| batch.result)
-                .collect::<Vec<_>>();
-            append_scored_points_to_batch(&schema, point_count, &score_output_names, points)
-        };
-        Ok(Box::pin(RecordBatchStreamAdapter::new(Arc::clone(&self.schema), stream::once(fut))))
+        let fut =
+            execute_query_request_plan(client, request_plan, Arc::clone(&schema), None, false);
+        Ok(stream_once_batch(&self.schema, fut))
     }
 }
 
@@ -434,28 +472,16 @@ impl ExecutionPlan for QdrantQueryGroupsExec {
 
         let client = self.spec.client();
         let request_plan = self.spec.request_plan(&self.schema)?;
-        let score_output_names = request_plan.score_output_names().clone();
         let group_descending = self.spec.group_descending();
         let schema = Arc::clone(&self.schema);
-        let fut = async move {
-            let QueryRequest::Groups(request) = request_plan.request() else {
-                return exec_err!("qdrant query groups exec received a non-group request plan");
-            };
-            let response = client
-                .query_groups((*request).clone())
-                .await
-                .map_err(|error| datafusion::error::DataFusionError::External(Box::new(error)))?;
-            let mut groups = response.result.ok_or_else(|| {
-                datafusion::error::DataFusionError::Execution(
-                    "Qdrant query groups response missing result".to_owned(),
-                )
-            })?.groups;
-            sort_point_groups(&mut groups, group_descending);
-            let point_count = groups.iter().map(|group| group.hits.len()).sum();
-            let points = groups.into_iter().flat_map(|group| group.hits).collect::<Vec<_>>();
-            append_scored_points_to_batch(&schema, point_count, &score_output_names, points)
-        };
-        Ok(Box::pin(RecordBatchStreamAdapter::new(Arc::clone(&self.schema), stream::once(fut))))
+        let fut = execute_query_request_plan(
+            client,
+            request_plan,
+            Arc::clone(&schema),
+            None,
+            group_descending,
+        );
+        Ok(stream_once_batch(&self.schema, fut))
     }
 }
 
@@ -474,7 +500,12 @@ impl DisplayAs for QdrantFacetExec {
     fn fmt_as(&self, t: DisplayFormatType, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match t {
             DisplayFormatType::Default | DisplayFormatType::Verbose => {
-                write!(f, "QdrantFacetExec: collection={}, field={}", self.spec.collection(), self.spec.op().field().key())?;
+                write!(
+                    f,
+                    "QdrantFacetExec: collection={}, field={}",
+                    self.spec.collection(),
+                    self.spec.op().field().key()
+                )?;
                 write!(f, ", limit={}", self.spec.limit())
             }
             DisplayFormatType::TreeRender => write!(f, "QdrantFacetExec"),
@@ -486,11 +517,17 @@ impl DisplayAs for QdrantQueryExec {
     fn fmt_as(&self, t: DisplayFormatType, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match t {
             DisplayFormatType::Default | DisplayFormatType::Verbose => {
-                write!(f, "QdrantQueryExec: collection={}, limit={}", self.spec.collection(), self.spec.limit())?;
+                write!(
+                    f,
+                    "QdrantQueryExec: collection={}, limit={}",
+                    self.spec.collection(),
+                    self.spec.limit()
+                )?;
                 if let Some(threshold) = self.spec.query().score_threshold() {
                     write!(f, ", score_threshold={threshold}")?;
                 }
-                write!(f, ", score_outputs={:?}", self.spec.query().score_output_names())
+                write!(f, ", score_outputs={:?}", self.spec.query().score_output_names())?;
+                write!(f, ", prefetch={}", self.spec.query().prefetch_count())
             }
             DisplayFormatType::TreeRender => write!(f, "QdrantQueryExec"),
         }
@@ -512,7 +549,17 @@ impl DisplayAs for QdrantQueryGroupsExec {
     fn fmt_as(&self, t: DisplayFormatType, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match t {
             DisplayFormatType::Default | DisplayFormatType::Verbose => {
-                write!(f, "QdrantQueryGroupsExec: collection={}, group_by={}, group_size={}", self.spec.collection(), self.spec.group_by(), self.spec.group_size())
+                write!(
+                    f,
+                    "QdrantQueryGroupsExec: collection={}, group_by={}, group_size={}",
+                    self.spec.collection(),
+                    self.spec.group_by(),
+                    self.spec.group_size()
+                )?;
+                if let Some(limit) = self.spec.limit() {
+                    write!(f, ", limit={limit}")?;
+                }
+                Ok(())
             }
             DisplayFormatType::TreeRender => write!(f, "QdrantQueryGroupsExec"),
         }

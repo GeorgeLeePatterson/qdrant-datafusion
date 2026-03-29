@@ -1,13 +1,14 @@
 use std::sync::Arc;
 
+use datafusion::common::Result;
 use datafusion::common::tree_node::TreeNode;
-use datafusion::common::{Result, plan_err};
 use datafusion::logical_expr::{Extension, LogicalPlan};
 
-use super::State;
+use super::{FiltersState, ProcessingState, State};
 use crate::analyzer::kernel::{KernelSpec, QueryBatchKernel, QueryKernel};
 use crate::analyzer::node::KernelNode;
 use crate::analyzer::source::{MergeableSetJoin, MergeableUnion};
+use crate::analyzer::surface::SurfaceCall;
 
 #[derive(Debug, Clone)]
 pub(crate) enum CompositeState {
@@ -204,38 +205,60 @@ impl MergeableKind {
 
 #[derive(Debug, Clone)]
 pub(crate) struct BatchableState {
-    branches: usize,
+    queries: Vec<QueryKernel>,
 }
 
 impl BatchableState {
     fn from_plan(plan: &LogicalPlan, children: &[State]) -> Option<Self> {
-        matches!(plan, LogicalPlan::Union(_))
-            .then_some(children)
-            .filter(|states| {
-                !states.is_empty()
-                    && states.iter().all(|state| {
-                        matches!(state, State::Kernel(kernel) if matches!(kernel.spec(), KernelSpec::Query(_)))
-                    })
+        if !matches!(plan, LogicalPlan::Union(_)) {
+            return None;
+        }
+        let queries = children
+            .iter()
+            .map(|state| match state {
+                State::Kernel(kernel) => match kernel.spec() {
+                    KernelSpec::Query(query) => Some(query.clone()),
+                    _ => None,
+                },
+                _ => None,
             })
-            .map(|states| Self { branches: states.len() })
+            .collect::<Option<Vec<_>>>()?;
+        (!queries.is_empty()).then_some(Self { queries })
     }
 
     fn projection(self, plan: LogicalPlan, transformed: bool) -> Result<super::super::Analysis> {
+        if let Some(surface) = SurfaceCall::collect(&plan.expressions())? {
+            return self.open(surface)?.projection(plan, transformed);
+        }
         self.pass_or_fail(plan, transformed)
     }
+
     fn filter(self, plan: LogicalPlan, transformed: bool) -> Result<super::super::Analysis> {
+        if let Some(surface) = SurfaceCall::collect(&plan.expressions())? {
+            return self.open(surface)?.filter(plan, transformed);
+        }
         self.pass_or_fail(plan, transformed)
     }
+
     fn sort(self, plan: LogicalPlan, transformed: bool) -> Result<super::super::Analysis> {
+        if let Some(surface) = SurfaceCall::collect(&plan.expressions())? {
+            return self.open(surface)?.sort(plan, transformed);
+        }
         self.pass_or_fail(plan, transformed)
     }
+
     fn limit(self, plan: LogicalPlan, transformed: bool) -> Result<super::super::Analysis> {
         self.pass_or_fail(plan, transformed)
     }
+
     fn aggregate(self, plan: LogicalPlan, transformed: bool) -> Result<super::super::Analysis> {
         self.pass_or_fail(plan, transformed)
     }
+
     fn unary(self, plan: LogicalPlan, transformed: bool) -> Result<super::super::Analysis> {
+        if let Some(surface) = SurfaceCall::collect(&plan.expressions())? {
+            return self.open(surface)?.unary(plan, transformed);
+        }
         self.pass_or_fail(plan, transformed)
     }
 
@@ -250,55 +273,36 @@ impl BatchableState {
         Ok(super::super::fatal(
             plan,
             transformed,
-            format!("batchable qdrant composite with {} branches is not yet closed", self.branches),
+            format!(
+                "batchable qdrant composite with {} branches is not yet closed",
+                self.queries.len()
+            ),
         ))
+    }
+
+    fn open(self, surface: SurfaceCall) -> Result<ProcessingState> {
+        let source = self.queries.first().expect("validated batchable state").source().clone();
+        let prefetch =
+            self.queries.iter().map(QueryKernel::branch_plan).collect::<Result<Vec<_>>>()?;
+        let op =
+            crate::analyzer::op::Op::from_surface(surface, &source)?.with_prefetch(prefetch)?;
+        Ok(ProcessingState { source, filters: FiltersState::default(), op })
     }
 
     fn finish_root(self, plan: LogicalPlan) -> Result<LogicalPlan> {
         let schema = Arc::clone(plan.schema());
-        let kernel = QueryBatchKernel::try_new(self.extract_query_kernels(&plan)?)?;
+        let kernel = QueryBatchKernel::try_new(self.queries)?;
         Ok(LogicalPlan::Extension(Extension {
             node: Arc::new(KernelNode::new(schema, KernelSpec::QueryBatch(kernel))),
         }))
-    }
-
-    fn extract_query_kernels(&self, plan: &LogicalPlan) -> Result<Vec<QueryKernel>> {
-        match plan {
-            LogicalPlan::Union(union) => union
-                .inputs
-                .iter()
-                .map(|plan| Self::extract_query_kernel_branch(plan.as_ref()))
-                .collect(),
-            LogicalPlan::SubqueryAlias(alias) => self.extract_query_kernels(alias.input.as_ref()),
-            _ => plan_err!(
-                "batchable qdrant composite with {} branches could not close to a query batch kernel",
-                self.branches
-            ),
-        }
-    }
-
-    fn extract_query_kernel_branch(plan: &LogicalPlan) -> Result<QueryKernel> {
-        match plan {
-            LogicalPlan::Extension(extension) => {
-                let Some(node) = extension.node.as_any().downcast_ref::<KernelNode>() else {
-                    return plan_err!("batchable qdrant composite branch is not a qdrant kernel node");
-                };
-                let KernelSpec::Query(kernel) = node.spec() else {
-                    return plan_err!("batchable qdrant composite branch is not a query kernel");
-                };
-                Ok(kernel.clone())
-            }
-            LogicalPlan::SubqueryAlias(alias) => Self::extract_query_kernel_branch(alias.input.as_ref()),
-            _ => plan_err!("batchable qdrant composite branch is not reducible to a query kernel"),
-        }
     }
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct CoordinatedState {
-    branches: usize,
+    branches:    usize,
     outstanding: usize,
-    qdrant: usize,
+    qdrant:      usize,
 }
 
 impl CoordinatedState {
@@ -314,13 +318,6 @@ impl CoordinatedState {
     }
 
     fn finish_root(self, plan: LogicalPlan) -> Result<LogicalPlan> {
-        if self.outstanding == 0 {
-            return plan_err!(
-                "coordinated qdrant composite with {} branches and {} qdrant branches does not yet admit a root closure",
-                self.branches,
-                self.qdrant
-            );
-        }
         let with_subqueries = plan.map_subqueries(|subquery| {
             super::super::analyze_root(subquery).map(|analysis| analysis.transformed)
         })?;
@@ -335,37 +332,39 @@ impl CoordinatedState {
     fn projection(self, plan: LogicalPlan, transformed: bool) -> Result<super::super::Analysis> {
         self.pass_or_fail(plan, transformed)
     }
+
     fn filter(self, plan: LogicalPlan, transformed: bool) -> Result<super::super::Analysis> {
         self.pass_or_fail(plan, transformed)
     }
+
     fn sort(self, plan: LogicalPlan, transformed: bool) -> Result<super::super::Analysis> {
         self.pass_or_fail(plan, transformed)
     }
+
     fn limit(self, plan: LogicalPlan, transformed: bool) -> Result<super::super::Analysis> {
         self.pass_or_fail(plan, transformed)
     }
+
     fn aggregate(self, plan: LogicalPlan, transformed: bool) -> Result<super::super::Analysis> {
         self.pass_or_fail(plan, transformed)
     }
+
     fn unary(self, plan: LogicalPlan, transformed: bool) -> Result<super::super::Analysis> {
         self.pass_or_fail(plan, transformed)
     }
 
     fn pass_or_fail(self, plan: LogicalPlan, transformed: bool) -> Result<super::super::Analysis> {
-        if matches!(plan, LogicalPlan::SubqueryAlias(_)) {
-            return Ok(super::super::Analysis::new(
+        if SurfaceCall::collect(&plan.expressions())?.is_some() {
+            return Ok(super::super::fatal(
                 plan,
-                State::Composite(CompositeState::Coordinated(self)),
                 transformed,
+                "qdrant surface calls may not cross coordinated multi-branch boundaries",
             ));
         }
-        Ok(super::super::fatal(
+        Ok(super::super::Analysis::new(
             plan,
+            State::Composite(CompositeState::Coordinated(self)),
             transformed,
-            format!(
-                "coordinated qdrant composite with {} branches is awaiting child closure",
-                self.branches
-            ),
         ))
     }
 }

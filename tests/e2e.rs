@@ -409,10 +409,13 @@ mod tests {
         let schema = batch.schema();
 
         assert_eq!(batch.num_rows(), 3);
-        assert_eq!(
-            field_names(schema.as_ref()),
-            vec!["id", "payload", "text_embedding", "multi_embedding", "keywords"],
-        );
+        assert_eq!(field_names(schema.as_ref()), vec![
+            "id",
+            "payload",
+            "text_embedding",
+            "multi_embedding",
+            "keywords"
+        ],);
 
         let payload = batch
             .column(schema.index_of("payload").expect("payload index"))
@@ -788,10 +791,13 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(ids, vec![1, 2]);
-        assert_eq!(
-            field_names(batch.schema().as_ref()),
-            vec!["id", "payload", "embedding", "aux", "score"],
-        );
+        assert_eq!(field_names(batch.schema().as_ref()), vec![
+            "id",
+            "payload",
+            "embedding",
+            "aux",
+            "score"
+        ],);
         assert_f32_eq(scores[0], 1.0);
         assert_f32_eq(scores[1], 0.4);
         assert!(display.contains("QdrantQueryExec"), "{display}");
@@ -1588,10 +1594,9 @@ mod tests {
             scroll_ordered_page(&client, float_collection, "score", Direction::Asc, None, &[], 3)
                 .await?;
         assert!(float_page.next_page_offset.is_none());
-        assert_eq!(
-            float_page.result.iter().map(float_order_value).collect::<Vec<_>>(),
-            vec![1.5, 1.5, 2.25],
-        );
+        assert_eq!(float_page.result.iter().map(float_order_value).collect::<Vec<_>>(), vec![
+            1.5, 1.5, 2.25
+        ],);
         let float_pages = collect_ordered_pages(
             &client,
             float_collection,
@@ -1650,10 +1655,10 @@ mod tests {
         )
         .await?;
         assert!(datetime_page.next_page_offset.is_none());
-        assert_eq!(
-            datetime_page.result.iter().map(int_order_value).collect::<Vec<_>>(),
-            vec![1_704_067_200_000_000, 1_704_067_200_000_000],
-        );
+        assert_eq!(datetime_page.result.iter().map(int_order_value).collect::<Vec<_>>(), vec![
+            1_704_067_200_000_000,
+            1_704_067_200_000_000
+        ],);
 
         let datetime_pages = collect_ordered_pages(
             &client,
@@ -1667,15 +1672,12 @@ mod tests {
         .await?;
         let datetime_values = datetime_pages.iter().map(|(_, value)| *value).collect::<Vec<_>>();
         let datetime_ids = datetime_pages.iter().map(|(id, _)| *id).collect::<Vec<_>>();
-        assert_eq!(
-            datetime_values,
-            vec![
-                1_704_067_200_000_000,
-                1_704_067_200_000_000,
-                1_704_153_600_000_000,
-                1_704_240_000_000_000,
-            ],
-        );
+        assert_eq!(datetime_values, vec![
+            1_704_067_200_000_000,
+            1_704_067_200_000_000,
+            1_704_153_600_000_000,
+            1_704_240_000_000_000,
+        ],);
         assert_eq!(
             datetime_ids.iter().copied().collect::<BTreeSet<_>>(),
             (1_u64..=4).collect::<BTreeSet<_>>(),

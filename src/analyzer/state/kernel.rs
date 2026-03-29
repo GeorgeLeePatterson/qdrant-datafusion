@@ -14,13 +14,9 @@ pub(crate) struct KernelState {
 }
 
 impl KernelState {
-    pub(crate) fn new(spec: KernelSpec) -> Self {
-        Self { spec }
-    }
+    pub(crate) fn new(spec: KernelSpec) -> Self { Self { spec } }
 
-    pub(crate) fn spec(&self) -> &KernelSpec {
-        &self.spec
-    }
+    pub(crate) fn spec(&self) -> &KernelSpec { &self.spec }
 
     pub(super) fn projection(
         mut self,
@@ -73,10 +69,14 @@ impl KernelState {
     }
 
     pub(super) fn limit(
-        self,
+        mut self,
         plan: LogicalPlan,
         transformed: bool,
     ) -> Result<super::super::Analysis> {
+        if let Some(spec) = self.spec.clone().limit(&plan)? {
+            self.spec = spec;
+            return self.absorb(plan, transformed);
+        }
         Ok(super::super::Analysis::new(plan, State::local(), transformed))
     }
 

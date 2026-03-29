@@ -9,15 +9,14 @@ use datafusion::common::Result;
 use datafusion::logical_expr::utils::conjunction;
 use datafusion::logical_expr::{Expr, LogicalPlan};
 
+pub(crate) use self::composite::CompositeState;
 use self::fatal::FatalState;
+pub(crate) use self::kernel::KernelState;
 use self::local::LocalState;
 use self::processing::ProcessingState;
+pub(crate) use self::source::SourceState;
 use super::source::Source;
 use crate::pushdown::filter::QdrantFilters;
-
-pub(crate) use self::composite::CompositeState;
-pub(crate) use self::kernel::KernelState;
-pub(crate) use self::source::SourceState;
 
 #[derive(Debug, Clone)]
 pub(crate) struct SemanticError {
@@ -25,9 +24,7 @@ pub(crate) struct SemanticError {
 }
 
 impl SemanticError {
-    fn new(message: impl Into<String>) -> Self {
-        Self { message: message.into() }
-    }
+    fn new(message: impl Into<String>) -> Self { Self { message: message.into() } }
 }
 
 #[derive(Debug, Clone)]
@@ -41,9 +38,7 @@ pub(crate) enum State {
 }
 
 impl State {
-    pub(super) fn local() -> Self {
-        Self::Local(LocalState)
-    }
+    pub(super) fn local() -> Self { Self::Local(LocalState) }
 
     pub(super) fn fatal(message: impl Into<String>) -> Self {
         Self::Fatal(FatalState { error: SemanticError::new(message) })
@@ -143,7 +138,5 @@ impl FiltersState {
         QdrantFilters::try_new(&source.schema, &source.payload_schema, &self.exprs)
     }
 
-    pub(super) fn combined_expr(&self) -> Option<Expr> {
-        conjunction(self.exprs.clone())
-    }
+    pub(super) fn combined_expr(&self) -> Option<Expr> { conjunction(self.exprs.clone()) }
 }
