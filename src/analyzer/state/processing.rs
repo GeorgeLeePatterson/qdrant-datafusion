@@ -96,6 +96,11 @@ impl ProcessingState {
         plan: LogicalPlan,
         transformed: bool,
     ) -> Result<super::super::Analysis> {
+        if let Some(kernel_state) =
+            self.op.clone().distinct_on_kernel(self.source.clone(), self.filters.clone(), &plan)?
+        {
+            return kernel_state.absorb(plan, transformed);
+        }
         if matches!(plan, LogicalPlan::SubqueryAlias(_)) {
             return self.absorb(plan, transformed);
         }

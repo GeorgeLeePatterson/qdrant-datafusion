@@ -60,6 +60,33 @@ impl QuerySurfaceCall {
         if let Some(query) = NearestQuery::from_expr(expr)? {
             return Ok(Some(Self::Nearest(query)));
         }
+        if let Some(query) = RecommendQuery::from_expr(expr)? {
+            return Ok(Some(Self::Recommend(query)));
+        }
+        if let Some(query) = DiscoverQuery::from_expr(expr)? {
+            return Ok(Some(Self::Discover(query)));
+        }
+        if let Some(query) = ContextQuery::from_expr(expr)? {
+            return Ok(Some(Self::Context(query)));
+        }
+        if let Some(query) = OrderByQuery::from_expr(expr)? {
+            return Ok(Some(Self::OrderBy(query)));
+        }
+        if let Some(query) = FusionQuery::from_expr(expr)? {
+            return Ok(Some(Self::Fusion(query)));
+        }
+        if let Some(query) = SampleQuery::from_expr(expr)? {
+            return Ok(Some(Self::Sample(query)));
+        }
+        if let Some(query) = FormulaQuery::from_expr(expr)? {
+            return Ok(Some(Self::Formula(query)));
+        }
+        if let Some(query) = NearestWithMmrQuery::from_expr(expr)? {
+            return Ok(Some(Self::NearestWithMmr(query)));
+        }
+        if let Some(query) = RelevanceFeedbackQuery::from_expr(expr)? {
+            return Ok(Some(Self::RelevanceFeedback(query)));
+        }
         Ok(None)
     }
 

@@ -1,11 +1,13 @@
 use datafusion::arrow::datatypes::DataType;
-use datafusion::common::{Result, ScalarValue, plan_err};
+use datafusion::common::{Result, ScalarValue, plan_err, exec_err};
 use datafusion::logical_expr::Expr;
-use qdrant_client::qdrant::PointId;
-use qdrant_client::qdrant::point_id::PointIdOptions;
+use qdrant_client::qdrant::{
+    DenseVector, Document, MultiDenseVector, PointId, Query, VectorInput, point_id::PointIdOptions,
+    vector_input,
+};
 
 use super::super::source::Source;
-use super::QueryExecution;
+use super::QueryDescriptor;
 use crate::expr_fn::QdrantNearestCall;
 
 #[derive(Debug, Clone)]
@@ -30,41 +32,8 @@ impl NearestQuery {
         self.input.validate_on_source(source, using)
     }
 
-    pub(super) fn execution(&self) -> QueryExecution {
-        match &self.input {
-            NearestInput::Dense(input) => QueryExecution::NearestDense {
-                using: self.using.clone(),
-                vector: input.vector.clone(),
-            },
-            NearestInput::Sparse(input) => QueryExecution::NearestSparse {
-                using: self.using.clone(),
-                indices: input.indices.clone(),
-                values: input.values.clone(),
-            },
-            NearestInput::MultiDense(input) => QueryExecution::NearestMultiDense {
-                using: self.using.clone(),
-                vectors: input.vectors.clone(),
-            },
-            NearestInput::Id(input) => QueryExecution::NearestById {
-                using: self.using.clone(),
-                point_id: input.point_id.clone(),
-            },
-            NearestInput::Document(input) => QueryExecution::NearestDocument {
-                using: self.using.clone(),
-                text: input.text.clone(),
-                model: input.model.clone(),
-            },
-            NearestInput::Image(input) => QueryExecution::NearestImage {
-                using: self.using.clone(),
-                image: input.image.clone(),
-                model: input.model.clone(),
-            },
-            NearestInput::Object(input) => QueryExecution::NearestObject {
-                using: self.using.clone(),
-                object: input.object.clone(),
-                model: input.model.clone(),
-            },
-        }
+    pub(super) fn descriptor(&self) -> Result<QueryDescriptor> {
+        self.input.descriptor(self.using.clone())
     }
 }
 
@@ -89,6 +58,55 @@ pub(crate) enum NearestInput {
 }
 
 impl NearestInput {
+    fn descriptor(&self, using: Option<String>) -> Result<QueryDescriptor> {
+        let query = match self {
+            Self::Dense(input) => Query {
+                variant: Some(qdrant_client::qdrant::query::Variant::Nearest(VectorInput {
+                    variant: Some(vector_input::Variant::Dense(DenseVector {
+                        data: input.vector.clone(),
+                    })),
+                })),
+            },
+            Self::Sparse(input) => Query {
+                variant: Some(qdrant_client::qdrant::query::Variant::Nearest(VectorInput {
+                    variant: Some(vector_input::Variant::Sparse(qdrant_client::qdrant::SparseVector {
+                        values: input.values.clone(),
+                        indices: input.indices.clone(),
+                    })),
+                })),
+            },
+            Self::MultiDense(input) => Query {
+                variant: Some(qdrant_client::qdrant::query::Variant::Nearest(VectorInput {
+                    variant: Some(vector_input::Variant::MultiDense(MultiDenseVector {
+                        vectors: input
+                            .vectors
+                            .iter()
+                            .cloned()
+                            .map(|vector| DenseVector { data: vector })
+                            .collect(),
+                    })),
+                })),
+            },
+            Self::Id(input) => Query {
+                variant: Some(qdrant_client::qdrant::query::Variant::Nearest(VectorInput {
+                    variant: Some(vector_input::Variant::Id(input.point_id.clone())),
+                })),
+            },
+            Self::Document(input) => Query {
+                variant: Some(qdrant_client::qdrant::query::Variant::Nearest(VectorInput {
+                    variant: Some(vector_input::Variant::Document(Document {
+                        text: input.text.clone(),
+                        model: input.model.clone().unwrap_or_default(),
+                        options: std::collections::HashMap::new(),
+                    })),
+                })),
+            },
+            Self::Image(_) => return exec_err!("image nearest execution is not yet implemented"),
+            Self::Object(_) => return exec_err!("object nearest execution is not yet implemented"),
+        };
+        Ok(QueryDescriptor::new(query, using))
+    }
+
     fn same_semantics(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Dense(lhs), Self::Dense(rhs)) => lhs.same_semantics(rhs),

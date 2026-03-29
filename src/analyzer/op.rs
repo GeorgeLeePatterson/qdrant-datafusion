@@ -2,14 +2,14 @@ use std::collections::BTreeSet;
 use std::hash::Hash;
 
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
-use datafusion::common::{Result, plan_err};
+use datafusion::common::{DFSchemaRef, Result, plan_err};
 use datafusion::logical_expr::expr::BinaryExpr;
 use datafusion::logical_expr::utils::split_conjunction_owned;
-use datafusion::logical_expr::{Expr, LogicalPlan, Operator};
+use datafusion::logical_expr::{Distinct, Expr, LogicalPlan, Operator, SortExpr};
 
 use super::common::count_star_like;
-use super::kernel::{FacetKernel, KernelSpec, QueryKernel, limit_rows, numeric_literal_f32};
-use super::query::{QueryExecution, QueryKind};
+use super::kernel::{FacetKernel, KernelSpec, QueryGroupsKernel, QueryKernel, limit_rows, numeric_literal_f32};
+use super::query::{QueryDescriptor, QueryKind};
 use super::source::Source;
 use super::state::{FiltersState, KernelState};
 use super::surface::QuerySurfaceCall;
@@ -111,6 +111,58 @@ impl QueryOp {
         )))))
     }
 
+    fn distinct_on_kernel(
+        mut self,
+        source: Source,
+        filters: FiltersState,
+        plan: &LogicalPlan,
+    ) -> Result<Option<KernelState>> {
+        let LogicalPlan::Distinct(Distinct::On(distinct_on)) = plan else {
+            return Ok(None);
+        };
+        if distinct_on.on_expr.len() != 1 {
+            return Ok(None);
+        }
+        let Some(group_field) = QdrantPayloadPath::from_logical_expr(&distinct_on.on_expr[0]) else {
+            return Ok(None);
+        };
+        if !source
+            .payload_schema
+            .field(group_field.key())
+            .is_some_and(|field| field.supports_facet())
+        {
+            return Ok(None);
+        }
+        if !distinct_on
+            .select_expr
+            .iter()
+            .all(|expr| self.projection_expr_supported(expr).unwrap_or(false))
+        {
+            return Ok(None);
+        }
+        let Some(group_descending) = self.query_groups_sort_supported(
+            distinct_on.sort_expr.as_deref().unwrap_or(&[]),
+            &group_field,
+        )? else {
+            return Ok(None);
+        };
+        self.query_score_outputs = OutputNames::from_exprs_and_schema(
+            &distinct_on.select_expr,
+            &distinct_on.schema,
+            |expr| self.is_query_score_expr(expr),
+        )?;
+        let exact_filters = filters.exact(&source)?;
+        Ok(Some(KernelState::new(KernelSpec::QueryGroups(QueryGroupsKernel::new(
+            source,
+            exact_filters,
+            self,
+            None,
+            group_field.key().to_owned(),
+            1,
+            group_descending,
+        )))))
+    }
+
     fn projection_expr_supported(&self, expr: &Expr) -> Result<bool> {
         let expr = expr.clone().unalias_nested().data;
         Ok(matches!(expr, Expr::Column(_)) || self.is_query_score_expr(&expr)?)
@@ -140,8 +192,8 @@ impl QueryOp {
         Ok(found)
     }
 
-    pub(crate) fn execution(&self) -> QueryExecution {
-        self.query.execution()
+    pub(crate) fn descriptor(&self) -> Result<QueryDescriptor> {
+        self.query.descriptor()
     }
 
     pub(crate) fn score_output_names(&self) -> BTreeSet<String> {
@@ -170,6 +222,26 @@ impl QueryOp {
             };
         }
         Ok(None)
+    }
+
+    fn query_groups_sort_supported(
+        &self,
+        sort_exprs: &[SortExpr],
+        group_field: &QdrantPayloadPath,
+    ) -> Result<Option<bool>> {
+        if sort_exprs.len() != 2 {
+            return Ok(None);
+        }
+        let Some(group_sort_field) = QdrantPayloadPath::from_logical_expr(&sort_exprs[0].expr) else {
+            return Ok(None);
+        };
+        if &group_sort_field != group_field {
+            return Ok(None);
+        }
+        if sort_exprs[1].asc || !self.is_query_score_expr(&sort_exprs[1].expr)? {
+            return Ok(None);
+        }
+        Ok(Some(!sort_exprs[0].asc))
     }
 }
 
@@ -225,6 +297,18 @@ impl Op {
         match self {
             Self::Query(op) => op.kernel(source, filters, plan),
             Self::Facet(op) => op.kernel(source, filters, plan),
+        }
+    }
+
+    pub(super) fn distinct_on_kernel(
+        self,
+        source: Source,
+        filters: FiltersState,
+        plan: &LogicalPlan,
+    ) -> Result<Option<KernelState>> {
+        match self {
+            Self::Query(op) => op.distinct_on_kernel(source, filters, plan),
+            Self::Facet(_) => Ok(None),
         }
     }
 }
@@ -328,15 +412,23 @@ impl OutputNames {
 
     fn from_projection(
         plan: &LogicalPlan,
-        mut matches: impl FnMut(&Expr) -> Result<bool>,
+        matches: impl FnMut(&Expr) -> Result<bool>,
     ) -> Result<Self> {
         let LogicalPlan::Projection(projection) = plan else {
             return plan_err!("prototype projection state mismatch");
         };
+        Self::from_exprs_and_schema(&projection.expr, &projection.schema, matches)
+    }
+
+    fn from_exprs_and_schema(
+        exprs: &[Expr],
+        schema: &DFSchemaRef,
+        mut matches: impl FnMut(&Expr) -> Result<bool>,
+    ) -> Result<Self> {
         let mut names = BTreeSet::new();
-        for (index, expr) in projection.expr.iter().enumerate() {
+        for (index, expr) in exprs.iter().enumerate() {
             if matches(expr)? {
-                let _ = names.insert(projection.schema.field(index).name().clone());
+                let _ = names.insert(schema.field(index).name().clone());
             }
         }
         Ok(Self(names))

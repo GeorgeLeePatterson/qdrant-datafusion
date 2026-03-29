@@ -15,7 +15,6 @@ pub const QDRANT_NEAREST_SCORE_FUNCTION_NAME: &str = "qdrant_nearest_score";
 pub(crate) struct QdrantNearestCall {
     pub(crate) vector_field: String,
     pub(crate) vector: Vec<f32>,
-    pub(crate) score_field_name: String,
 }
 
 impl QdrantNearestCall {
@@ -34,7 +33,7 @@ impl QdrantNearestCall {
         }
         let vector_field = vector_field_name(&function.args[0])?;
         let vector = function.args[1..].iter().map(query_component).collect::<Result<Vec<_>>>()?;
-        Ok(Some(Self { vector_field, vector, score_field_name: expr.schema_name().to_string() }))
+        Ok(Some(Self { vector_field, vector }))
     }
 }
 

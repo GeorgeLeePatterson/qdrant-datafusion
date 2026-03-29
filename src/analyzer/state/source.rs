@@ -190,12 +190,8 @@ impl SourceState {
                 true,
             ));
         }
-        if SurfaceCall::collect(&plan.expressions())?.is_some() {
-            return Ok(super::super::fatal(
-                plan,
-                transformed,
-                "qdrant surface call requires projection, filter, or sort",
-            ));
+        if let Some(surface) = SurfaceCall::collect(&plan.expressions())? {
+            return self.open(surface)?.unary(plan, transformed);
         }
         Ok(super::super::Analysis::new(plan, State::local(), transformed))
     }

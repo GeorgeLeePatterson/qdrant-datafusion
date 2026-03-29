@@ -5,8 +5,11 @@ use datafusion::logical_expr::{LogicalPlan, UserDefinedLogicalNode};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_planner::{ExtensionPlanner, PhysicalPlanner};
 
-use super::exec::execution_plan_for_kernel_node;
-use crate::analyzer::{KERNEL_NODE_NAME, KernelNode};
+use super::exec::{
+    QdrantCountExec, QdrantFacetExec, QdrantQueryBatchExec, QdrantQueryExec,
+    QdrantQueryGroupsExec,
+};
+use crate::analyzer::{KERNEL_NODE_NAME, KernelNode, KernelSpec};
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct QdrantExtensionPlanner;
@@ -28,7 +31,19 @@ impl ExtensionPlanner for QdrantExtensionPlanner {
                         "Failed to downcast KernelNode".to_owned(),
                     )
                 })?;
-                Ok(Some(execution_plan_for_kernel_node(node)?))
+                let schema = Arc::clone(node.output_schema().inner());
+                let plan: Arc<dyn ExecutionPlan> = match node.spec() {
+                    KernelSpec::Count(spec) => Arc::new(QdrantCountExec::new(spec.clone(), schema)),
+                    KernelSpec::Facet(spec) => Arc::new(QdrantFacetExec::new(spec.clone(), schema)),
+                    KernelSpec::Query(spec) => Arc::new(QdrantQueryExec::new(spec.clone(), schema)),
+                    KernelSpec::QueryBatch(spec) => {
+                        Arc::new(QdrantQueryBatchExec::new(spec.clone(), schema))
+                    }
+                    KernelSpec::QueryGroups(spec) => {
+                        Arc::new(QdrantQueryGroupsExec::new(spec.clone(), schema))
+                    }
+                };
+                Ok(Some(plan))
             }
             _ => Ok(None),
         }

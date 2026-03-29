@@ -249,6 +249,7 @@ mod tests {
     use crate::context::QdrantSessionContext;
     use crate::context::exec::{
         QdrantCountExec, QdrantFacetExec, QdrantQueryBatchExec, QdrantQueryExec,
+        QdrantQueryGroupsExec,
     };
     use crate::pushdown::QdrantPayloadSchema;
     use crate::table::pushdown::QdrantPayloadOrdering;
@@ -385,6 +386,21 @@ mod tests {
         }
         panic!(
             "expected qdrant query batch exec in plan:
+{}",
+            displayable(plan.as_ref()).indent(true)
+        );
+    }
+
+
+    fn qdrant_query_groups(plan: &Arc<dyn ExecutionPlan>) -> &QdrantQueryGroupsExec {
+        if let Some(query) = plan.as_any().downcast_ref::<QdrantQueryGroupsExec>() {
+            return query;
+        }
+        if let Some(cooperative) = plan.as_any().downcast_ref::<CooperativeExec>() {
+            return qdrant_query_groups(cooperative.input());
+        }
+        panic!(
+            "expected qdrant query groups exec in plan:
 {}",
             displayable(plan.as_ref()).indent(true)
         );
@@ -1108,6 +1124,57 @@ mod tests {
         let _query = qdrant_query(&plan);
 
         assert!(display.contains("QdrantQueryExec"), "{display}");
+    }
+
+    #[test]
+    fn physical_plan_uses_qdrant_query_groups_exec_for_distinct_on_nearest_queries() {
+        let provider = QdrantTableProvider {
+            payload_schema: payload_schema([(
+                "tag",
+                PayloadSchemaInfo {
+                    data_type: qdrant_client::qdrant::PayloadSchemaType::Keyword as i32,
+                    params: Some(qdrant_client::qdrant::PayloadIndexParams {
+                        index_params: Some(
+                            qdrant_client::qdrant::payload_index_params::IndexParams::KeywordIndexParams(
+                                qdrant_client::qdrant::KeywordIndexParams::default(),
+                            ),
+                        ),
+                    }),
+                    points: None,
+                },
+            )]),
+            ..test_provider(Schema::new(vec![
+                Field::new(ID_FIELD_NAME, DataType::Utf8, false),
+                Field::new(PAYLOAD_FIELD_NAME, DataType::Utf8, true),
+                Field::new(
+                    "embedding",
+                    DataType::new_fixed_size_list(DataType::Float32, 2, false),
+                    true,
+                ),
+            ]))
+        };
+        let ctx = QdrantSessionContext::from(SessionContext::new());
+        drop(
+            ctx.session_context()
+                .register_table("vectors", Arc::new(provider))
+                .expect("register table"),
+        );
+        let dataframe = ctx
+            .sql(
+                "SELECT DISTINCT ON (payload:tag) id, payload, embedding, qdrant_nearest_score(embedding, 1.0, 0.0) AS score FROM vectors ORDER BY payload:tag, qdrant_nearest_score(embedding, 1.0, 0.0) DESC",
+            )
+            .now_or_never()
+            .expect("sql future is ready")
+            .expect("dataframe");
+        let plan = dataframe
+            .create_physical_plan()
+            .now_or_never()
+            .expect("plan future is ready")
+            .expect("physical plan");
+        let display = displayable(plan.as_ref()).indent(true).to_string();
+        let _query = qdrant_query_groups(&plan);
+
+        assert!(display.contains("QdrantQueryGroupsExec"), "{display}");
     }
 
     #[test]

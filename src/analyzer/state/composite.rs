@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use datafusion::common::tree_node::TreeNode;
 use datafusion::common::{Result, plan_err};
 use datafusion::logical_expr::{Extension, LogicalPlan};
 
@@ -29,10 +30,6 @@ impl CompositeState {
         Ok(None)
     }
 
-    pub(crate) fn coordinated(branches: usize) -> Self {
-        Self::Coordinated(CoordinatedState { branches })
-    }
-
     pub(crate) fn finish_root(self, plan: LogicalPlan) -> Result<LogicalPlan> {
         match self {
             Self::Mergeable(state) => state.rewrite_current(&plan)?.ok_or_else(|| {
@@ -41,9 +38,7 @@ impl CompositeState {
                 )
             }),
             Self::Batchable(state) => state.finish_root(plan),
-            Self::Coordinated(_) => {
-                plan_err!("unfinished coordinated qdrant composite at query root")
-            }
+            Self::Coordinated(state) => state.finish_root(plan),
         }
     }
 
@@ -302,6 +297,8 @@ impl BatchableState {
 #[derive(Debug, Clone)]
 pub(crate) struct CoordinatedState {
     branches: usize,
+    outstanding: usize,
+    qdrant: usize,
 }
 
 impl CoordinatedState {
@@ -309,7 +306,30 @@ impl CoordinatedState {
         let outstanding =
             children.iter().filter(|state| state.requires_composite_coordination()).count();
         let qdrant = children.iter().filter(|state| state.is_qdrant_present()).count();
-        (outstanding > 0 || qdrant > 1).then_some(Self { branches: children.len() })
+        (outstanding > 0 || qdrant > 1).then_some(Self {
+            branches: children.len(),
+            outstanding,
+            qdrant,
+        })
+    }
+
+    fn finish_root(self, plan: LogicalPlan) -> Result<LogicalPlan> {
+        if self.outstanding == 0 {
+            return plan_err!(
+                "coordinated qdrant composite with {} branches and {} qdrant branches does not yet admit a root closure",
+                self.branches,
+                self.qdrant
+            );
+        }
+        let with_subqueries = plan.map_subqueries(|subquery| {
+            super::super::analyze_root(subquery).map(|analysis| analysis.transformed)
+        })?;
+        Ok(with_subqueries
+            .data
+            .map_children(|child| {
+                super::super::analyze_root(child).map(|analysis| analysis.transformed)
+            })?
+            .data)
     }
 
     fn projection(self, plan: LogicalPlan, transformed: bool) -> Result<super::super::Analysis> {
@@ -343,7 +363,7 @@ impl CoordinatedState {
             plan,
             transformed,
             format!(
-                "coordinated qdrant composite with {} branches is not yet closed",
+                "coordinated qdrant composite with {} branches is awaiting child closure",
                 self.branches
             ),
         ))

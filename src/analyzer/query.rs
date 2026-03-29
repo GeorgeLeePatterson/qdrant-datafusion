@@ -9,14 +9,13 @@ mod recommend;
 mod relevance_feedback;
 mod sample;
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 
-use datafusion::common::{Result, ScalarValue, exec_err};
+use datafusion::common::Result;
 use qdrant_client::qdrant::{
-    DenseVector, Document, Filter, PointId, PrefetchQuery, Query, QueryBatchPoints,
-    QueryPointGroups, QueryPoints, SparseVector, VectorInput, VectorsSelector,
-    WithPayloadSelector, WithVectorsSelector, with_payload_selector, with_vectors_selector,
-    vector_input,
+    Filter, PrefetchQuery, Query, QueryBatchPoints, QueryPointGroups, QueryPoints,
+    VectorsSelector, WithPayloadSelector, WithVectorsSelector, with_payload_selector,
+    with_vectors_selector,
 };
 
 use super::source::Source;
@@ -38,107 +37,18 @@ pub(crate) use self::relevance_feedback::RelevanceFeedbackQuery;
 pub(crate) use self::sample::SampleQuery;
 
 #[derive(Debug, Clone)]
-pub(crate) enum QueryExecution {
-    NearestDense {
-        using: Option<String>,
-        vector: Vec<f32>,
-    },
-    NearestSparse {
-        using: Option<String>,
-        indices: Vec<u32>,
-        values: Vec<f32>,
-    },
-    NearestMultiDense {
-        using: Option<String>,
-        vectors: Vec<Vec<f32>>,
-    },
-    NearestById {
-        using: Option<String>,
-        point_id: PointId,
-    },
-    NearestDocument {
-        using: Option<String>,
-        text: String,
-        model: Option<String>,
-    },
-    NearestImage {
-        using: Option<String>,
-        image: Vec<u8>,
-        model: Option<String>,
-    },
-    NearestObject {
-        using: Option<String>,
-        object: Vec<(String, ScalarValue)>,
-        model: Option<String>,
-    },
-    Recommend(RecommendQuery),
-    Discover(DiscoverQuery),
-    Context(ContextQuery),
-    OrderBy(OrderByQuery),
-    Fusion(FusionQuery),
-    Sample(SampleQuery),
-    Formula(FormulaQuery),
-    NearestWithMmr(NearestWithMmrQuery),
-    RelevanceFeedback(RelevanceFeedbackQuery),
+pub(crate) struct QueryDescriptor {
+    query: Query,
+    using: Option<String>,
 }
 
-impl QueryExecution {
-    fn into_query_and_using(self) -> Result<(Query, Option<String>)> {
-        match self {
-            Self::NearestDense { using, vector } => Ok((
-                Query {
-                    variant: Some(qdrant_client::qdrant::query::Variant::Nearest(VectorInput {
-                        variant: Some(vector_input::Variant::Dense(DenseVector { data: vector })),
-                    })),
-                },
-                using,
-            )),
-            Self::NearestSparse { using, indices, values } => Ok((
-                Query {
-                    variant: Some(qdrant_client::qdrant::query::Variant::Nearest(VectorInput {
-                        variant: Some(vector_input::Variant::Sparse(SparseVector {
-                            values,
-                            indices,
-                        })),
-                    })),
-                },
-                using,
-            )),
-            Self::NearestMultiDense { .. } => {
-                exec_err!("multidense nearest execution is not yet implemented")
-            }
-            Self::NearestById { using, point_id } => Ok((
-                Query {
-                    variant: Some(qdrant_client::qdrant::query::Variant::Nearest(VectorInput {
-                        variant: Some(vector_input::Variant::Id(point_id)),
-                    })),
-                },
-                using,
-            )),
-            Self::NearestDocument { using, text, model } => Ok((
-                Query {
-                    variant: Some(qdrant_client::qdrant::query::Variant::Nearest(VectorInput {
-                        variant: Some(vector_input::Variant::Document(Document {
-                            text,
-                            model: model.unwrap_or_default(),
-                            options: HashMap::new(),
-                        })),
-                    })),
-                },
-                using,
-            )),
-            Self::NearestImage { .. } => exec_err!("image nearest execution is not yet implemented"),
-            Self::NearestObject { .. } => exec_err!("object nearest execution is not yet implemented"),
-            Self::Recommend(_) => exec_err!("recommend execution is not yet implemented"),
-            Self::Discover(_) => exec_err!("discover execution is not yet implemented"),
-            Self::Context(_) => exec_err!("context execution is not yet implemented"),
-            Self::OrderBy(_) => exec_err!("order-by execution is not yet implemented"),
-            Self::Fusion(_) => exec_err!("fusion execution is not yet implemented"),
-            Self::Sample(_) => exec_err!("sample execution is not yet implemented"),
-            Self::Formula(_) => exec_err!("formula execution is not yet implemented"),
-            Self::NearestWithMmr(_) => exec_err!("nearest-with-mmr execution is not yet implemented"),
-            Self::RelevanceFeedback(_) => exec_err!("relevance-feedback execution is not yet implemented"),
-        }
+impl QueryDescriptor {
+    pub(crate) fn new(query: Query, using: Option<String>) -> Self {
+        Self { query, using }
+    }
+
+    fn into_parts(self) -> (Query, Option<String>) {
+        (self.query, self.using)
     }
 }
 
@@ -185,32 +95,41 @@ impl QueryVectorsSelector {
 #[derive(Debug, Clone)]
 pub(crate) struct QueryBranchPlan {
     pub(crate) prefetch: Vec<QueryBranchPlan>,
-    pub(crate) execution: Option<QueryExecution>,
+    pub(crate) descriptor: Option<QueryDescriptor>,
     pub(crate) filter: Option<Filter>,
     pub(crate) score_threshold: Option<f32>,
     pub(crate) limit: Option<u64>,
 }
 
 impl QueryBranchPlan {
+    pub(crate) fn descriptor(
+        descriptor: QueryDescriptor,
+        filter: Option<Filter>,
+        score_threshold: Option<f32>,
+        limit: Option<u64>,
+    ) -> Self {
+        Self {
+            prefetch: vec![],
+            descriptor: Some(descriptor),
+            filter,
+            score_threshold,
+            limit,
+        }
+    }
+
     pub(crate) fn single(
-        execution: QueryExecution,
+        descriptor: QueryDescriptor,
         filter: Option<Filter>,
         score_threshold: Option<f32>,
         limit: u64,
     ) -> Self {
-        Self {
-            prefetch: vec![],
-            execution: Some(execution),
-            filter,
-            score_threshold,
-            limit: Some(limit),
-        }
+        Self::descriptor(descriptor, filter, score_threshold, Some(limit))
     }
 
     fn into_prefetch_proto(self) -> Result<PrefetchQuery> {
-        let (query, using) = match self.execution {
-            Some(execution) => {
-                let (query, using) = execution.into_query_and_using()?;
+        let (query, using) = match self.descriptor {
+            Some(descriptor) => {
+                let (query, using) = descriptor.into_parts();
                 (Some(query), using)
             }
             None => (None, None),
@@ -253,9 +172,9 @@ impl QueryPointsRequestPlan {
     }
 
     fn into_proto(self) -> Result<QueryPoints> {
-        let (query, using) = match self.branch.execution {
-            Some(execution) => {
-                let (query, using) = execution.into_query_and_using()?;
+        let (query, using) = match self.branch.descriptor {
+            Some(descriptor) => {
+                let (query, using) = descriptor.into_parts();
                 (Some(query), using)
             }
             None => (None, None),
@@ -336,9 +255,9 @@ impl QueryGroupsRequestPlan {
     }
 
     fn into_proto(self) -> Result<QueryPointGroups> {
-        let (query, using) = match self.branch.execution {
-            Some(execution) => {
-                let (query, using) = execution.into_query_and_using()?;
+        let (query, using) = match self.branch.descriptor {
+            Some(descriptor) => {
+                let (query, using) = descriptor.into_parts();
                 (Some(query), using)
             }
             None => (None, None),
@@ -481,18 +400,18 @@ impl QueryKind {
         }
     }
 
-    pub(crate) fn execution(&self) -> QueryExecution {
+    pub(crate) fn descriptor(&self) -> Result<QueryDescriptor> {
         match self {
-            Self::Nearest(query) => query.execution(),
-            Self::Recommend(query) => QueryExecution::Recommend(query.clone()),
-            Self::Discover(query) => QueryExecution::Discover(query.clone()),
-            Self::Context(query) => QueryExecution::Context(query.clone()),
-            Self::OrderBy(query) => QueryExecution::OrderBy(query.clone()),
-            Self::Fusion(query) => QueryExecution::Fusion(query.clone()),
-            Self::Sample(query) => QueryExecution::Sample(query.clone()),
-            Self::Formula(query) => QueryExecution::Formula(query.clone()),
-            Self::NearestWithMmr(query) => QueryExecution::NearestWithMmr(query.clone()),
-            Self::RelevanceFeedback(query) => QueryExecution::RelevanceFeedback(query.clone()),
+            Self::Nearest(query) => query.descriptor(),
+            Self::Recommend(query) => query.descriptor(),
+            Self::Discover(query) => query.descriptor(),
+            Self::Context(query) => query.descriptor(),
+            Self::OrderBy(query) => query.descriptor(),
+            Self::Fusion(query) => query.descriptor(),
+            Self::Sample(query) => query.descriptor(),
+            Self::Formula(query) => query.descriptor(),
+            Self::NearestWithMmr(query) => query.descriptor(),
+            Self::RelevanceFeedback(query) => query.descriptor(),
         }
     }
 }

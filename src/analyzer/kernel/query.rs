@@ -50,11 +50,11 @@ impl QueryKernel {
         QueryRequestPlan::points(
             QueryPointsRequestPlan::new(
                 self.source.collection().to_owned(),
-                QueryBranchPlan::single(
-                    self.query.execution(),
+                QueryBranchPlan::descriptor(
+                    self.query.descriptor()?,
                     self.filters.to_filter(),
                     self.query.score_threshold(),
-                    self.limit,
+                    Some(self.limit),
                 ),
                 output_schema,
             ),
@@ -107,18 +107,18 @@ impl QueryBatchKernel {
             .queries
             .iter()
             .map(|query| {
-                QueryPointsRequestPlan::new(
+                Ok(QueryPointsRequestPlan::new(
                     query.source.collection().to_owned(),
                     QueryBranchPlan::single(
-                        query.query.execution(),
+                        query.query.descriptor()?,
                         query.filters.to_filter(),
                         query.query.score_threshold(),
                         query.limit,
                     ),
                     output_schema,
-                )
+                ))
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>>>()?;
         QueryRequestPlan::batch(
             QueryBatchRequestPlan::new(self.collection().to_owned(), queries),
             self.queries
@@ -135,9 +135,10 @@ pub(crate) struct QueryGroupsKernel {
     source: Source,
     filters: QdrantFilters,
     query: QueryOp,
-    limit: u64,
+    limit: Option<u64>,
     group_by: String,
     group_size: u64,
+    group_descending: bool,
 }
 
 impl QueryGroupsKernel {
@@ -145,11 +146,12 @@ impl QueryGroupsKernel {
         source: Source,
         filters: QdrantFilters,
         query: QueryOp,
-        limit: u64,
+        limit: Option<u64>,
         group_by: String,
         group_size: u64,
+        group_descending: bool,
     ) -> Self {
-        Self { source, filters, query, limit, group_by, group_size }
+        Self { source, filters, query, limit, group_by, group_size, group_descending }
     }
 
     pub(crate) fn client(&self) -> Arc<Qdrant> {
@@ -160,12 +162,24 @@ impl QueryGroupsKernel {
         self.source.collection()
     }
 
+    pub(crate) fn group_by(&self) -> &str {
+        &self.group_by
+    }
+
+    pub(crate) fn group_size(&self) -> u64 {
+        self.group_size
+    }
+
+    pub(crate) fn group_descending(&self) -> bool {
+        self.group_descending
+    }
+
     pub(crate) fn request_plan(&self, output_schema: &SchemaRef) -> Result<QueryRequestPlan> {
         QueryRequestPlan::groups(
             QueryGroupsRequestPlan::new(
                 self.source.collection().to_owned(),
-                QueryBranchPlan::single(
-                    self.query.execution(),
+                QueryBranchPlan::descriptor(
+                    self.query.descriptor()?,
                     self.filters.to_filter(),
                     self.query.score_threshold(),
                     self.limit,

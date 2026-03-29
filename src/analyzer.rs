@@ -134,13 +134,6 @@ fn analyze_multi(plan: LogicalPlan, children: Vec<State>, transformed: bool) -> 
     if let Some(state) = CompositeState::from_plan(&plan, &children)? {
         return Ok(Analysis::new(plan, State::Composite(state), transformed));
     }
-    if children.iter().any(State::requires_composite_coordination) {
-        return Ok(Analysis::new(
-            plan,
-            State::Composite(CompositeState::coordinated(children.len())),
-            transformed,
-        ));
-    }
     Ok(Analysis::new(plan, State::local(), transformed))
 }
 
