@@ -8,6 +8,10 @@ pub(crate) struct FatalState {
     pub(crate) error: SemanticError,
 }
 
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "state transition methods share a uniform Result-based interface across variants"
+)]
 impl FatalState {
     pub(super) fn projection(
         self,

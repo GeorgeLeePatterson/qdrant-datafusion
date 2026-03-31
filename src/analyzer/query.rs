@@ -25,7 +25,7 @@ pub(crate) use self::context::ContextQuery;
 pub(crate) use self::discover::DiscoverQuery;
 pub(crate) use self::formula::FormulaQuery;
 pub(crate) use self::fusion::FusionQuery;
-pub(crate) use self::nearest::{NearestQuery, QueryVectorBinding};
+pub(crate) use self::nearest::NearestQuery;
 pub(crate) use self::nearest_with_mmr::NearestWithMmrQuery;
 pub(crate) use self::order_by::OrderByQuery;
 pub(crate) use self::recommend::RecommendQuery;
@@ -33,10 +33,7 @@ pub(crate) use self::relevance_feedback::RelevanceFeedbackQuery;
 pub(crate) use self::sample::SampleQuery;
 use super::source::Source;
 use super::surface::QuerySurfaceCall;
-use crate::arrow::schema::{
-    PAYLOAD_FIELD_NAME, UNNAMED_VECTOR_FIELD_NAME, dense_vector_width, is_multi_vector_field,
-    is_sparse_vector_field,
-};
+use crate::arrow::schema::{PAYLOAD_FIELD_NAME, QdrantFieldBinding, UNNAMED_VECTOR_FIELD_NAME};
 
 #[derive(Debug, Clone)]
 pub(crate) struct QueryDescriptor {
@@ -50,25 +47,11 @@ impl QueryDescriptor {
     fn into_parts(self) -> (Query, Option<String>) { (self.query, self.using) }
 }
 
-pub(super) fn function_args<'a>(expr: &'a Expr, name: &str) -> Option<&'a [Expr]> {
-    let Expr::ScalarFunction(function) = expr else {
-        return None;
-    };
-    (function.name() == name).then_some(function.args.as_slice())
-}
-
-pub(super) fn column_name(expr: &Expr, function_name: &str) -> Result<String> {
-    let expr = expr.clone().unalias_nested().data;
-    let Expr::Column(column) = expr else {
-        return plan_err!("{function_name} requires a column reference");
-    };
-    Ok(column.name)
-}
-
 pub(super) fn string_literal(expr: &Expr, function_name: &str, argument: &str) -> Result<String> {
     match expr.clone().unalias_nested().data {
-        Expr::Literal(ScalarValue::Utf8(Some(value)), _)
-        | Expr::Literal(ScalarValue::LargeUtf8(Some(value)), _) => Ok(value),
+        Expr::Literal(ScalarValue::Utf8(Some(value)) | ScalarValue::LargeUtf8(Some(value)), _) => {
+            Ok(value)
+        }
         Expr::Cast(cast) => string_literal(&cast.expr, function_name, argument),
         Expr::TryCast(cast) => string_literal(&cast.expr, function_name, argument),
         _ => plan_err!("{function_name} requires {argument} to be a string literal"),
@@ -84,6 +67,7 @@ pub(super) fn bool_literal(expr: &Expr, function_name: &str, argument: &str) -> 
     }
 }
 
+#[expect(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
 pub(super) fn f32_literal(expr: &Expr, function_name: &str, argument: &str) -> Result<f32> {
     match expr.clone().unalias_nested().data {
         Expr::Negative(expr) => Ok(-f32_literal(&expr, function_name, argument)?),
@@ -111,9 +95,9 @@ pub(super) fn u32_literal(expr: &Expr, function_name: &str, argument: &str) -> R
         Expr::Cast(cast) => u32_literal(&cast.expr, function_name, argument),
         Expr::TryCast(cast) => u32_literal(&cast.expr, function_name, argument),
         Expr::Literal(value, _) => match value {
-            ScalarValue::Int8(Some(value)) if value >= 0 => Ok(value as u32),
-            ScalarValue::Int16(Some(value)) if value >= 0 => Ok(value as u32),
-            ScalarValue::Int32(Some(value)) if value >= 0 => Ok(value as u32),
+            ScalarValue::Int8(Some(value)) if value >= 0 => Ok(u32::from(value.unsigned_abs())),
+            ScalarValue::Int16(Some(value)) if value >= 0 => Ok(u32::from(value.unsigned_abs())),
+            ScalarValue::Int32(Some(value)) if value >= 0 => Ok(value.unsigned_abs()),
             ScalarValue::Int64(Some(value)) if value >= 0 => u32::try_from(value).map_err(|_| {
                 datafusion::error::DataFusionError::Plan(format!(
                     "{function_name} requires {argument} to fit in u32"
@@ -167,8 +151,8 @@ impl VectorQueryInput {
         argument: &str,
     ) -> Result<()> {
         match self {
-            Self::Dense(vector) => match QueryVectorBinding::from_source(source, using)? {
-                QueryVectorBinding::DenseFixed { width } => {
+            Self::Dense(vector) => match source.field_binding(using)? {
+                QdrantFieldBinding::DenseFixed { width } => {
                     if width != vector.len() {
                         return plan_err!(
                             "{function_name} requires {argument} width to match source vector \
@@ -177,26 +161,26 @@ impl VectorQueryInput {
                     }
                     Ok(())
                 }
-                QueryVectorBinding::DenseVariable => Ok(()),
-                QueryVectorBinding::MultiDense => plan_err!(
+                QdrantFieldBinding::DenseVariable => Ok(()),
+                QdrantFieldBinding::MultiDense { .. } => plan_err!(
                     "{function_name} requires {argument} to target a single dense vector field"
                 ),
-                QueryVectorBinding::Sparse => {
+                QdrantFieldBinding::Sparse => {
                     plan_err!("{function_name} requires {argument} to target a dense vector field")
                 }
-                QueryVectorBinding::Document => plan_err!(
+                QdrantFieldBinding::Document => plan_err!(
                     "{function_name} requires {argument} to target a dense vector field, not a \
                      document field"
                 ),
-                QueryVectorBinding::Image => plan_err!(
+                QdrantFieldBinding::Image => plan_err!(
                     "{function_name} requires {argument} to target a dense vector field, not an \
                      image field"
                 ),
-                QueryVectorBinding::Object => plan_err!(
+                QdrantFieldBinding::Object => plan_err!(
                     "{function_name} requires {argument} to target a dense vector field, not an \
                      object field"
                 ),
-                QueryVectorBinding::Unsupported(data_type) => plan_err!(
+                QdrantFieldBinding::Unsupported(data_type) => plan_err!(
                     "{function_name} requires {argument} to target a supported vector field, \
                      found {:?}",
                     data_type
@@ -359,15 +343,17 @@ fn point_id_from_scalar(
         ScalarValue::Utf8(Some(value)) | ScalarValue::LargeUtf8(Some(value)) => {
             Some(PointIdOptions::Uuid(value.clone()))
         }
-        ScalarValue::Int8(Some(value)) if *value >= 0 => Some(PointIdOptions::Num(*value as u64)),
-        ScalarValue::Int16(Some(value)) if *value >= 0 => Some(PointIdOptions::Num(*value as u64)),
-        ScalarValue::Int32(Some(value)) if *value >= 0 => Some(PointIdOptions::Num(*value as u64)),
+        ScalarValue::Int8(Some(value)) if *value >= 0 => {
+            Some(PointIdOptions::Num(u64::from(value.unsigned_abs())))
+        }
+        ScalarValue::Int16(Some(value)) if *value >= 0 => {
+            Some(PointIdOptions::Num(u64::from(value.unsigned_abs())))
+        }
+        ScalarValue::Int32(Some(value)) if *value >= 0 => {
+            Some(PointIdOptions::Num(u64::from(value.unsigned_abs())))
+        }
         ScalarValue::Int64(Some(value)) if *value >= 0 => {
-            Some(PointIdOptions::Num(u64::try_from(*value).map_err(|_| {
-                datafusion::error::DataFusionError::Plan(format!(
-                    "{function_name} requires {argument} ids to fit in u64"
-                ))
-            })?))
+            Some(PointIdOptions::Num(value.unsigned_abs()))
         }
         ScalarValue::UInt8(Some(value)) => Some(PointIdOptions::Num(u64::from(*value))),
         ScalarValue::UInt16(Some(value)) => Some(PointIdOptions::Num(u64::from(*value))),
@@ -375,11 +361,12 @@ fn point_id_from_scalar(
         ScalarValue::UInt64(Some(value)) => Some(PointIdOptions::Num(*value)),
         _ => None,
     };
-    match point_id_options {
-        Some(point_id_options) => Ok(PointId { point_id_options: Some(point_id_options) }),
-        None => plan_err!(
+    if let Some(point_id_options) = point_id_options {
+        Ok(PointId { point_id_options: Some(point_id_options) })
+    } else {
+        plan_err!(
             "{function_name} requires {argument} ids to be string or non-negative integer literals"
-        ),
+        )
     }
 }
 
@@ -394,6 +381,7 @@ pub(super) fn scalar_string(
     }
 }
 
+#[expect(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
 pub(super) fn scalar_f32(value: &ScalarValue, function_name: &str, argument: &str) -> Result<f32> {
     match value {
         ScalarValue::Float32(Some(value)) => Ok(*value),
@@ -422,11 +410,7 @@ impl QueryVectorsSelector {
         let vector_names = schema
             .fields()
             .iter()
-            .filter(|field| {
-                dense_vector_width(field).is_some()
-                    || is_multi_vector_field(field)
-                    || is_sparse_vector_field(field)
-            })
+            .filter(|field| QdrantFieldBinding::from_field(field).is_vector())
             .map(|field| field.name().clone())
             .collect::<Vec<_>>();
         if vector_names.is_empty() {
@@ -715,8 +699,7 @@ impl QueryKind {
             Self::Discover(query) => query.validate_on_source(source),
             Self::Context(query) => query.validate_on_source(source),
             Self::OrderBy(query) => query.validate_on_source(source),
-            Self::Fusion(query) => query.validate_on_source(source),
-            Self::Sample(query) => query.validate_on_source(source),
+            Self::Fusion(_) | Self::Sample(_) => Ok(()),
             Self::Formula(query) => query.validate_on_source(source),
             Self::NearestWithMmr(query) => query.validate_on_source(source),
             Self::RelevanceFeedback(query) => query.validate_on_source(source),
@@ -746,15 +729,15 @@ impl QueryKind {
     pub(crate) fn descriptor(&self, prefetch_count: usize) -> Result<QueryDescriptor> {
         match self {
             Self::Nearest(query) => query.descriptor(prefetch_count),
-            Self::Recommend(query) => query.descriptor(prefetch_count),
-            Self::Discover(query) => query.descriptor(prefetch_count),
-            Self::Context(query) => query.descriptor(prefetch_count),
-            Self::OrderBy(query) => query.descriptor(prefetch_count),
+            Self::Recommend(query) => Ok(query.descriptor(prefetch_count)),
+            Self::Discover(query) => Ok(query.descriptor(prefetch_count)),
+            Self::Context(query) => Ok(query.descriptor(prefetch_count)),
+            Self::OrderBy(query) => Ok(query.descriptor(prefetch_count)),
             Self::Fusion(query) => query.descriptor(prefetch_count),
-            Self::Sample(query) => query.descriptor(prefetch_count),
-            Self::Formula(query) => query.descriptor(prefetch_count),
-            Self::NearestWithMmr(query) => query.descriptor(prefetch_count),
-            Self::RelevanceFeedback(query) => query.descriptor(prefetch_count),
+            Self::Sample(query) => Ok(query.descriptor(prefetch_count)),
+            Self::Formula(query) => Ok(query.descriptor(prefetch_count)),
+            Self::NearestWithMmr(query) => Ok(query.descriptor(prefetch_count)),
+            Self::RelevanceFeedback(query) => Ok(query.descriptor(prefetch_count)),
         }
     }
 }

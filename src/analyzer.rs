@@ -65,6 +65,9 @@ fn analyze_root(plan: LogicalPlan) -> Result<Analysis> { analyze_plan(plan)?.fin
 fn analyze_plan(plan: LogicalPlan) -> Result<Analysis> {
     let with_subqueries = plan
         .map_subqueries(|subquery| analyze_root(subquery).map(|analysis| analysis.transformed))?;
+    if matches!(with_subqueries.data, LogicalPlan::RecursiveQuery(_)) {
+        return analyze_recursive(with_subqueries);
+    }
     let mut child_states = vec![];
     let rewritten = with_subqueries.transform_sibling(|plan| {
         plan.map_children(|child| {
@@ -79,26 +82,40 @@ fn analyze_plan(plan: LogicalPlan) -> Result<Analysis> {
     let plan = rewritten.data;
 
     match child_states.as_slice() {
-        [] => analyze_leaf(plan, transformed),
+        [] => Ok(analyze_leaf(plan, transformed)),
         [child] => analyze_unary(plan, child.clone(), transformed),
-        children => analyze_multi(plan, children.to_vec(), transformed),
+        children => analyze_multi(plan, children, transformed),
     }
 }
 
-fn analyze_leaf(plan: LogicalPlan, transformed: bool) -> Result<Analysis> {
+fn analyze_leaf(plan: LogicalPlan, transformed: bool) -> Analysis {
     if let LogicalPlan::TableScan(scan) = &plan {
         if let Some(state) = SourceState::from_scan(scan) {
-            return Ok(Analysis::new(plan, State::Source(state), transformed));
+            return Analysis::new(plan, State::Source(state), transformed);
         }
-        return Ok(Analysis::new(plan, State::local(), transformed));
+        return Analysis::new(plan, State::local(), transformed);
     }
     if let LogicalPlan::Extension(extension) = &plan
         && let Some(node) = extension.node.as_any().downcast_ref::<KernelNode>()
     {
         let state = State::Kernel(state::KernelState::new(node.spec().clone()));
-        return Ok(Analysis::new(plan, state, transformed));
+        return Analysis::new(plan, state, transformed);
     }
-    Ok(Analysis::new(plan, State::local(), transformed))
+    Analysis::new(plan, State::local(), transformed)
+}
+
+fn analyze_recursive(plan: Transformed<LogicalPlan>) -> Result<Analysis> {
+    let rewritten = plan.transform_sibling(|plan| {
+        plan.map_children(|child| analyze_root(child).map(|analysis| analysis.transformed))
+    })?;
+    if SurfaceCall::collect(&rewritten.data.expressions())?.is_some() {
+        return Ok(fatal(
+            rewritten.data,
+            rewritten.transformed,
+            "qdrant surface calls may not cross recursive query boundaries",
+        ));
+    }
+    Ok(Analysis::new(rewritten.data, State::local(), rewritten.transformed))
 }
 
 fn analyze_unary(plan: LogicalPlan, child: State, transformed: bool) -> Result<Analysis> {
@@ -112,7 +129,7 @@ fn analyze_unary(plan: LogicalPlan, child: State, transformed: bool) -> Result<A
     }
 }
 
-fn analyze_multi(plan: LogicalPlan, children: Vec<State>, transformed: bool) -> Result<Analysis> {
+fn analyze_multi(plan: LogicalPlan, children: &[State], transformed: bool) -> Result<Analysis> {
     if let Some(fatal) = children.iter().find_map(|state| match state {
         State::Fatal(fatal) => Some(fatal.clone()),
         _ => None,
@@ -126,7 +143,7 @@ fn analyze_multi(plan: LogicalPlan, children: Vec<State>, transformed: bool) -> 
             "qdrant surface calls may not cross multi-branch boundaries",
         ));
     }
-    if let Some(state) = CompositeState::from_plan(&plan, &children)? {
+    if let Some(state) = CompositeState::from_plan(&plan, children)? {
         return Ok(Analysis::new(plan, State::Composite(state), transformed));
     }
     Ok(Analysis::new(plan, State::local(), transformed))

@@ -7,6 +7,10 @@ use crate::analyzer::surface::SurfaceCall;
 #[derive(Debug, Clone, Default)]
 pub(crate) struct LocalState;
 
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "state transition methods share a uniform Result-based interface across variants"
+)]
 impl LocalState {
     pub(super) fn projection(
         self,

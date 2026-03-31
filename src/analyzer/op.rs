@@ -100,7 +100,7 @@ impl QueryOp {
     fn kernel(
         self,
         source: Source,
-        filters: FiltersState,
+        filters: &FiltersState,
         plan: &LogicalPlan,
     ) -> Result<Option<KernelState>> {
         if !self.sorted {
@@ -118,7 +118,7 @@ impl QueryOp {
     fn distinct_on_kernel(
         mut self,
         source: Source,
-        filters: FiltersState,
+        filters: &FiltersState,
         plan: &LogicalPlan,
     ) -> Result<Option<KernelState>> {
         let LogicalPlan::Distinct(Distinct::On(distinct_on)) = plan else {
@@ -134,7 +134,7 @@ impl QueryOp {
         if !source
             .payload_schema
             .field(group_field.key())
-            .is_some_and(|field| field.supports_facet())
+            .is_some_and(crate::pushdown::QdrantPayloadField::supports_facet)
         {
             return Ok(None);
         }
@@ -213,7 +213,7 @@ impl QueryOp {
             self.score_threshold,
             limit,
         );
-        branch.prefetch = self.prefetch.clone();
+        branch.prefetch.clone_from(&self.prefetch);
         Ok(branch)
     }
 
@@ -309,14 +309,14 @@ impl Op {
     pub(super) fn sort(self, plan: &LogicalPlan) -> Result<Option<Self>> {
         match self {
             Self::Query(op) => op.sort(plan).map(|op| op.map(Self::Query)),
-            Self::Facet(op) => op.sort(plan).map(|op| op.map(Self::Facet)),
+            Self::Facet(op) => Ok(op.sort(plan).map(Self::Facet)),
         }
     }
 
     pub(super) fn kernel(
         self,
         source: Source,
-        filters: FiltersState,
+        filters: &FiltersState,
         plan: &LogicalPlan,
     ) -> Result<Option<KernelState>> {
         match self {
@@ -328,7 +328,7 @@ impl Op {
     pub(super) fn distinct_on_kernel(
         self,
         source: Source,
-        filters: FiltersState,
+        filters: &FiltersState,
         plan: &LogicalPlan,
     ) -> Result<Option<KernelState>> {
         match self {
@@ -367,21 +367,21 @@ impl FacetOp {
         Ok(Some(self))
     }
 
-    pub(super) fn sort(mut self, plan: &LogicalPlan) -> Result<Option<Self>> {
+    pub(super) fn sort(mut self, plan: &LogicalPlan) -> Option<Self> {
         let LogicalPlan::Sort(sort) = plan else {
-            return Ok(None);
+            return None;
         };
         if sort.expr.len() != 1 || sort.expr[0].asc || !self.is_count_expr(&sort.expr[0].expr) {
-            return Ok(None);
+            return None;
         }
         self.sorted = true;
-        Ok(Some(self))
+        Some(self)
     }
 
     pub(super) fn kernel(
         self,
         source: Source,
-        filters: FiltersState,
+        filters: &FiltersState,
         plan: &LogicalPlan,
     ) -> Result<Option<KernelState>> {
         if !self.sorted {

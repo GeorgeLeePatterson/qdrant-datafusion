@@ -110,32 +110,32 @@ fn stream_once_batch(
 }
 
 impl QdrantCountExec {
-    pub(crate) fn new(spec: CountKernel, schema: SchemaRef) -> Self {
-        Self { spec, schema: Arc::clone(&schema), properties: leaf_properties(&schema) }
+    pub(crate) fn new(spec: CountKernel, schema: &SchemaRef) -> Self {
+        Self { spec, schema: Arc::clone(schema), properties: leaf_properties(schema) }
     }
 }
 
 impl QdrantFacetExec {
-    pub(crate) fn new(spec: FacetKernel, schema: SchemaRef) -> Self {
-        Self { spec, schema: Arc::clone(&schema), properties: leaf_properties(&schema) }
+    pub(crate) fn new(spec: FacetKernel, schema: &SchemaRef) -> Self {
+        Self { spec, schema: Arc::clone(schema), properties: leaf_properties(schema) }
     }
 }
 
 impl QdrantQueryExec {
-    pub(crate) fn new(spec: QueryKernel, schema: SchemaRef) -> Self {
-        Self { spec, schema: Arc::clone(&schema), properties: leaf_properties(&schema) }
+    pub(crate) fn new(spec: QueryKernel, schema: &SchemaRef) -> Self {
+        Self { spec, schema: Arc::clone(schema), properties: leaf_properties(schema) }
     }
 }
 
 impl QdrantQueryBatchExec {
-    pub(crate) fn new(spec: QueryBatchKernel, schema: SchemaRef) -> Self {
-        Self { spec, schema: Arc::clone(&schema), properties: leaf_properties(&schema) }
+    pub(crate) fn new(spec: QueryBatchKernel, schema: &SchemaRef) -> Self {
+        Self { spec, schema: Arc::clone(schema), properties: leaf_properties(schema) }
     }
 }
 
 impl QdrantQueryGroupsExec {
-    pub(crate) fn new(spec: QueryGroupsKernel, schema: SchemaRef) -> Self {
-        Self { spec, schema: Arc::clone(&schema), properties: leaf_properties(&schema) }
+    pub(crate) fn new(spec: QueryGroupsKernel, schema: &SchemaRef) -> Self {
+        Self { spec, schema: Arc::clone(schema), properties: leaf_properties(schema) }
     }
 }
 
@@ -320,6 +320,14 @@ fn append_scored_points_to_batch(
 }
 
 fn group_id_cmp(lhs: Option<&GroupId>, rhs: Option<&GroupId>) -> Ordering {
+    fn kind_rank(kind: &group_id::Kind) -> u8 {
+        match kind {
+            group_id::Kind::UnsignedValue(_) => 0,
+            group_id::Kind::IntegerValue(_) => 1,
+            group_id::Kind::StringValue(_) => 2,
+        }
+    }
+
     match (lhs.and_then(|id| id.kind.as_ref()), rhs.and_then(|id| id.kind.as_ref())) {
         (Some(group_id::Kind::UnsignedValue(lhs)), Some(group_id::Kind::UnsignedValue(rhs))) => {
             lhs.cmp(rhs)
@@ -330,24 +338,7 @@ fn group_id_cmp(lhs: Option<&GroupId>, rhs: Option<&GroupId>) -> Ordering {
         (Some(group_id::Kind::StringValue(lhs)), Some(group_id::Kind::StringValue(rhs))) => {
             lhs.cmp(rhs)
         }
-        (Some(group_id::Kind::UnsignedValue(_)), Some(group_id::Kind::IntegerValue(_))) => {
-            Ordering::Less
-        }
-        (Some(group_id::Kind::UnsignedValue(_)), Some(group_id::Kind::StringValue(_))) => {
-            Ordering::Less
-        }
-        (Some(group_id::Kind::IntegerValue(_)), Some(group_id::Kind::UnsignedValue(_))) => {
-            Ordering::Greater
-        }
-        (Some(group_id::Kind::IntegerValue(_)), Some(group_id::Kind::StringValue(_))) => {
-            Ordering::Less
-        }
-        (Some(group_id::Kind::StringValue(_)), Some(group_id::Kind::UnsignedValue(_))) => {
-            Ordering::Greater
-        }
-        (Some(group_id::Kind::StringValue(_)), Some(group_id::Kind::IntegerValue(_))) => {
-            Ordering::Greater
-        }
+        (Some(lhs), Some(rhs)) => kind_rank(lhs).cmp(&kind_rank(rhs)),
         (None, None) => Ordering::Equal,
         (None, Some(_)) => Ordering::Less,
         (Some(_), None) => Ordering::Greater,

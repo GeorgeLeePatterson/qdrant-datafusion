@@ -51,7 +51,6 @@ pub fn init_tracing(directives: Option<&[(&str, &str)]>) {
 /// Common tracing filters
 ///
 /// # Panics
-#[allow(unused)]
 pub fn get_filter(rust_log: &str, directives: Option<&[(&str, &str)]>) -> EnvFilter {
     let mut env_dirs = vec![];
     let level = if rust_log.is_empty() {

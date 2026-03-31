@@ -117,5 +117,5 @@ fn timestamp_from_string(value: &str) -> Option<Timestamp> {
     Some(Timestamp { seconds: value.and_utc().timestamp(), nanos: 0 })
 }
 
-#[allow(clippy::cast_precision_loss)]
+#[expect(clippy::cast_precision_loss)]
 fn integer_to_f64(value: i64) -> f64 { value as f64 }

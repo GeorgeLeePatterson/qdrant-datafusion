@@ -1,54 +1,84 @@
 use datafusion::common::{Result, plan_err};
-use datafusion::logical_expr::Expr;
 use qdrant_client::qdrant::{Query, RecommendInput, RecommendStrategy};
 
 use super::super::source::Source;
-use super::{
-    QueryDescriptor, VectorQueryInput, column_name, function_args, scalar_string, vector_input_list,
-};
-use crate::expr_fn::QDRANT_RECOMMEND_SCORE_FUNCTION_NAME;
+use super::{QueryDescriptor, VectorQueryInput, scalar_string, vector_input_list};
+use crate::expr_fn::{RECOMMEND_SCORE_FUNCTION_NAME, RecommendCall};
+
+const AVERAGE_VECTOR_STRATEGY: &str = "average_vector";
+const BEST_SCORE_STRATEGY: &str = "best_score";
+const SUM_SCORES_STRATEGY: &str = "sum_scores";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RecommendQueryStrategy {
+    AverageVector,
+    BestScore,
+    SumScores,
+}
+
+impl RecommendQueryStrategy {
+    fn into_proto(self) -> RecommendStrategy {
+        match self {
+            Self::AverageVector => RecommendStrategy::AverageVector,
+            Self::BestScore => RecommendStrategy::BestScore,
+            Self::SumScores => RecommendStrategy::SumScores,
+        }
+    }
+}
+
+impl TryFrom<&str> for RecommendQueryStrategy {
+    type Error = datafusion::error::DataFusionError;
+
+    fn try_from(value: &str) -> Result<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            AVERAGE_VECTOR_STRATEGY => Ok(Self::AverageVector),
+            BEST_SCORE_STRATEGY => Ok(Self::BestScore),
+            SUM_SCORES_STRATEGY => Ok(Self::SumScores),
+            _ => {
+                plan_err!(
+                    "{RECOMMEND_SCORE_FUNCTION_NAME} strategy must be                      \
+                     '{AVERAGE_VECTOR_STRATEGY}', '{BEST_SCORE_STRATEGY}', or                      \
+                     '{SUM_SCORES_STRATEGY}'"
+                )
+            }
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct RecommendQuery {
     using:    Option<String>,
-    strategy: Option<RecommendStrategy>,
+    strategy: Option<RecommendQueryStrategy>,
     positive: Vec<VectorQueryInput>,
     negative: Vec<VectorQueryInput>,
 }
 
-impl RecommendQuery {
-    pub(crate) fn from_expr(expr: &Expr) -> Result<Option<Self>> {
-        let Some(args) = function_args(expr, QDRANT_RECOMMEND_SCORE_FUNCTION_NAME) else {
-            return Ok(None);
+impl TryFrom<RecommendCall> for RecommendQuery {
+    type Error = datafusion::error::DataFusionError;
+
+    fn try_from(call: RecommendCall) -> Result<Self> {
+        let strategy = match call.strategy.as_ref() {
+            Some(strategy) => Some(parse_strategy(strategy)?),
+            None => None,
         };
-        if !(3..=4).contains(&args.len()) {
-            return plan_err!(
-                "{QDRANT_RECOMMEND_SCORE_FUNCTION_NAME} requires a vector column, optional \
-                 strategy, positive examples, and negative examples"
-            );
-        }
-        let using = Some(column_name(&args[0], QDRANT_RECOMMEND_SCORE_FUNCTION_NAME)?);
-        let (strategy, positive_arg, negative_arg) = if args.len() == 4 {
-            (Some(parse_strategy(&args[1])?), &args[2], &args[3])
-        } else {
-            (None, &args[1], &args[2])
-        };
-        Ok(Some(Self {
-            using,
+        Ok(Self {
+            using: Some(call.vector_field),
             strategy,
             positive: vector_input_list(
-                positive_arg,
-                QDRANT_RECOMMEND_SCORE_FUNCTION_NAME,
+                &call.positive,
+                RECOMMEND_SCORE_FUNCTION_NAME,
                 "positive examples",
             )?,
             negative: vector_input_list(
-                negative_arg,
-                QDRANT_RECOMMEND_SCORE_FUNCTION_NAME,
+                &call.negative,
+                RECOMMEND_SCORE_FUNCTION_NAME,
                 "negative examples",
             )?,
-        }))
+        })
     }
+}
 
+impl RecommendQuery {
     pub(crate) fn same_semantics(&self, other: &Self) -> bool {
         self.using == other.using
             && self.strategy == other.strategy
@@ -64,50 +94,41 @@ impl RecommendQuery {
             input.validate_on_source(
                 source,
                 using,
-                QDRANT_RECOMMEND_SCORE_FUNCTION_NAME,
+                RECOMMEND_SCORE_FUNCTION_NAME,
                 "example input",
             )?;
         }
         Ok(())
     }
 
-    pub(super) fn descriptor(&self, _prefetch_count: usize) -> Result<QueryDescriptor> {
-        Ok(QueryDescriptor::new(
+    pub(super) fn descriptor(&self, _prefetch_count: usize) -> QueryDescriptor {
+        QueryDescriptor::new(
             Query::new_recommend(RecommendInput {
                 positive: self.positive.iter().cloned().map(VectorQueryInput::into_proto).collect(),
                 negative: self.negative.iter().cloned().map(VectorQueryInput::into_proto).collect(),
-                strategy: self.strategy.map(|strategy| strategy as i32),
+                strategy: self.strategy.map(|strategy| strategy.into_proto() as i32),
             }),
             self.using.clone(),
-        ))
+        )
     }
 }
 
-fn parse_strategy(expr: &Expr) -> Result<RecommendStrategy> {
+fn parse_strategy(expr: &datafusion::logical_expr::Expr) -> Result<RecommendQueryStrategy> {
     let strategy = scalar_string(
         &match expr.clone().unalias_nested().data {
-            Expr::Literal(value, _) => value,
-            Expr::Cast(cast) => return parse_strategy(&cast.expr),
-            Expr::TryCast(cast) => return parse_strategy(&cast.expr),
+            datafusion::logical_expr::Expr::Literal(value, _) => value,
+            datafusion::logical_expr::Expr::Cast(cast) => return parse_strategy(&cast.expr),
+            datafusion::logical_expr::Expr::TryCast(cast) => return parse_strategy(&cast.expr),
             _ => {
                 return plan_err!(
-                    "{QDRANT_RECOMMEND_SCORE_FUNCTION_NAME} requires strategy to be a string \
-                     literal"
+                    "{RECOMMEND_SCORE_FUNCTION_NAME} requires strategy to be a string literal"
                 );
             }
         },
-        QDRANT_RECOMMEND_SCORE_FUNCTION_NAME,
+        RECOMMEND_SCORE_FUNCTION_NAME,
         "strategy",
     )?;
-    match strategy.to_ascii_uppercase().as_str() {
-        "AVERAGE_VECTOR" => Ok(RecommendStrategy::AverageVector),
-        "BEST_SCORE" => Ok(RecommendStrategy::BestScore),
-        "SUM_SCORES" => Ok(RecommendStrategy::SumScores),
-        _ => plan_err!(
-            "{QDRANT_RECOMMEND_SCORE_FUNCTION_NAME} strategy must be 'AVERAGE_VECTOR', \
-             'BEST_SCORE', or 'SUM_SCORES'"
-        ),
-    }
+    RecommendQueryStrategy::try_from(strategy.as_str())
 }
 
 fn same_inputs(lhs: &[VectorQueryInput], rhs: &[VectorQueryInput]) -> bool {

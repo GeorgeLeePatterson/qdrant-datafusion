@@ -17,8 +17,7 @@ use qdrant_client::qdrant::{
 };
 
 use super::schema::{
-    ID_FIELD_NAME, PAYLOAD_FIELD_NAME, UNNAMED_VECTOR_FIELD_NAME, dense_vector_width,
-    is_multi_vector_field, is_sparse_vector_field, multivector_width,
+    ID_FIELD_NAME, PAYLOAD_FIELD_NAME, QdrantFieldBinding, UNNAMED_VECTOR_FIELD_NAME,
 };
 
 fn vector_kind(vector: &vector_output::Vector) -> &'static str {
@@ -403,38 +402,45 @@ impl QdrantRecordBatchBuilder {
                     )))
                 } else if score_field_names.is_some_and(|names| names.contains(field.name())) {
                     Ok(FieldAppender::Score(Float32Builder::with_capacity(point_count)))
-                } else if let Some(width) = dense_vector_width(field) {
-                    Ok(FieldAppender::DenseVector(DenseVectorRows::new(
-                        field.name().clone(),
-                        field.name() == UNNAMED_VECTOR_FIELD_NAME,
-                        width,
-                        point_count,
-                    )))
-                } else if is_multi_vector_field(field) {
-                    let Some(width) = multivector_width(field) else {
-                        return exec_err!(
-                            "field '{}' is missing multivector width metadata",
-                            field.name()
-                        );
-                    };
-                    Ok(FieldAppender::MultiVector(MultiVectorRows::new(
-                        field.name().clone(),
-                        field.name() == UNNAMED_VECTOR_FIELD_NAME,
-                        width,
-                        point_count,
-                    )?))
-                } else if is_sparse_vector_field(field) {
-                    Ok(FieldAppender::SparseVector(SparseVectorRows::new(
-                        field.name().clone(),
-                        field.name() == UNNAMED_VECTOR_FIELD_NAME,
-                        point_count,
-                    )))
                 } else {
-                    exec_err!(
-                        "unsupported scan field contract for '{}' with data type {}",
-                        field.name(),
-                        field.data_type()
-                    )
+                    match QdrantFieldBinding::from_field(field) {
+                        QdrantFieldBinding::DenseFixed { width } => {
+                            Ok(FieldAppender::DenseVector(DenseVectorRows::new(
+                                field.name().clone(),
+                                field.name() == UNNAMED_VECTOR_FIELD_NAME,
+                                width,
+                                point_count,
+                            )))
+                        }
+                        QdrantFieldBinding::MultiDense { width } => {
+                            let Some(width) = width else {
+                                return exec_err!(
+                                    "field '{}' is missing multivector width metadata",
+                                    field.name()
+                                );
+                            };
+                            Ok(FieldAppender::MultiVector(MultiVectorRows::new(
+                                field.name().clone(),
+                                field.name() == UNNAMED_VECTOR_FIELD_NAME,
+                                width,
+                                point_count,
+                            )?))
+                        }
+                        QdrantFieldBinding::Sparse => {
+                            Ok(FieldAppender::SparseVector(SparseVectorRows::new(
+                                field.name().clone(),
+                                field.name() == UNNAMED_VECTOR_FIELD_NAME,
+                                point_count,
+                            )))
+                        }
+                        _ => {
+                            exec_err!(
+                                "unsupported scan field contract for '{}' with data type {}",
+                                field.name(),
+                                field.data_type()
+                            )
+                        }
+                    }
                 }
             })
             .collect::<DataFusionResult<Vec<_>>>()?;

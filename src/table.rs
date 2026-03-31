@@ -125,6 +125,7 @@ impl QdrantTableProvider {
     }
 
     #[cfg(test)]
+    #[expect(dead_code, reason = "test-only constructor kept for future analyzer/planner tests")]
     pub(crate) fn new_test(
         table: &str,
         schema: Schema,
@@ -1122,6 +1123,46 @@ mod tests {
     }
 
     #[test]
+    fn physical_plan_preserves_qdrant_pushdown_inside_recursive_cte_terms() {
+        let provider = test_provider(Schema::new(vec![
+            Field::new(ID_FIELD_NAME, DataType::Utf8, false),
+            Field::new(PAYLOAD_FIELD_NAME, DataType::Utf8, true),
+            Field::new(
+                "embedding",
+                DataType::new_fixed_size_list(DataType::Float32, 2, false),
+                true,
+            ),
+        ]));
+        let ctx = QdrantSessionContext::from(SessionContext::new());
+        drop(
+            ctx.session_context()
+                .register_table("vectors", Arc::new(provider))
+                .expect("register table"),
+        );
+        let dataframe =
+            ctx
+                .sql(
+                    "WITH RECURSIVE ranked AS ((SELECT id, payload, embedding,                  \
+                     qdrant_nearest_score(embedding, 1.0, 0.0) AS score FROM vectors ORDER BY \
+                     score                  DESC LIMIT 1) UNION ALL SELECT id, payload, \
+                     embedding, score FROM ranked WHERE                  false) SELECT * FROM \
+                     ranked",
+                )
+                .now_or_never()
+                .expect("sql future is ready")
+                .expect("dataframe");
+        let plan = dataframe
+            .create_physical_plan()
+            .now_or_never()
+            .expect("plan future is ready")
+            .expect("physical plan");
+        let display = displayable(plan.as_ref()).indent(true).to_string();
+
+        assert!(display.contains("RecursiveQueryExec"), "{display}");
+        assert!(display.contains("QdrantQueryExec"), "{display}");
+    }
+
+    #[test]
     fn physical_plan_uses_qdrant_query_groups_exec_for_distinct_on_nearest_queries() {
         let provider = QdrantTableProvider {
             payload_schema: payload_schema([(
@@ -1253,7 +1294,7 @@ mod tests {
                     params: Some(qdrant_client::qdrant::PayloadIndexParams {
                         index_params: Some(
                             qdrant_client::qdrant::payload_index_params::IndexParams::IntegerIndexParams(
-                                qdrant_client::qdrant::IntegerIndexParams::default(),
+                                IntegerIndexParams::default(),
                             ),
                         ),
                     }),

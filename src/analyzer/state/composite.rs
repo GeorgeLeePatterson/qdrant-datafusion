@@ -12,7 +12,7 @@ use crate::analyzer::surface::SurfaceCall;
 
 #[derive(Debug, Clone)]
 pub(crate) enum CompositeState {
-    Mergeable(MergeableState),
+    Mergeable(Box<MergeableState>),
     Batchable(BatchableState),
     Coordinated(CoordinatedState),
 }
@@ -20,7 +20,7 @@ pub(crate) enum CompositeState {
 impl CompositeState {
     pub(crate) fn from_plan(plan: &LogicalPlan, children: &[State]) -> Result<Option<Self>> {
         if let Some(state) = MergeableState::from_plan(plan, children)? {
-            return Ok(Some(Self::Mergeable(state)));
+            return Ok(Some(Self::Mergeable(Box::new(state))));
         }
         if let Some(state) = BatchableState::from_plan(plan, children) {
             return Ok(Some(Self::Batchable(state)));
@@ -38,8 +38,8 @@ impl CompositeState {
                     "unfinished mergeable qdrant composite at query root".to_owned(),
                 )
             }),
-            Self::Batchable(state) => state.finish_root(plan),
-            Self::Coordinated(state) => state.finish_root(plan),
+            Self::Batchable(state) => state.finish_root(&plan),
+            Self::Coordinated(_) => CoordinatedState::finish_root(plan),
         }
     }
 
@@ -86,7 +86,7 @@ impl CompositeState {
     ) -> Result<super::super::Analysis> {
         match self {
             Self::Mergeable(state) => state.limit(plan, transformed),
-            Self::Batchable(state) => state.limit(plan, transformed),
+            Self::Batchable(state) => Ok(state.limit(plan, transformed)),
             Self::Coordinated(state) => state.limit(plan, transformed),
         }
     }
@@ -98,7 +98,7 @@ impl CompositeState {
     ) -> Result<super::super::Analysis> {
         match self {
             Self::Mergeable(state) => state.aggregate(plan, transformed),
-            Self::Batchable(state) => state.aggregate(plan, transformed),
+            Self::Batchable(state) => Ok(state.aggregate(plan, transformed)),
             Self::Coordinated(state) => state.aggregate(plan, transformed),
         }
     }
@@ -167,7 +167,7 @@ impl MergeableState {
         if self.kind.preserves(&plan) {
             return Ok(super::super::Analysis::new(
                 plan,
-                State::Composite(CompositeState::Mergeable(self)),
+                State::Composite(CompositeState::Mergeable(Box::new(self))),
                 transformed,
             ));
         }
@@ -230,28 +230,28 @@ impl BatchableState {
         if let Some(surface) = SurfaceCall::collect(&plan.expressions())? {
             return self.open(surface)?.projection(plan, transformed);
         }
-        self.pass_or_fail(plan, transformed)
+        Ok(self.pass_or_fail(plan, transformed))
     }
 
     fn filter(self, plan: LogicalPlan, transformed: bool) -> Result<super::super::Analysis> {
         if let Some(surface) = SurfaceCall::collect(&plan.expressions())? {
             return self.open(surface)?.filter(plan, transformed);
         }
-        self.pass_or_fail(plan, transformed)
+        Ok(self.pass_or_fail(plan, transformed))
     }
 
     fn sort(self, plan: LogicalPlan, transformed: bool) -> Result<super::super::Analysis> {
         if let Some(surface) = SurfaceCall::collect(&plan.expressions())? {
             return self.open(surface)?.sort(plan, transformed);
         }
+        Ok(self.pass_or_fail(plan, transformed))
+    }
+
+    fn limit(self, plan: LogicalPlan, transformed: bool) -> super::super::Analysis {
         self.pass_or_fail(plan, transformed)
     }
 
-    fn limit(self, plan: LogicalPlan, transformed: bool) -> Result<super::super::Analysis> {
-        self.pass_or_fail(plan, transformed)
-    }
-
-    fn aggregate(self, plan: LogicalPlan, transformed: bool) -> Result<super::super::Analysis> {
+    fn aggregate(self, plan: LogicalPlan, transformed: bool) -> super::super::Analysis {
         self.pass_or_fail(plan, transformed)
     }
 
@@ -259,25 +259,25 @@ impl BatchableState {
         if let Some(surface) = SurfaceCall::collect(&plan.expressions())? {
             return self.open(surface)?.unary(plan, transformed);
         }
-        self.pass_or_fail(plan, transformed)
+        Ok(self.pass_or_fail(plan, transformed))
     }
 
-    fn pass_or_fail(self, plan: LogicalPlan, transformed: bool) -> Result<super::super::Analysis> {
+    fn pass_or_fail(self, plan: LogicalPlan, transformed: bool) -> super::super::Analysis {
         if matches!(plan, LogicalPlan::SubqueryAlias(_)) {
-            return Ok(super::super::Analysis::new(
+            return super::super::Analysis::new(
                 plan,
                 State::Composite(CompositeState::Batchable(self)),
                 transformed,
-            ));
+            );
         }
-        Ok(super::super::fatal(
+        super::super::fatal(
             plan,
             transformed,
             format!(
                 "batchable qdrant composite with {} branches is not yet closed",
                 self.queries.len()
             ),
-        ))
+        )
     }
 
     fn open(self, surface: SurfaceCall) -> Result<ProcessingState> {
@@ -289,7 +289,7 @@ impl BatchableState {
         Ok(ProcessingState { source, filters: FiltersState::default(), op })
     }
 
-    fn finish_root(self, plan: LogicalPlan) -> Result<LogicalPlan> {
+    fn finish_root(self, plan: &LogicalPlan) -> Result<LogicalPlan> {
         let schema = Arc::clone(plan.schema());
         let kernel = QueryBatchKernel::try_new(self.queries)?;
         Ok(LogicalPlan::Extension(Extension {
@@ -298,6 +298,10 @@ impl BatchableState {
     }
 }
 
+#[expect(
+    dead_code,
+    reason = "coordinated execution bookkeeping is scaffolded for future closure work"
+)]
 #[derive(Debug, Clone)]
 pub(crate) struct CoordinatedState {
     branches:    usize,
@@ -317,7 +321,7 @@ impl CoordinatedState {
         })
     }
 
-    fn finish_root(self, plan: LogicalPlan) -> Result<LogicalPlan> {
+    fn finish_root(plan: LogicalPlan) -> Result<LogicalPlan> {
         let with_subqueries = plan.map_subqueries(|subquery| {
             super::super::analyze_root(subquery).map(|analysis| analysis.transformed)
         })?;

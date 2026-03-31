@@ -170,9 +170,7 @@ mod tests {
         SparseVectorsConfigBuilder, UpsertPointsBuilder, Value, Vector, VectorParamsBuilder,
         VectorsConfigBuilder, facet_value, order_value, payload_index_params, point_id, start_from,
     };
-    use qdrant_datafusion::arrow::schema::{
-        dense_vector_width, is_multi_vector_field, is_sparse_vector_field, multivector_width,
-    };
+    use qdrant_datafusion::arrow::schema::QdrantFieldBinding;
     use qdrant_datafusion::context::QdrantSessionContext;
     use qdrant_datafusion::error::Result;
     use qdrant_datafusion::table::QdrantTableProvider;
@@ -426,7 +424,7 @@ mod tests {
 
         let dense_field = schema.field_with_name("text_embedding").expect("dense field present");
         assert!(dense_field.is_nullable());
-        assert_eq!(dense_vector_width(dense_field), Some(3));
+        assert_eq!(QdrantFieldBinding::from_field(dense_field).dense_vector_width(), Some(3));
         let dense_array = batch
             .column(schema.index_of("text_embedding").expect("dense index"))
             .as_any()
@@ -447,8 +445,7 @@ mod tests {
         let multi_field =
             schema.field_with_name("multi_embedding").expect("multivector field present");
         assert!(multi_field.is_nullable());
-        assert!(is_multi_vector_field(multi_field));
-        assert_eq!(multivector_width(multi_field), Some(2));
+        assert_eq!(QdrantFieldBinding::from_field(multi_field).multivector_width(), Some(2));
         let multi_array = batch
             .column(schema.index_of("multi_embedding").expect("multivector index"))
             .as_any()
@@ -461,7 +458,7 @@ mod tests {
 
         let sparse_field = schema.field_with_name("keywords").expect("sparse field present");
         assert!(sparse_field.is_nullable());
-        assert!(is_sparse_vector_field(sparse_field));
+        assert_eq!(QdrantFieldBinding::from_field(sparse_field), QdrantFieldBinding::Sparse);
         let sparse_array = batch
             .column(schema.index_of("keywords").expect("sparse index"))
             .as_any()
@@ -1486,7 +1483,7 @@ mod tests {
         assert_eq!(field_names(schema.as_ref()), vec!["id", "payload", "vector"]);
 
         let vector_field = schema.field_with_name("vector").expect("vector field present");
-        assert_eq!(dense_vector_width(vector_field), Some(3));
+        assert_eq!(QdrantFieldBinding::from_field(vector_field).dense_vector_width(), Some(3));
         let vector_array = batch
             .column(schema.index_of("vector").expect("vector index"))
             .as_any()

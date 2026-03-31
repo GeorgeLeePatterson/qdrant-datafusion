@@ -147,7 +147,7 @@ impl QdrantPayloadField {
 }
 
 impl QdrantFilterValue {
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(clippy::cast_precision_loss)]
     fn integer_to_f64(value: i64) -> f64 { value as f64 }
 
     fn range_bound(&self) -> Option<f64> {

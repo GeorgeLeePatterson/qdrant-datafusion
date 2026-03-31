@@ -15,7 +15,7 @@ use datafusion::prelude::{DataFrame, SQLOptions, SessionContext};
 
 use crate::analyzer::PrototypePushdown;
 use crate::context::planner::QdrantExtensionPlanner;
-use crate::expr_fn::register_qdrant_functions;
+use crate::expr_fn::register_functions;
 
 pub fn prepare_session_context(ctx: SessionContext) -> SessionContext {
     let state = ctx.state();
@@ -33,7 +33,7 @@ pub fn prepare_session_context(ctx: SessionContext) -> SessionContext {
             .with_query_planner(Arc::new(QdrantQueryPlanner::default()))
             .build(),
     );
-    register_qdrant_functions(&ctx);
+    register_functions(&ctx);
     ctx
 }
 

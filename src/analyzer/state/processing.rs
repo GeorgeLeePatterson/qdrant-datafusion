@@ -12,6 +12,15 @@ pub(crate) struct ProcessingState {
     pub(super) op:      Op,
 }
 
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "state transition methods share a uniform Result-based interface across variants"
+)]
+#[expect(
+    clippy::unused_self,
+    reason = "processing transition methods stay instance-based to mirror the state machine \
+              surface"
+)]
 impl ProcessingState {
     pub(super) fn projection(
         mut self,
@@ -69,7 +78,7 @@ impl ProcessingState {
         plan: LogicalPlan,
         transformed: bool,
     ) -> Result<super::super::Analysis> {
-        let Some(kernel_state) = self.op.kernel(self.source, self.filters, &plan)? else {
+        let Some(kernel_state) = self.op.kernel(self.source, &self.filters, &plan)? else {
             return Ok(super::super::fatal(
                 plan,
                 transformed,
@@ -97,7 +106,7 @@ impl ProcessingState {
         transformed: bool,
     ) -> Result<super::super::Analysis> {
         if let Some(kernel_state) =
-            self.op.clone().distinct_on_kernel(self.source.clone(), self.filters.clone(), &plan)?
+            self.op.clone().distinct_on_kernel(self.source.clone(), &self.filters, &plan)?
         {
             return kernel_state.absorb(plan, transformed);
         }

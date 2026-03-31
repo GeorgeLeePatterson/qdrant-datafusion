@@ -5,10 +5,7 @@ use datafusion::error::Result as DataFusionResult;
 use datafusion::logical_expr::Expr;
 use qdrant_client::qdrant::PointId;
 
-use crate::arrow::schema::{
-    PAYLOAD_FIELD_NAME, UNNAMED_VECTOR_FIELD_NAME, dense_vector_width, is_multi_vector_field,
-    is_sparse_vector_field,
-};
+use crate::arrow::schema::{PAYLOAD_FIELD_NAME, QdrantFieldBinding, UNNAMED_VECTOR_FIELD_NAME};
 use crate::pushdown::filter::QdrantFilters;
 use crate::pushdown::{QdrantPayloadField, QdrantPayloadSchema};
 
@@ -99,11 +96,7 @@ impl QdrantScanSpec {
         let vector_names = schema
             .fields()
             .iter()
-            .filter(|field| {
-                dense_vector_width(field).is_some()
-                    || is_multi_vector_field(field)
-                    || is_sparse_vector_field(field)
-            })
+            .filter(|field| QdrantFieldBinding::from_field(field).is_vector())
             .map(|field| field.name().clone())
             .collect::<Vec<_>>();
         let vectors = if vector_names.is_empty() {

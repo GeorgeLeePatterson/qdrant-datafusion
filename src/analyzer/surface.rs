@@ -3,6 +3,10 @@ use datafusion::common::{Result, plan_err};
 use datafusion::logical_expr::Expr;
 
 use super::query::*;
+use crate::expr_fn::{
+    ContextCall, DiscoverCall, FormulaCall, FusionCall, NearestCall, NearestWithMmrCall,
+    OrderByCall, RecommendCall, RelevanceFeedbackCall, SampleCall,
+};
 
 #[derive(Debug, Clone)]
 pub(crate) enum SurfaceCall {
@@ -57,35 +61,35 @@ pub(crate) enum QuerySurfaceCall {
 
 impl QuerySurfaceCall {
     fn from_expr(expr: &Expr) -> Result<Option<Self>> {
-        if let Some(query) = NearestQuery::from_expr(expr)? {
-            return Ok(Some(Self::Nearest(query)));
+        if let Some(call) = NearestCall::from_expr(expr)? {
+            return Ok(Some(Self::Nearest(call.into())));
         }
-        if let Some(query) = RecommendQuery::from_expr(expr)? {
-            return Ok(Some(Self::Recommend(query)));
+        if let Some(call) = RecommendCall::from_expr(expr)? {
+            return Ok(Some(Self::Recommend(call.try_into()?)));
         }
-        if let Some(query) = DiscoverQuery::from_expr(expr)? {
-            return Ok(Some(Self::Discover(query)));
+        if let Some(call) = DiscoverCall::from_expr(expr)? {
+            return Ok(Some(Self::Discover(call.try_into()?)));
         }
-        if let Some(query) = ContextQuery::from_expr(expr)? {
-            return Ok(Some(Self::Context(query)));
+        if let Some(call) = ContextCall::from_expr(expr)? {
+            return Ok(Some(Self::Context(call.try_into()?)));
         }
-        if let Some(query) = OrderByQuery::from_expr(expr)? {
-            return Ok(Some(Self::OrderBy(query)));
+        if let Some(call) = OrderByCall::from_expr(expr)? {
+            return Ok(Some(Self::OrderBy(call.try_into()?)));
         }
-        if let Some(query) = FusionQuery::from_expr(expr)? {
-            return Ok(Some(Self::Fusion(query)));
+        if let Some(call) = FusionCall::from_expr(expr)? {
+            return Ok(Some(Self::Fusion(call.try_into()?)));
         }
-        if let Some(query) = SampleQuery::from_expr(expr)? {
-            return Ok(Some(Self::Sample(query)));
+        if let Some(call) = SampleCall::from_expr(expr)? {
+            return Ok(Some(Self::Sample(call.try_into()?)));
         }
-        if let Some(query) = FormulaQuery::from_expr(expr)? {
-            return Ok(Some(Self::Formula(query)));
+        if let Some(call) = FormulaCall::from_expr(expr)? {
+            return Ok(Some(Self::Formula(call.try_into()?)));
         }
-        if let Some(query) = NearestWithMmrQuery::from_expr(expr)? {
-            return Ok(Some(Self::NearestWithMmr(query)));
+        if let Some(call) = NearestWithMmrCall::from_expr(expr)? {
+            return Ok(Some(Self::NearestWithMmr(call.try_into()?)));
         }
-        if let Some(query) = RelevanceFeedbackQuery::from_expr(expr)? {
-            return Ok(Some(Self::RelevanceFeedback(query)));
+        if let Some(call) = RelevanceFeedbackCall::from_expr(expr)? {
+            return Ok(Some(Self::RelevanceFeedback(call.try_into()?)));
         }
         Ok(None)
     }

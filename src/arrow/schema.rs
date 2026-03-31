@@ -14,36 +14,74 @@ pub const ID_FIELD_NAME: &str = "id";
 pub const PAYLOAD_FIELD_NAME: &str = "payload";
 pub const UNNAMED_VECTOR_FIELD_NAME: &str = "vector";
 
-/// Determine whether a field stores a canonical multivector carrier.
-pub fn is_multi_vector_field(field: &Field) -> bool {
-    field
-        .try_extension_type::<VariableShapeTensor>()
-        .is_ok_and(|extension| extension.dimensions() == 2)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QdrantFieldBinding {
+    DenseFixed { width: usize },
+    DenseVariable,
+    MultiDense { width: Option<usize> },
+    Sparse,
+    Document,
+    Image,
+    Object,
+    Unsupported(DataType),
 }
 
-/// Return the fixed inner width for a multivector field.
-pub fn multivector_width(field: &Field) -> Option<usize> {
-    let extension = field.try_extension_type::<VariableShapeTensor>().ok()?;
-    if extension.dimensions() != 2 {
-        return None;
+impl QdrantFieldBinding {
+    pub fn from_field(field: &Field) -> Self {
+        if let Ok(extension) = field.try_extension_type::<VariableShapeTensor>()
+            && extension.dimensions() == 2
+        {
+            let width = extension
+                .uniform_shapes()
+                .and_then(|shape| (shape.len() == 2).then_some(shape))
+                .and_then(|shape| shape[1])
+                .and_then(|width| usize::try_from(width).ok());
+            return Self::MultiDense { width };
+        }
+
+        if field.try_extension_type::<CsrMatrixBatchExtension>().is_ok() {
+            return Self::Sparse;
+        }
+
+        match field.data_type() {
+            DataType::FixedSizeList(_, len) => usize::try_from(*len).map_or_else(
+                |_| Self::Unsupported(field.data_type().clone()),
+                |width| Self::DenseFixed { width },
+            ),
+            DataType::List(inner) | DataType::LargeList(inner)
+                if matches!(
+                    inner.data_type(),
+                    DataType::Float16 | DataType::Float32 | DataType::Float64
+                ) =>
+            {
+                Self::DenseVariable
+            }
+            DataType::Utf8 | DataType::LargeUtf8 => Self::Document,
+            DataType::Binary | DataType::LargeBinary => Self::Image,
+            DataType::Struct(_) => Self::Object,
+            _ => Self::Unsupported(field.data_type().clone()),
+        }
     }
-    let uniform_shape = extension.uniform_shapes()?;
-    if uniform_shape.len() != 2 {
-        return None;
+
+    pub fn is_vector(&self) -> bool {
+        matches!(
+            self,
+            Self::DenseFixed { .. } | Self::DenseVariable | Self::MultiDense { .. } | Self::Sparse
+        )
     }
-    uniform_shape[1].and_then(|width| usize::try_from(width).ok())
-}
 
-/// Determine whether a field stores a canonical sparse CSR carrier.
-pub fn is_sparse_vector_field(field: &Field) -> bool {
-    field.try_extension_type::<CsrMatrixBatchExtension>().is_ok()
-}
+    pub fn dense_vector_width(&self) -> Option<usize> {
+        match self {
+            Self::DenseFixed { width } => Some(*width),
+            _ => None,
+        }
+    }
 
-/// Return the width of a dense fixed-size vector field.
-pub fn dense_vector_width(field: &Field) -> Option<usize> {
-    match field.data_type() {
-        DataType::FixedSizeList(_, len) => usize::try_from(*len).ok(),
-        _ => None,
+    pub fn multivector_width(&self) -> Option<usize> {
+        match self {
+            Self::MultiDense { width } => *width,
+            _ => None,
+        }
     }
 }
 
@@ -224,6 +262,9 @@ mod tests {
         assert_eq!(item.data_type(), &DataType::Float32);
         assert!(!item.is_nullable());
         assert!(field.is_nullable());
+        assert_eq!(QdrantFieldBinding::from_field(&field), QdrantFieldBinding::DenseFixed {
+            width: 3,
+        });
     }
 
     #[test]
@@ -242,6 +283,9 @@ mod tests {
         assert_eq!(extension.uniform_shapes(), Some(&[None, Some(3)][..]));
         assert_eq!(field.extension_type_name(), Some(VariableShapeTensor::NAME));
         assert!(field.is_nullable());
+        assert_eq!(QdrantFieldBinding::from_field(&field), QdrantFieldBinding::MultiDense {
+            width: Some(3),
+        });
     }
 
     #[test]
@@ -250,5 +294,6 @@ mod tests {
         assert!(field.try_extension_type::<CsrMatrixBatchExtension>().is_ok());
         assert_eq!(field.name(), "keywords");
         assert!(field.is_nullable());
+        assert_eq!(QdrantFieldBinding::from_field(&field), QdrantFieldBinding::Sparse);
     }
 }

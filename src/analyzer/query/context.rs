@@ -1,12 +1,9 @@
-use datafusion::common::{Result, plan_err};
-use datafusion::logical_expr::Expr;
+use datafusion::common::Result;
 use qdrant_client::qdrant::{ContextInput, ContextInputPair, Query};
 
 use super::super::source::Source;
-use super::{
-    QueryDescriptor, VectorQueryInput, column_name, function_args, vector_input_pair_list,
-};
-use crate::expr_fn::QDRANT_CONTEXT_SCORE_FUNCTION_NAME;
+use super::{QueryDescriptor, VectorQueryInput, vector_input_pair_list};
+use crate::expr_fn::{CONTEXT_SCORE_FUNCTION_NAME, ContextCall};
 
 #[derive(Debug, Clone)]
 pub(crate) struct ContextQuery {
@@ -14,26 +11,22 @@ pub(crate) struct ContextQuery {
     pairs: Vec<(VectorQueryInput, VectorQueryInput)>,
 }
 
-impl ContextQuery {
-    pub(crate) fn from_expr(expr: &Expr) -> Result<Option<Self>> {
-        let Some(args) = function_args(expr, QDRANT_CONTEXT_SCORE_FUNCTION_NAME) else {
-            return Ok(None);
-        };
-        if args.len() != 2 {
-            return plan_err!(
-                "{QDRANT_CONTEXT_SCORE_FUNCTION_NAME} requires a vector column and context pairs"
-            );
-        }
-        Ok(Some(Self {
-            using: Some(column_name(&args[0], QDRANT_CONTEXT_SCORE_FUNCTION_NAME)?),
+impl TryFrom<ContextCall> for ContextQuery {
+    type Error = datafusion::error::DataFusionError;
+
+    fn try_from(call: ContextCall) -> Result<Self> {
+        Ok(Self {
+            using: Some(call.vector_field),
             pairs: vector_input_pair_list(
-                &args[1],
-                QDRANT_CONTEXT_SCORE_FUNCTION_NAME,
+                &call.context,
+                CONTEXT_SCORE_FUNCTION_NAME,
                 "context pairs",
             )?,
-        }))
+        })
     }
+}
 
+impl ContextQuery {
     pub(crate) fn same_semantics(&self, other: &Self) -> bool {
         self.using == other.using
             && self.pairs.len() == other.pairs.len()
@@ -52,21 +45,21 @@ impl ContextQuery {
             positive.validate_on_source(
                 source,
                 using,
-                QDRANT_CONTEXT_SCORE_FUNCTION_NAME,
+                CONTEXT_SCORE_FUNCTION_NAME,
                 "positive context input",
             )?;
             negative.validate_on_source(
                 source,
                 using,
-                QDRANT_CONTEXT_SCORE_FUNCTION_NAME,
+                CONTEXT_SCORE_FUNCTION_NAME,
                 "negative context input",
             )?;
         }
         Ok(())
     }
 
-    pub(super) fn descriptor(&self, _prefetch_count: usize) -> Result<QueryDescriptor> {
-        Ok(QueryDescriptor::new(
+    pub(super) fn descriptor(&self, _prefetch_count: usize) -> QueryDescriptor {
+        QueryDescriptor::new(
             Query::new_context(ContextInput {
                 pairs: self
                     .pairs
@@ -79,6 +72,6 @@ impl ContextQuery {
                     .collect(),
             }),
             self.using.clone(),
-        ))
+        )
     }
 }

@@ -11,6 +11,7 @@ use qdrant_client::qdrant::PointId;
 use qdrant_client::qdrant::point_id::PointIdOptions;
 
 use super::state::State;
+use crate::arrow::schema::QdrantFieldBinding;
 use crate::pushdown::QdrantPayloadSchema;
 use crate::table::QdrantTableProvider;
 
@@ -73,6 +74,13 @@ impl Source {
             Some(filter) => builder.filter(filter)?.build(),
             None => builder.build(),
         }
+    }
+
+    pub(crate) fn field_binding(&self, using: &str) -> Result<QdrantFieldBinding> {
+        let Ok(field) = self.schema.field_with_name(using) else {
+            return datafusion::common::plan_err!("query vector field '{using}' not found");
+        };
+        Ok(QdrantFieldBinding::from_field(field))
     }
 }
 

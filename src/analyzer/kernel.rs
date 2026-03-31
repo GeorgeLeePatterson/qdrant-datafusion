@@ -46,10 +46,14 @@ pub(super) fn limit_rows(plan: &LogicalPlan) -> Result<u64> {
             Expr::Cast(cast) => integer_literal_u64(&cast.expr),
             Expr::TryCast(cast) => integer_literal_u64(&cast.expr),
             Expr::Literal(value, _) => match value {
-                ScalarValue::Int8(Some(value)) if value >= 0 => Ok(value as u64),
-                ScalarValue::Int16(Some(value)) if value >= 0 => Ok(value as u64),
-                ScalarValue::Int32(Some(value)) if value >= 0 => Ok(value as u64),
-                ScalarValue::Int64(Some(value)) if value >= 0 => Ok(value as u64),
+                ScalarValue::Int8(Some(value)) if value >= 0 => Ok(u64::from(value.unsigned_abs())),
+                ScalarValue::Int16(Some(value)) if value >= 0 => {
+                    Ok(u64::from(value.unsigned_abs()))
+                }
+                ScalarValue::Int32(Some(value)) if value >= 0 => {
+                    Ok(u64::from(value.unsigned_abs()))
+                }
+                ScalarValue::Int64(Some(value)) if value >= 0 => Ok(value.unsigned_abs()),
                 ScalarValue::UInt8(Some(value)) => Ok(u64::from(value)),
                 ScalarValue::UInt16(Some(value)) => Ok(u64::from(value)),
                 ScalarValue::UInt32(Some(value)) => Ok(u64::from(value)),
@@ -68,20 +72,18 @@ pub(super) fn limit_rows(plan: &LogicalPlan) -> Result<u64> {
         Some(expr) if integer_literal_u64(expr)? == 0 => {}
         _ => return plan_err!("qdrant limit does not support skip"),
     }
-    match limit.fetch.as_deref() {
-        Some(expr) => {
-            let value = integer_literal_u64(expr)?;
-            if value > 0 {
-                Ok(value)
-            } else {
-                plan_err!("qdrant limit requires a positive literal fetch")
-            }
-        }
-        None => plan_err!("qdrant limit requires a positive literal fetch"),
+    let Some(expr) = limit.fetch.as_deref() else {
+        return plan_err!("qdrant limit requires a positive literal fetch");
+    };
+    let value = integer_literal_u64(expr)?;
+    if value > 0 {
+        Ok(value)
+    } else {
+        plan_err!("qdrant limit requires a positive literal fetch")
     }
 }
 
-#[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+#[expect(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
 pub(super) fn numeric_literal_f32(expr: &Expr) -> Result<f32> {
     match expr.clone().unalias_nested().data {
         Expr::Negative(expr) => Ok(-numeric_literal_f32(&expr)?),

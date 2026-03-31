@@ -8,8 +8,8 @@ use qdrant_client::qdrant::{
 };
 
 use super::super::source::Source;
-use super::{QueryDescriptor, function_args, list_from_scalar, scalar_f32, scalar_string};
-use crate::expr_fn::QDRANT_FORMULA_SCORE_FUNCTION_NAME;
+use super::{QueryDescriptor, list_from_scalar, scalar_f32, scalar_string};
+use crate::expr_fn::{FORMULA_SCORE_FUNCTION_NAME, FormulaCall};
 
 #[derive(Debug, Clone, PartialEq)]
 enum FormulaExpr {
@@ -33,45 +33,43 @@ impl FormulaExpr {
             Expr::Cast(cast) => Self::from_expr(&cast.expr),
             Expr::TryCast(cast) => Self::from_expr(&cast.expr),
             Expr::Literal(value, _) => Self::from_scalar(&value),
-            _ => plan_err!(
-                "{QDRANT_FORMULA_SCORE_FUNCTION_NAME} requires the formula to be encoded as \
-                 literals and array literals"
-            ),
+            _ => {
+                plan_err!(
+                    "{FORMULA_SCORE_FUNCTION_NAME} requires the formula to be encoded as literals \
+                     and                  array literals"
+                )
+            }
         }
     }
 
     fn from_scalar(value: &ScalarValue) -> Result<Self> {
-        if let Ok(value) = scalar_f32(value, QDRANT_FORMULA_SCORE_FUNCTION_NAME, "formula leaf") {
+        if let Ok(value) = scalar_f32(value, FORMULA_SCORE_FUNCTION_NAME, "formula leaf") {
             return Ok(Self::Constant(value));
         }
-        if let Ok(value) = scalar_string(value, QDRANT_FORMULA_SCORE_FUNCTION_NAME, "formula leaf")
-        {
+        if let Ok(value) = scalar_string(value, FORMULA_SCORE_FUNCTION_NAME, "formula leaf") {
             return Ok(Self::Variable(parse_variable(&value)));
         }
-        let values = list_from_scalar(value, QDRANT_FORMULA_SCORE_FUNCTION_NAME, "formula tree")?;
+        let values = list_from_scalar(value, FORMULA_SCORE_FUNCTION_NAME, "formula tree")?;
         if values.is_empty() {
-            return plan_err!(
-                "{QDRANT_FORMULA_SCORE_FUNCTION_NAME} formula arrays may not be empty"
-            );
+            return plan_err!("{FORMULA_SCORE_FUNCTION_NAME} formula arrays may not be empty");
         }
-        let operator =
-            scalar_string(&values[0], QDRANT_FORMULA_SCORE_FUNCTION_NAME, "formula operator")?;
+        let operator = scalar_string(&values[0], FORMULA_SCORE_FUNCTION_NAME, "formula operator")?;
         let args = values[1..].iter().map(Self::from_scalar).collect::<Result<Vec<_>>>()?;
         match operator.to_ascii_lowercase().as_str() {
             "sum" => Ok(Self::Sum(args)),
             "mult" => Ok(Self::Mult(args)),
-            "div" => binary(operator.as_str(), args)
+            "div" => binary(operator.as_str(), &args)
                 .map(|(lhs, rhs)| Self::Div(Box::new(lhs), Box::new(rhs))),
-            "pow" => binary(operator.as_str(), args)
+            "pow" => binary(operator.as_str(), &args)
                 .map(|(lhs, rhs)| Self::Pow(Box::new(lhs), Box::new(rhs))),
-            "neg" => unary(operator.as_str(), args).map(|expr| Self::Neg(Box::new(expr))),
-            "abs" => unary(operator.as_str(), args).map(|expr| Self::Abs(Box::new(expr))),
-            "sqrt" => unary(operator.as_str(), args).map(|expr| Self::Sqrt(Box::new(expr))),
-            "exp" => unary(operator.as_str(), args).map(|expr| Self::Exp(Box::new(expr))),
-            "log10" => unary(operator.as_str(), args).map(|expr| Self::Log10(Box::new(expr))),
-            "ln" => unary(operator.as_str(), args).map(|expr| Self::Ln(Box::new(expr))),
+            "neg" => unary(operator.as_str(), &args).map(|expr| Self::Neg(Box::new(expr))),
+            "abs" => unary(operator.as_str(), &args).map(|expr| Self::Abs(Box::new(expr))),
+            "sqrt" => unary(operator.as_str(), &args).map(|expr| Self::Sqrt(Box::new(expr))),
+            "exp" => unary(operator.as_str(), &args).map(|expr| Self::Exp(Box::new(expr))),
+            "log10" => unary(operator.as_str(), &args).map(|expr| Self::Log10(Box::new(expr))),
+            "ln" => unary(operator.as_str(), &args).map(|expr| Self::Ln(Box::new(expr))),
             _ => plan_err!(
-                "{QDRANT_FORMULA_SCORE_FUNCTION_NAME} does not support formula operator '{}'",
+                "{FORMULA_SCORE_FUNCTION_NAME} does not support formula operator '{}'",
                 operator
             ),
         }
@@ -89,8 +87,7 @@ impl FormulaExpr {
                     Ok(())
                 } else {
                     plan_err!(
-                        "{QDRANT_FORMULA_SCORE_FUNCTION_NAME} references unknown payload field \
-                         '{}'",
+                        "{FORMULA_SCORE_FUNCTION_NAME} references unknown payload field '{}'",
                         name
                     )
                 }
@@ -149,33 +146,29 @@ pub(crate) struct FormulaQuery {
     expression: FormulaExpr,
 }
 
-impl FormulaQuery {
-    pub(crate) fn from_expr(expr: &Expr) -> Result<Option<Self>> {
-        let Some(args) = function_args(expr, QDRANT_FORMULA_SCORE_FUNCTION_NAME) else {
-            return Ok(None);
-        };
-        if args.len() != 1 {
-            return plan_err!(
-                "{QDRANT_FORMULA_SCORE_FUNCTION_NAME} requires a single formula expression"
-            );
-        }
-        Ok(Some(Self { expression: FormulaExpr::from_expr(&args[0])? }))
-    }
+impl TryFrom<FormulaCall> for FormulaQuery {
+    type Error = datafusion::error::DataFusionError;
 
+    fn try_from(call: FormulaCall) -> Result<Self> {
+        Ok(Self { expression: FormulaExpr::from_expr(&call.formula)? })
+    }
+}
+
+impl FormulaQuery {
     pub(crate) fn same_semantics(&self, other: &Self) -> bool { self == other }
 
     pub(super) fn validate_on_source(&self, source: &Source) -> Result<()> {
         self.expression.validate_on_source(source)
     }
 
-    pub(super) fn descriptor(&self, _prefetch_count: usize) -> Result<QueryDescriptor> {
-        Ok(QueryDescriptor::new(
+    pub(super) fn descriptor(&self, _prefetch_count: usize) -> QueryDescriptor {
+        QueryDescriptor::new(
             Query::new_formula(Formula {
                 expression: Some(self.expression.clone().into_proto()),
                 defaults:   HashMap::new(),
             }),
             None,
-        ))
+        )
     }
 }
 
@@ -190,22 +183,24 @@ fn parse_variable(value: &str) -> String {
         .to_owned()
 }
 
-fn unary(operator: &str, args: Vec<FormulaExpr>) -> Result<FormulaExpr> {
-    match args.as_slice() {
-        [expr] => Ok(expr.clone()),
-        _ => plan_err!(
-            "{QDRANT_FORMULA_SCORE_FUNCTION_NAME} operator '{}' requires exactly one operand",
+fn unary(operator: &str, args: &[FormulaExpr]) -> Result<FormulaExpr> {
+    if let [expr] = args {
+        Ok(expr.clone())
+    } else {
+        plan_err!(
+            "{FORMULA_SCORE_FUNCTION_NAME} operator '{}' requires exactly one operand",
             operator
-        ),
+        )
     }
 }
 
-fn binary(operator: &str, args: Vec<FormulaExpr>) -> Result<(FormulaExpr, FormulaExpr)> {
-    match args.as_slice() {
-        [lhs, rhs] => Ok((lhs.clone(), rhs.clone())),
-        _ => plan_err!(
-            "{QDRANT_FORMULA_SCORE_FUNCTION_NAME} operator '{}' requires exactly two operands",
+fn binary(operator: &str, args: &[FormulaExpr]) -> Result<(FormulaExpr, FormulaExpr)> {
+    if let [lhs, rhs] = args {
+        Ok((lhs.clone(), rhs.clone()))
+    } else {
+        plan_err!(
+            "{FORMULA_SCORE_FUNCTION_NAME} operator '{}' requires exactly two operands",
             operator
-        ),
+        )
     }
 }

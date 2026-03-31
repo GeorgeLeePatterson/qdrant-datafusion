@@ -1,6 +1,4 @@
-use datafusion::arrow::datatypes::DataType;
 use datafusion::common::{Result, ScalarValue, exec_err, plan_err};
-use datafusion::logical_expr::Expr;
 use qdrant_client::qdrant::point_id::PointIdOptions;
 use qdrant_client::qdrant::{
     DenseVector, Document, MultiDenseVector, PointId, Query, VectorInput, vector_input,
@@ -8,7 +6,8 @@ use qdrant_client::qdrant::{
 
 use super::super::source::Source;
 use super::QueryDescriptor;
-use crate::expr_fn::QdrantNearestCall;
+use crate::arrow::schema::QdrantFieldBinding;
+use crate::expr_fn::NearestCall;
 
 #[derive(Debug, Clone)]
 pub(crate) struct NearestQuery {
@@ -17,10 +16,6 @@ pub(crate) struct NearestQuery {
 }
 
 impl NearestQuery {
-    pub(crate) fn from_expr(expr: &Expr) -> Result<Option<Self>> {
-        QdrantNearestCall::from_expr(expr).map(|call| call.map(Into::into))
-    }
-
     pub(crate) fn same_semantics(&self, other: &Self) -> bool {
         self.using == other.using && self.input.same_semantics(&other.input)
     }
@@ -37,8 +32,8 @@ impl NearestQuery {
     }
 }
 
-impl From<QdrantNearestCall> for NearestQuery {
-    fn from(call: QdrantNearestCall) -> Self {
+impl From<NearestCall> for NearestQuery {
+    fn from(call: NearestCall) -> Self {
         Self {
             using: Some(call.vector_field),
             input: NearestInput::Dense(DenseNearestInput { vector: call.vector }),
@@ -46,6 +41,11 @@ impl From<QdrantNearestCall> for NearestQuery {
     }
 }
 
+#[expect(
+    dead_code,
+    reason = "future nearest input families remain scaffolded even though only some are currently \
+              parsed"
+)]
 #[derive(Debug, Clone)]
 pub(crate) enum NearestInput {
     Dense(DenseNearestInput),
@@ -126,11 +126,8 @@ impl NearestInput {
         match self {
             Self::Dense(input) => input.validate_on_source(source, using),
             Self::Sparse(input) => input.validate_on_source(source, using),
-            Self::MultiDense(input) => input.validate_on_source(source, using),
-            Self::Id(input) => input.validate_on_source(source, using),
-            Self::Document(input) => input.validate_on_source(source, using),
-            Self::Image(input) => input.validate_on_source(source, using),
-            Self::Object(input) => input.validate_on_source(source, using),
+            Self::MultiDense(_) => MultiDenseNearestInput::validate_on_source(source, using),
+            Self::Id(_) | Self::Document(_) | Self::Image(_) | Self::Object(_) => Ok(()),
         }
     }
 }
@@ -149,30 +146,30 @@ impl DenseNearestInput {
     }
 
     fn validate_on_source(&self, source: &Source, using: &str) -> Result<()> {
-        match QueryVectorBinding::from_source(source, using)? {
-            QueryVectorBinding::DenseFixed { width } => {
+        match source.field_binding(using)? {
+            QdrantFieldBinding::DenseFixed { width } => {
                 if width != self.vector.len() {
                     return plan_err!("query vector width does not match source vector width");
                 }
                 Ok(())
             }
-            QueryVectorBinding::DenseVariable => Ok(()),
-            QueryVectorBinding::Sparse => {
+            QdrantFieldBinding::DenseVariable => Ok(()),
+            QdrantFieldBinding::Sparse => {
                 plan_err!("dense query input requires a dense vector binding")
             }
-            QueryVectorBinding::MultiDense => {
+            QdrantFieldBinding::MultiDense { .. } => {
                 plan_err!("dense query input requires a single dense vector binding")
             }
-            QueryVectorBinding::Document => {
+            QdrantFieldBinding::Document => {
                 plan_err!("dense query input does not bind to a document inference field")
             }
-            QueryVectorBinding::Image => {
+            QdrantFieldBinding::Image => {
                 plan_err!("dense query input does not bind to an image inference field")
             }
-            QueryVectorBinding::Object => {
+            QdrantFieldBinding::Object => {
                 plan_err!("dense query input does not bind to an object inference field")
             }
-            QueryVectorBinding::Unsupported(data_type) => plan_err!(
+            QdrantFieldBinding::Unsupported(data_type) => plan_err!(
                 "dense query input does not bind to source field '{}' of type {:?}",
                 using,
                 data_type
@@ -201,24 +198,24 @@ impl SparseNearestInput {
         if self.indices.len() != self.values.len() {
             return plan_err!("sparse query input requires matching index and value lengths");
         }
-        match QueryVectorBinding::from_source(source, using)? {
-            QueryVectorBinding::Sparse => Ok(()),
-            QueryVectorBinding::DenseFixed { .. } | QueryVectorBinding::DenseVariable => {
+        match source.field_binding(using)? {
+            QdrantFieldBinding::Sparse => Ok(()),
+            QdrantFieldBinding::DenseFixed { .. } | QdrantFieldBinding::DenseVariable => {
                 plan_err!("sparse query input requires a sparse vector binding")
             }
-            QueryVectorBinding::MultiDense => {
+            QdrantFieldBinding::MultiDense { .. } => {
                 plan_err!("sparse query input does not bind to a multivector field")
             }
-            QueryVectorBinding::Document => {
+            QdrantFieldBinding::Document => {
                 plan_err!("sparse query input does not bind to a document inference field")
             }
-            QueryVectorBinding::Image => {
+            QdrantFieldBinding::Image => {
                 plan_err!("sparse query input does not bind to an image inference field")
             }
-            QueryVectorBinding::Object => {
+            QdrantFieldBinding::Object => {
                 plan_err!("sparse query input does not bind to an object inference field")
             }
-            QueryVectorBinding::Unsupported(data_type) => plan_err!(
+            QdrantFieldBinding::Unsupported(data_type) => plan_err!(
                 "sparse query input does not bind to source field '{}' of type {:?}",
                 using,
                 data_type
@@ -240,24 +237,24 @@ impl MultiDenseNearestInput {
             })
     }
 
-    fn validate_on_source(&self, source: &Source, using: &str) -> Result<()> {
-        match QueryVectorBinding::from_source(source, using)? {
-            QueryVectorBinding::MultiDense => Ok(()),
-            QueryVectorBinding::DenseFixed { .. }
-            | QueryVectorBinding::DenseVariable
-            | QueryVectorBinding::Sparse => {
+    fn validate_on_source(source: &Source, using: &str) -> Result<()> {
+        match source.field_binding(using)? {
+            QdrantFieldBinding::MultiDense { .. } => Ok(()),
+            QdrantFieldBinding::DenseFixed { .. }
+            | QdrantFieldBinding::DenseVariable
+            | QdrantFieldBinding::Sparse => {
                 plan_err!("multivector query input requires a multivector binding")
             }
-            QueryVectorBinding::Document => {
+            QdrantFieldBinding::Document => {
                 plan_err!("multivector query input does not bind to a document inference field")
             }
-            QueryVectorBinding::Image => {
+            QdrantFieldBinding::Image => {
                 plan_err!("multivector query input does not bind to an image inference field")
             }
-            QueryVectorBinding::Object => {
+            QdrantFieldBinding::Object => {
                 plan_err!("multivector query input does not bind to an object inference field")
             }
-            QueryVectorBinding::Unsupported(data_type) => plan_err!(
+            QdrantFieldBinding::Unsupported(data_type) => plan_err!(
                 "multivector query input does not bind to source field '{}' of type {:?}",
                 using,
                 data_type
@@ -280,8 +277,6 @@ impl IdNearestInput {
             _ => false,
         }
     }
-
-    fn validate_on_source(&self, _source: &Source, _using: &str) -> Result<()> { Ok(()) }
 }
 
 #[derive(Debug, Clone)]
@@ -294,8 +289,6 @@ impl DocumentNearestInput {
     fn same_semantics(&self, other: &Self) -> bool {
         self.text == other.text && self.model == other.model
     }
-
-    fn validate_on_source(&self, _source: &Source, _using: &str) -> Result<()> { Ok(()) }
 }
 
 #[derive(Debug, Clone)]
@@ -308,8 +301,6 @@ impl ImageNearestInput {
     fn same_semantics(&self, other: &Self) -> bool {
         self.image == other.image && self.model == other.model
     }
-
-    fn validate_on_source(&self, _source: &Source, _using: &str) -> Result<()> { Ok(()) }
 }
 
 #[derive(Debug, Clone)]
@@ -321,74 +312,5 @@ pub(crate) struct ObjectNearestInput {
 impl ObjectNearestInput {
     fn same_semantics(&self, other: &Self) -> bool {
         self.object == other.object && self.model == other.model
-    }
-
-    fn validate_on_source(&self, _source: &Source, _using: &str) -> Result<()> { Ok(()) }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) enum QueryVectorBinding {
-    DenseFixed { width: usize },
-    DenseVariable,
-    Sparse,
-    MultiDense,
-    Document,
-    Image,
-    Object,
-    Unsupported(DataType),
-}
-
-impl QueryVectorBinding {
-    pub(crate) fn from_source(source: &Source, using: &str) -> Result<Self> {
-        let field: &datafusion::arrow::datatypes::Field = match source.schema.field_with_name(using)
-        {
-            Ok(field) => field,
-            Err(_) => return plan_err!("query vector field '{}' not found", using),
-        };
-        Ok(Self::from_data_type(field.data_type()))
-    }
-
-    fn from_data_type(data_type: &DataType) -> Self {
-        match data_type {
-            DataType::FixedSizeList(field, width)
-                if matches!(
-                    field.data_type(),
-                    DataType::Float16 | DataType::Float32 | DataType::Float64
-                ) =>
-            {
-                Self::DenseFixed { width: usize::try_from(*width).unwrap_or_default() }
-            }
-            DataType::List(field) | DataType::LargeList(field)
-                if matches!(
-                    field.data_type(),
-                    DataType::Float16 | DataType::Float32 | DataType::Float64
-                ) =>
-            {
-                Self::DenseVariable
-            }
-            DataType::List(field) | DataType::LargeList(field)
-                if matches!(
-                    field.data_type(),
-                    DataType::FixedSizeList(_, _) | DataType::List(_) | DataType::LargeList(_)
-                ) =>
-            {
-                Self::MultiDense
-            }
-            DataType::List(field) | DataType::LargeList(field)
-                if matches!(field.data_type(), DataType::Struct(_)) =>
-            {
-                Self::Sparse
-            }
-            DataType::Struct(fields)
-                if fields.iter().any(|field| field.name() == "indices")
-                    && fields.iter().any(|field| field.name() == "values") =>
-            {
-                Self::Sparse
-            }
-            DataType::Utf8 | DataType::LargeUtf8 => Self::Document,
-            DataType::Binary | DataType::LargeBinary => Self::Image,
-            DataType::Struct(_) => Self::Object,
-            other => Self::Unsupported(other.clone()),
-        }
     }
 }

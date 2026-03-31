@@ -62,6 +62,14 @@ impl AggregateSurface {
     }
 }
 
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "state transition methods share a uniform Result-based interface across variants"
+)]
+#[expect(
+    clippy::unused_self,
+    reason = "source transition methods stay instance-based to mirror the state machine surface"
+)]
 impl SourceState {
     pub(crate) fn from_scan(
         scan: &datafusion::logical_expr::logical_plan::TableScan,

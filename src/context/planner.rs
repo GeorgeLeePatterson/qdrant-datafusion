@@ -32,14 +32,20 @@ impl ExtensionPlanner for QdrantExtensionPlanner {
                 })?;
                 let schema = Arc::clone(node.output_schema().inner());
                 let plan: Arc<dyn ExecutionPlan> = match node.spec() {
-                    KernelSpec::Count(spec) => Arc::new(QdrantCountExec::new(spec.clone(), schema)),
-                    KernelSpec::Facet(spec) => Arc::new(QdrantFacetExec::new(spec.clone(), schema)),
-                    KernelSpec::Query(spec) => Arc::new(QdrantQueryExec::new(spec.clone(), schema)),
+                    KernelSpec::Count(spec) => {
+                        Arc::new(QdrantCountExec::new(spec.clone(), &schema))
+                    }
+                    KernelSpec::Facet(spec) => {
+                        Arc::new(QdrantFacetExec::new(spec.clone(), &schema))
+                    }
+                    KernelSpec::Query(spec) => {
+                        Arc::new(QdrantQueryExec::new(spec.clone(), &schema))
+                    }
                     KernelSpec::QueryBatch(spec) => {
-                        Arc::new(QdrantQueryBatchExec::new(spec.clone(), schema))
+                        Arc::new(QdrantQueryBatchExec::new(spec.clone(), &schema))
                     }
                     KernelSpec::QueryGroups(spec) => {
-                        Arc::new(QdrantQueryGroupsExec::new(spec.clone(), schema))
+                        Arc::new(QdrantQueryGroupsExec::new(spec.clone(), &schema))
                     }
                 };
                 Ok(Some(plan))

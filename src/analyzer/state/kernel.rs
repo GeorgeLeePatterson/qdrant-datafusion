@@ -13,6 +13,19 @@ pub(crate) struct KernelState {
     spec: KernelSpec,
 }
 
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "kernel transitions keep the same Result-based signature as the rest of the state \
+              machine"
+)]
+#[expect(
+    clippy::unused_self,
+    reason = "kernel transition methods remain instance-based for symmetry with the state machine"
+)]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "kernel transitions accept owned plans to match the shared state transition surface"
+)]
 impl KernelState {
     pub(crate) fn new(spec: KernelSpec) -> Self { Self { spec } }
 
