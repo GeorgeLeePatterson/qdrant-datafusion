@@ -314,11 +314,9 @@ impl CoordinatedState {
         let outstanding =
             children.iter().filter(|state| state.requires_composite_coordination()).count();
         let qdrant = children.iter().filter(|state| state.is_qdrant_present()).count();
-        (outstanding > 0 || qdrant > 1).then_some(Self {
-            branches: children.len(),
-            outstanding,
-            qdrant,
-        })
+        // Multiple closed qdrant child kernels can compose locally. Coordination is only needed
+        // while some child branch still carries unfinished qdrant work.
+        (outstanding > 0).then_some(Self { branches: children.len(), outstanding, qdrant })
     }
 
     fn finish_root(plan: LogicalPlan) -> Result<LogicalPlan> {

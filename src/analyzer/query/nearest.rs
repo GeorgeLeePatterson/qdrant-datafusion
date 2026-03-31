@@ -1,7 +1,8 @@
-use datafusion::common::{Result, ScalarValue, exec_err, plan_err};
+use datafusion::common::{Result, plan_err};
 use qdrant_client::qdrant::point_id::PointIdOptions;
 use qdrant_client::qdrant::{
-    DenseVector, Document, MultiDenseVector, PointId, Query, VectorInput, vector_input,
+    DenseVector, Document, Image, InferenceObject, MultiDenseVector, PointId, Query, Value,
+    VectorInput, vector_input,
 };
 
 use super::super::source::Source;
@@ -27,25 +28,42 @@ impl NearestQuery {
         self.input.validate_on_source(source, using)
     }
 
-    pub(super) fn descriptor(&self, _prefetch_count: usize) -> Result<QueryDescriptor> {
+    pub(super) fn descriptor(&self, _prefetch_count: usize) -> QueryDescriptor {
         self.input.descriptor(self.using.clone())
     }
 }
 
-impl From<NearestCall> for NearestQuery {
-    fn from(call: NearestCall) -> Self {
-        Self {
-            using: Some(call.vector_field),
-            input: NearestInput::Dense(DenseNearestInput { vector: call.vector }),
-        }
+impl TryFrom<NearestCall> for NearestQuery {
+    type Error = datafusion::error::DataFusionError;
+
+    fn try_from(call: NearestCall) -> Result<Self> {
+        let (using, input) = match call {
+            NearestCall::Dense { vector_field, vector } => {
+                (Some(vector_field), NearestInput::Dense(DenseNearestInput { vector }))
+            }
+            NearestCall::Sparse { vector_field, indices, values } => {
+                (Some(vector_field), NearestInput::Sparse(SparseNearestInput { indices, values }))
+            }
+            NearestCall::MultiDense { vector_field, vectors } => {
+                (Some(vector_field), NearestInput::MultiDense(MultiDenseNearestInput { vectors }))
+            }
+            NearestCall::Id { vector_field, point_id } => {
+                (Some(vector_field), NearestInput::Id(IdNearestInput { point_id }))
+            }
+            NearestCall::Document { vector_field, text, model } => {
+                (Some(vector_field), NearestInput::Document(DocumentNearestInput { text, model }))
+            }
+            NearestCall::Image { vector_field, image, model } => {
+                (Some(vector_field), NearestInput::Image(ImageNearestInput { image, model }))
+            }
+            NearestCall::Object { vector_field, object, model } => {
+                (Some(vector_field), NearestInput::Object(ObjectNearestInput { object, model }))
+            }
+        };
+        Ok(Self { using, input })
     }
 }
 
-#[expect(
-    dead_code,
-    reason = "future nearest input families remain scaffolded even though only some are currently \
-              parsed"
-)]
 #[derive(Debug, Clone)]
 pub(crate) enum NearestInput {
     Dense(DenseNearestInput),
@@ -58,7 +76,7 @@ pub(crate) enum NearestInput {
 }
 
 impl NearestInput {
-    fn descriptor(&self, using: Option<String>) -> Result<QueryDescriptor> {
+    fn descriptor(&self, using: Option<String>) -> QueryDescriptor {
         let query = match self {
             Self::Dense(input) => Query {
                 variant: Some(qdrant_client::qdrant::query::Variant::Nearest(VectorInput {
@@ -103,10 +121,26 @@ impl NearestInput {
                     })),
                 })),
             },
-            Self::Image(_) => return exec_err!("image nearest execution is not yet implemented"),
-            Self::Object(_) => return exec_err!("object nearest execution is not yet implemented"),
+            Self::Image(input) => Query {
+                variant: Some(qdrant_client::qdrant::query::Variant::Nearest(VectorInput {
+                    variant: Some(vector_input::Variant::Image(Image {
+                        image:   Some(input.image.clone()),
+                        model:   input.model.clone().unwrap_or_default(),
+                        options: std::collections::HashMap::new(),
+                    })),
+                })),
+            },
+            Self::Object(input) => Query {
+                variant: Some(qdrant_client::qdrant::query::Variant::Nearest(VectorInput {
+                    variant: Some(vector_input::Variant::Object(InferenceObject {
+                        object:  Some(input.object.clone()),
+                        model:   input.model.clone().unwrap_or_default(),
+                        options: std::collections::HashMap::new(),
+                    })),
+                })),
+            },
         };
-        Ok(QueryDescriptor::new(query, using))
+        QueryDescriptor::new(query, using)
     }
 
     fn same_semantics(&self, other: &Self) -> bool {
@@ -126,8 +160,11 @@ impl NearestInput {
         match self {
             Self::Dense(input) => input.validate_on_source(source, using),
             Self::Sparse(input) => input.validate_on_source(source, using),
-            Self::MultiDense(_) => MultiDenseNearestInput::validate_on_source(source, using),
-            Self::Id(_) | Self::Document(_) | Self::Image(_) | Self::Object(_) => Ok(()),
+            Self::MultiDense(input) => input.validate_on_source(source, using),
+            Self::Id(_) => IdNearestInput::validate_on_source(source, using),
+            Self::Document(_) => DocumentNearestInput::validate_on_source(source, using),
+            Self::Image(_) => ImageNearestInput::validate_on_source(source, using),
+            Self::Object(_) => ObjectNearestInput::validate_on_source(source, using),
         }
     }
 }
@@ -237,9 +274,21 @@ impl MultiDenseNearestInput {
             })
     }
 
-    fn validate_on_source(source: &Source, using: &str) -> Result<()> {
+    fn validate_on_source(&self, source: &Source, using: &str) -> Result<()> {
+        if self.vectors.is_empty() {
+            return plan_err!("multivector query input requires at least one dense vector");
+        }
         match source.field_binding(using)? {
-            QdrantFieldBinding::MultiDense { .. } => Ok(()),
+            QdrantFieldBinding::MultiDense { width } => {
+                if let Some(width) = width
+                    && self.vectors.iter().any(|vector| vector.len() != width)
+                {
+                    return plan_err!(
+                        "multivector query input width does not match source vector width"
+                    );
+                }
+                Ok(())
+            }
             QdrantFieldBinding::DenseFixed { .. }
             | QdrantFieldBinding::DenseVariable
             | QdrantFieldBinding::Sparse => {
@@ -277,6 +326,17 @@ impl IdNearestInput {
             _ => false,
         }
     }
+
+    fn validate_on_source(source: &Source, using: &str) -> Result<()> {
+        match source.field_binding(using)? {
+            QdrantFieldBinding::Unsupported(data_type) => plan_err!(
+                "id nearest input does not bind to source field '{}' of type {:?}",
+                using,
+                data_type
+            ),
+            _ => Ok(()),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -289,11 +349,37 @@ impl DocumentNearestInput {
     fn same_semantics(&self, other: &Self) -> bool {
         self.text == other.text && self.model == other.model
     }
+
+    fn validate_on_source(source: &Source, using: &str) -> Result<()> {
+        match source.field_binding(using)? {
+            QdrantFieldBinding::Document => Ok(()),
+            QdrantFieldBinding::DenseFixed { .. } | QdrantFieldBinding::DenseVariable => {
+                plan_err!("document nearest input requires a document inference field")
+            }
+            QdrantFieldBinding::MultiDense { .. } => {
+                plan_err!("document nearest input does not bind to a multivector field")
+            }
+            QdrantFieldBinding::Sparse => {
+                plan_err!("document nearest input does not bind to a sparse vector field")
+            }
+            QdrantFieldBinding::Image => {
+                plan_err!("document nearest input does not bind to an image inference field")
+            }
+            QdrantFieldBinding::Object => {
+                plan_err!("document nearest input does not bind to an object inference field")
+            }
+            QdrantFieldBinding::Unsupported(data_type) => plan_err!(
+                "document nearest input does not bind to source field '{}' of type {:?}",
+                using,
+                data_type
+            ),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct ImageNearestInput {
-    image: Vec<u8>,
+    image: Value,
     model: Option<String>,
 }
 
@@ -301,16 +387,68 @@ impl ImageNearestInput {
     fn same_semantics(&self, other: &Self) -> bool {
         self.image == other.image && self.model == other.model
     }
+
+    fn validate_on_source(source: &Source, using: &str) -> Result<()> {
+        match source.field_binding(using)? {
+            QdrantFieldBinding::Image => Ok(()),
+            QdrantFieldBinding::DenseFixed { .. } | QdrantFieldBinding::DenseVariable => {
+                plan_err!("image nearest input requires an image inference field")
+            }
+            QdrantFieldBinding::MultiDense { .. } => {
+                plan_err!("image nearest input does not bind to a multivector field")
+            }
+            QdrantFieldBinding::Sparse => {
+                plan_err!("image nearest input does not bind to a sparse vector field")
+            }
+            QdrantFieldBinding::Document => {
+                plan_err!("image nearest input does not bind to a document inference field")
+            }
+            QdrantFieldBinding::Object => {
+                plan_err!("image nearest input does not bind to an object inference field")
+            }
+            QdrantFieldBinding::Unsupported(data_type) => plan_err!(
+                "image nearest input does not bind to source field '{}' of type {:?}",
+                using,
+                data_type
+            ),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct ObjectNearestInput {
-    object: Vec<(String, ScalarValue)>,
+    object: Value,
     model:  Option<String>,
 }
 
 impl ObjectNearestInput {
     fn same_semantics(&self, other: &Self) -> bool {
         self.object == other.object && self.model == other.model
+    }
+
+    fn validate_on_source(source: &Source, using: &str) -> Result<()> {
+        match source.field_binding(using)? {
+            QdrantFieldBinding::Object => Ok(()),
+            QdrantFieldBinding::DenseFixed { .. } | QdrantFieldBinding::DenseVariable => {
+                plan_err!("object nearest input requires an object inference field")
+            }
+            QdrantFieldBinding::MultiDense { .. } => {
+                plan_err!("object nearest input does not bind to a multivector field")
+            }
+            QdrantFieldBinding::Sparse => {
+                plan_err!("object nearest input does not bind to a sparse vector field")
+            }
+            QdrantFieldBinding::Document => {
+                plan_err!("object nearest input does not bind to a document inference field")
+            }
+            QdrantFieldBinding::Image => {
+                plan_err!("object nearest input does not bind to an image inference field")
+            }
+            QdrantFieldBinding::Unsupported(data_type) => plan_err!(
+                "object nearest input does not bind to source field '{}' of type {:?}",
+                using,
+                data_type
+            ),
+        }
     }
 }

@@ -62,7 +62,7 @@ pub(crate) enum QuerySurfaceCall {
 impl QuerySurfaceCall {
     fn from_expr(expr: &Expr) -> Result<Option<Self>> {
         if let Some(call) = NearestCall::from_expr(expr)? {
-            return Ok(Some(Self::Nearest(call.into())));
+            return Ok(Some(Self::Nearest(call.try_into()?)));
         }
         if let Some(call) = RecommendCall::from_expr(expr)? {
             return Ok(Some(Self::Recommend(call.try_into()?)));

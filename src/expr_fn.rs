@@ -20,8 +20,19 @@ pub use self::formula::{FORMULA_SCORE_FUNCTION_NAME, qdrant_formula_score};
 pub(crate) use self::formula::{FormulaCall, qdrant_formula_score_udf};
 pub use self::fusion::{FUSION_SCORE_FUNCTION_NAME, qdrant_fusion_score};
 pub(crate) use self::fusion::{FusionCall, qdrant_fusion_score_udf};
-pub use self::nearest::{NEAREST_SCORE_FUNCTION_NAME, qdrant_nearest_score};
-pub(crate) use self::nearest::{NearestCall, qdrant_nearest_score_udf};
+pub use self::nearest::{
+    NEAREST_DOCUMENT_SCORE_FUNCTION_NAME, NEAREST_ID_SCORE_FUNCTION_NAME,
+    NEAREST_IMAGE_SCORE_FUNCTION_NAME, NEAREST_MULTI_SCORE_FUNCTION_NAME,
+    NEAREST_OBJECT_SCORE_FUNCTION_NAME, NEAREST_SCORE_FUNCTION_NAME,
+    NEAREST_SPARSE_SCORE_FUNCTION_NAME, qdrant_nearest_document_score, qdrant_nearest_id_score,
+    qdrant_nearest_image_score, qdrant_nearest_multi_score, qdrant_nearest_object_score,
+    qdrant_nearest_score, qdrant_nearest_sparse_score,
+};
+pub(crate) use self::nearest::{
+    NearestCall, qdrant_nearest_document_score_udf, qdrant_nearest_id_score_udf,
+    qdrant_nearest_image_score_udf, qdrant_nearest_multi_score_udf,
+    qdrant_nearest_object_score_udf, qdrant_nearest_score_udf, qdrant_nearest_sparse_score_udf,
+};
 pub use self::nearest_with_mmr::{
     NEAREST_WITH_MMR_SCORE_FUNCTION_NAME, qdrant_nearest_with_mmr_score,
 };
@@ -41,6 +52,12 @@ pub(crate) use self::sample::{SampleCall, qdrant_sample_score_udf};
 
 pub(crate) fn register_functions(ctx: &SessionContext) {
     ctx.register_udf(qdrant_nearest_score_udf());
+    ctx.register_udf(qdrant_nearest_sparse_score_udf());
+    ctx.register_udf(qdrant_nearest_multi_score_udf());
+    ctx.register_udf(qdrant_nearest_id_score_udf());
+    ctx.register_udf(qdrant_nearest_document_score_udf());
+    ctx.register_udf(qdrant_nearest_image_score_udf());
+    ctx.register_udf(qdrant_nearest_object_score_udf());
     ctx.register_udf(qdrant_recommend_score_udf());
     ctx.register_udf(qdrant_discover_score_udf());
     ctx.register_udf(qdrant_context_score_udf());

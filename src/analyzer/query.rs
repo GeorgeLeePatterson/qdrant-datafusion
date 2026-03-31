@@ -728,7 +728,7 @@ impl QueryKind {
 
     pub(crate) fn descriptor(&self, prefetch_count: usize) -> Result<QueryDescriptor> {
         match self {
-            Self::Nearest(query) => query.descriptor(prefetch_count),
+            Self::Nearest(query) => Ok(query.descriptor(prefetch_count)),
             Self::Recommend(query) => Ok(query.descriptor(prefetch_count)),
             Self::Discover(query) => Ok(query.descriptor(prefetch_count)),
             Self::Context(query) => Ok(query.descriptor(prefetch_count)),
