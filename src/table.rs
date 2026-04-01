@@ -1595,7 +1595,7 @@ mod tests {
         let dataframe =
             ctx
                 .sql(
-                    "SELECT id, payload, formula_score(ranked.base_score + payload_num('rank')) AS score FROM                      (SELECT id, payload, embedding, qdrant_nearest_score(embedding, 1.0, 0.0) AS                      base_score FROM vectors ORDER BY base_score DESC LIMIT 5) ranked ORDER BY                      score DESC LIMIT 2",
+                    "SELECT id, payload, formula_score(ranked.base_score + condition(payload_num('rank') > 0) + exp_decay(payload_num('rank', 0), 10.0)) AS score FROM                      (SELECT id, payload, embedding, qdrant_nearest_score(embedding, 1.0, 0.0) AS                      base_score FROM vectors ORDER BY base_score DESC LIMIT 5) ranked ORDER BY                      score DESC LIMIT 2",
                 )
                 .now_or_never()
                 .expect("sql future is ready")

@@ -23,6 +23,7 @@ pub(crate) enum QdrantPayloadField {
     Keyword,
     Integer { lookup: bool, range: bool },
     Float,
+    Geo,
     Bool,
     Datetime,
     Uuid,
@@ -59,6 +60,7 @@ impl QdrantPayloadField {
                 Some(QdrantFilterValue::Integer(integer_scalar(literal)?))
             }
             QdrantPayloadField::Float => Some(QdrantFilterValue::Float(float_scalar(literal)?)),
+            QdrantPayloadField::Geo => None,
             QdrantPayloadField::Bool => Some(QdrantFilterValue::Bool(boolean_scalar(literal)?)),
             QdrantPayloadField::Datetime => {
                 Some(QdrantFilterValue::Datetime(timestamp_scalar(literal)?))
@@ -133,6 +135,12 @@ impl From<HashMap<String, PayloadSchemaInfo>> for QdrantPayloadSchema {
                     PayloadSchemaType::Float => match params {
                         None | Some(payload_index_params::IndexParams::FloatIndexParams(_)) => {
                             QdrantPayloadField::Float
+                        }
+                        _ => return None,
+                    },
+                    PayloadSchemaType::Geo => match params {
+                        None | Some(payload_index_params::IndexParams::GeoIndexParams(_)) => {
+                            QdrantPayloadField::Geo
                         }
                         _ => return None,
                     },

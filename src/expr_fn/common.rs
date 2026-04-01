@@ -66,3 +66,47 @@ impl ScalarUDFImpl for NonExecutableScoreUdf {
         exec_err!("{} requires qdrant operator pushdown", self.name)
     }
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct NonExecutableMarkerUdf {
+    name:        &'static str,
+    aliases:     Vec<String>,
+    signature:   Signature,
+    return_type: DataType,
+}
+
+impl NonExecutableMarkerUdf {
+    pub(crate) fn new(name: &'static str, aliases: &[&str], return_type: DataType) -> Self {
+        Self {
+            name,
+            aliases: aliases.iter().map(|alias| (*alias).to_owned()).collect(),
+            signature: Signature::variadic_any(Volatility::Immutable),
+            return_type,
+        }
+    }
+}
+
+impl ScalarUDFImpl for NonExecutableMarkerUdf {
+    fn as_any(&self) -> &dyn Any { self }
+
+    fn name(&self) -> &str { self.name }
+
+    fn aliases(&self) -> &[String] { &self.aliases }
+
+    fn signature(&self) -> &Signature { &self.signature }
+
+    fn return_type(&self, _arg_types: &[DataType]) -> Result<DataType> {
+        Ok(self.return_type.clone())
+    }
+
+    fn return_field_from_args(
+        &self,
+        _args: datafusion::logical_expr::ReturnFieldArgs<'_>,
+    ) -> Result<FieldRef> {
+        Ok(Arc::new(Field::new(self.name(), self.return_type.clone(), false)))
+    }
+
+    fn invoke_with_args(&self, _args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        exec_err!("{} requires qdrant operator pushdown", self.name)
+    }
+}

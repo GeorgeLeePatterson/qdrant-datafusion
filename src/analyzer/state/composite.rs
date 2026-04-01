@@ -301,25 +301,15 @@ impl BatchableState {
     }
 }
 
-#[expect(
-    dead_code,
-    reason = "coordinated execution bookkeeping is scaffolded for future closure work"
-)]
 #[derive(Debug, Clone)]
-pub(crate) struct CoordinatedState {
-    branches:    usize,
-    outstanding: usize,
-    qdrant:      usize,
-}
+pub(crate) struct CoordinatedState;
 
 impl CoordinatedState {
     fn from_plan(_plan: &LogicalPlan, children: &[State]) -> Option<Self> {
-        let outstanding =
-            children.iter().filter(|state| state.requires_composite_coordination()).count();
-        let qdrant = children.iter().filter(|state| state.is_qdrant_present()).count();
-        // Multiple closed qdrant child kernels can compose locally. Coordination is only needed
-        // while some child branch still carries unfinished qdrant work.
-        (outstanding > 0).then_some(Self { branches: children.len(), outstanding, qdrant })
+        // Multiple closed qdrant child kernels can already compose locally. This marker only
+        // survives while some child branch still carries unfinished qdrant work that must close
+        // at its own root before the parent can re-enter as a purely local composition.
+        children.iter().any(State::requires_composite_coordination).then_some(Self)
     }
 
     fn finish_root(plan: LogicalPlan) -> Result<LogicalPlan> {

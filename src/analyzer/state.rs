@@ -114,10 +114,6 @@ impl State {
         }
     }
 
-    fn is_qdrant_present(&self) -> bool {
-        matches!(self, Self::Source(_) | Self::Processing(_) | Self::Composite(_) | Self::Kernel(_))
-    }
-
     pub(super) fn requires_composite_coordination(&self) -> bool {
         matches!(self, Self::Processing(_) | Self::Composite(_))
     }
