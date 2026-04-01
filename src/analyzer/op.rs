@@ -107,6 +107,7 @@ impl QueryOp {
             return Ok(None);
         }
         let exact_filters = filters.exact(&source)?;
+        drop(self.descriptor(&source)?);
         Ok(Some(KernelState::new(KernelSpec::Query(QueryKernel::new(
             source,
             exact_filters,

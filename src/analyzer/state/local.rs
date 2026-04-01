@@ -17,7 +17,7 @@ impl LocalState {
         plan: LogicalPlan,
         transformed: bool,
     ) -> Result<super::super::Analysis> {
-        if SurfaceCall::collect(&plan.expressions())?.is_some() {
+        if unsupported_local_surface(&plan)? {
             return Ok(super::super::fatal(
                 plan,
                 transformed,
@@ -32,7 +32,7 @@ impl LocalState {
         plan: LogicalPlan,
         transformed: bool,
     ) -> Result<super::super::Analysis> {
-        if SurfaceCall::collect(&plan.expressions())?.is_some() {
+        if unsupported_local_surface(&plan)? {
             return Ok(super::super::fatal(
                 plan,
                 transformed,
@@ -47,7 +47,7 @@ impl LocalState {
         plan: LogicalPlan,
         transformed: bool,
     ) -> Result<super::super::Analysis> {
-        if SurfaceCall::collect(&plan.expressions())?.is_some() {
+        if unsupported_local_surface(&plan)? {
             return Ok(super::super::fatal(
                 plan,
                 transformed,
@@ -70,7 +70,7 @@ impl LocalState {
         plan: LogicalPlan,
         transformed: bool,
     ) -> Result<super::super::Analysis> {
-        if SurfaceCall::collect(&plan.expressions())?.is_some() {
+        if unsupported_local_surface(&plan)? {
             return Ok(super::super::fatal(
                 plan,
                 transformed,
@@ -85,7 +85,7 @@ impl LocalState {
         plan: LogicalPlan,
         transformed: bool,
     ) -> Result<super::super::Analysis> {
-        if SurfaceCall::collect(&plan.expressions())?.is_some() {
+        if unsupported_local_surface(&plan)? {
             return Ok(super::super::fatal(
                 plan,
                 transformed,
@@ -94,4 +94,9 @@ impl LocalState {
         }
         Ok(super::super::Analysis::new(plan, State::Local(self), transformed))
     }
+}
+
+fn unsupported_local_surface(plan: &LogicalPlan) -> Result<bool> {
+    Ok(SurfaceCall::collect(&plan.expressions())?
+        .is_some_and(|surface| !surface.allows_multi_branch_coordination()))
 }

@@ -11,8 +11,9 @@ const ALIASES: &[&str] = &["fusion_score"];
 
 #[derive(Debug, Clone)]
 pub(crate) struct FusionCall {
-    pub(crate) method: Expr,
-    pub(crate) rrf_k:  Option<Expr>,
+    pub(crate) method:       Expr,
+    pub(crate) rrf_k:        Option<Expr>,
+    pub(crate) score_inputs: Vec<Expr>,
 }
 
 impl FusionCall {
@@ -20,18 +21,56 @@ impl FusionCall {
         let Some(args) = function_args(expr, FUSION_SCORE_FUNCTION_NAME, ALIASES) else {
             return Ok(None);
         };
-        if !(1..=2).contains(&args.len()) {
+        if args.is_empty() {
             return plan_err!(
-                "{FUSION_SCORE_FUNCTION_NAME} requires a fusion method and an optional RRF k"
+                "{FUSION_SCORE_FUNCTION_NAME} requires a fusion method and optional score inputs"
             );
         }
-        Ok(Some(Self { method: args[0].clone(), rrf_k: args.get(1).cloned() }))
+        let method = args[0].clone();
+        let mut remainder = &args[1..];
+        let mut rrf_k = None;
+        if let Some(candidate) = remainder.first()
+            && looks_like_integer_literal(candidate)
+        {
+            rrf_k = Some((*candidate).clone());
+            remainder = &remainder[1..];
+        }
+        Ok(Some(Self { method, rrf_k, score_inputs: remainder.to_vec() }))
+    }
+}
+
+fn looks_like_integer_literal(expr: &Expr) -> bool {
+    match expr.clone().unalias_nested().data {
+        Expr::Cast(cast) => looks_like_integer_literal(&cast.expr),
+        Expr::TryCast(cast) => looks_like_integer_literal(&cast.expr),
+        Expr::Literal(value, _) => match value {
+            datafusion::common::ScalarValue::Int8(Some(value)) => value >= 0,
+            datafusion::common::ScalarValue::Int16(Some(value)) => value >= 0,
+            datafusion::common::ScalarValue::Int32(Some(value)) => value >= 0,
+            datafusion::common::ScalarValue::Int64(Some(value)) => value >= 0,
+            datafusion::common::ScalarValue::UInt8(Some(_))
+            | datafusion::common::ScalarValue::UInt16(Some(_))
+            | datafusion::common::ScalarValue::UInt32(Some(_))
+            | datafusion::common::ScalarValue::UInt64(Some(_)) => true,
+            _ => false,
+        },
+        _ => false,
     }
 }
 
 #[must_use]
 pub fn qdrant_fusion_score(method: impl Into<String>) -> Expr {
     qdrant_fusion_score_udf().call(vec![lit(method.into())])
+}
+
+#[must_use]
+pub fn qdrant_fusion_score_with_inputs(
+    method: impl Into<String>,
+    score_inputs: impl IntoIterator<Item = Expr>,
+) -> Expr {
+    let mut args = vec![lit(method.into())];
+    args.extend(score_inputs);
+    qdrant_fusion_score_udf().call(args)
 }
 
 pub(crate) fn qdrant_fusion_score_udf() -> ScalarUDF {

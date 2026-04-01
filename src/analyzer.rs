@@ -2,6 +2,7 @@ mod common;
 mod kernel;
 mod node;
 mod op;
+mod optimize;
 mod query;
 mod source;
 mod state;
@@ -18,6 +19,7 @@ pub(crate) use self::kernel::{
     CountKernel, FacetKernel, KernelSpec, QueryBatchKernel, QueryGroupsKernel, QueryKernel,
 };
 pub(crate) use self::node::{KERNEL_NODE_NAME, KernelNode};
+pub(crate) use self::optimize::CoordinatedCombiners;
 pub(crate) use self::query::{QueryRequest, QueryRequestPlan};
 pub(crate) use self::state::State;
 use self::state::{CompositeState, SourceState};
@@ -141,7 +143,9 @@ fn analyze_multi(plan: LogicalPlan, children: &[State], transformed: bool) -> Re
     }) {
         return Ok(Analysis::new(plan, State::Fatal(fatal), transformed));
     }
-    if SurfaceCall::collect(&plan.expressions())?.is_some() {
+    if let Some(surface) = SurfaceCall::collect(&plan.expressions())?
+        && !surface.allows_multi_branch_coordination()
+    {
         return Ok(fatal(
             plan,
             transformed,

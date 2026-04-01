@@ -31,7 +31,9 @@ pub(crate) use self::formula::{
     qdrant_geo_distance_udf, qdrant_lin_decay_udf, qdrant_payload_datetime_udf,
     qdrant_payload_num_udf,
 };
-pub use self::fusion::{FUSION_SCORE_FUNCTION_NAME, qdrant_fusion_score};
+pub use self::fusion::{
+    FUSION_SCORE_FUNCTION_NAME, qdrant_fusion_score, qdrant_fusion_score_with_inputs,
+};
 pub(crate) use self::fusion::{FusionCall, qdrant_fusion_score_udf};
 pub use self::nearest::{
     NEAREST_DOCUMENT_SCORE_FUNCTION_NAME, NEAREST_ID_SCORE_FUNCTION_NAME,

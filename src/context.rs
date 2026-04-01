@@ -7,13 +7,13 @@ use async_trait::async_trait;
 use datafusion::execution::SessionState;
 use datafusion::execution::context::QueryPlanner;
 use datafusion::logical_expr::LogicalPlan;
-use datafusion::optimizer::AnalyzerRule;
 use datafusion::optimizer::analyzer::type_coercion::TypeCoercion;
+use datafusion::optimizer::{AnalyzerRule, OptimizerRule};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_planner::{DefaultPhysicalPlanner, ExtensionPlanner, PhysicalPlanner};
 use datafusion::prelude::{DataFrame, SQLOptions, SessionContext};
 
-use crate::analyzer::PrototypePushdown;
+use crate::analyzer::{CoordinatedCombiners, PrototypePushdown};
 use crate::context::planner::QdrantExtensionPlanner;
 use crate::expr_fn::register_functions;
 
@@ -27,9 +27,15 @@ pub fn prepare_session_context(ctx: SessionContext) -> SessionContext {
     if !analyzer_rules.iter().any(|existing| existing.name() == prototype_rule.name()) {
         analyzer_rules.insert(pos, prototype_rule);
     }
+    let mut optimizer_rules = state.optimizer().rules.clone();
+    let coordinated_rule: Arc<dyn OptimizerRule + Send + Sync> = Arc::new(CoordinatedCombiners);
+    if !optimizer_rules.iter().any(|existing| existing.name() == coordinated_rule.name()) {
+        optimizer_rules.push(coordinated_rule);
+    }
     let ctx = SessionContext::new_with_state(
         ctx.into_state_builder()
             .with_analyzer_rules(analyzer_rules)
+            .with_optimizer_rules(optimizer_rules)
             .with_query_planner(Arc::new(QdrantQueryPlanner::default()))
             .build(),
     );

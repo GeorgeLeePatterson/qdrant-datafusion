@@ -38,6 +38,12 @@ impl SurfaceCall {
         Ok(surface)
     }
 
+    pub(super) fn allows_multi_branch_coordination(&self) -> bool {
+        match self {
+            Self::Query(surface) => surface.allows_multi_branch_coordination(),
+        }
+    }
+
     fn same_semantics(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Query(lhs), Self::Query(rhs)) => lhs.same_semantics(rhs),
@@ -92,6 +98,21 @@ impl QuerySurfaceCall {
             return Ok(Some(Self::RelevanceFeedback(call.try_into()?)));
         }
         Ok(None)
+    }
+
+    pub(super) fn allows_multi_branch_coordination(&self) -> bool {
+        match self {
+            Self::Fusion(query) => query.has_explicit_inputs(),
+            Self::Formula(_) => true,
+            Self::Nearest(_)
+            | Self::Recommend(_)
+            | Self::Discover(_)
+            | Self::Context(_)
+            | Self::OrderBy(_)
+            | Self::Sample(_)
+            | Self::NearestWithMmr(_)
+            | Self::RelevanceFeedback(_) => false,
+        }
     }
 
     fn same_semantics(&self, other: &Self) -> bool {

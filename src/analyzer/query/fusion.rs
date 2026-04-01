@@ -1,4 +1,5 @@
 use datafusion::common::{Result, plan_err};
+use datafusion::logical_expr::Expr;
 use qdrant_client::qdrant::{Fusion, Query, Rrf, query};
 
 use super::{QueryDescriptor, string_literal, u32_literal};
@@ -12,7 +13,8 @@ enum FusionMethod {
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct FusionQuery {
-    method: FusionMethod,
+    method:       FusionMethod,
+    score_inputs: Vec<Expr>,
 }
 
 impl TryFrom<FusionCall> for FusionQuery {
@@ -45,12 +47,16 @@ impl TryFrom<FusionCall> for FusionQuery {
                 );
             }
         };
-        Ok(Self { method })
+        Ok(Self { method, score_inputs: call.score_inputs })
     }
 }
 
 impl FusionQuery {
     pub(crate) fn same_semantics(&self, other: &Self) -> bool { self == other }
+
+    pub(crate) fn has_explicit_inputs(&self) -> bool { !self.score_inputs.is_empty() }
+
+    pub(crate) fn score_inputs(&self) -> &[Expr] { &self.score_inputs }
 
     pub(super) fn descriptor(&self, prefetch_count: usize) -> Result<QueryDescriptor> {
         if prefetch_count == 0 {
