@@ -230,53 +230,43 @@ impl BatchableState {
         if let Some(surface) = SurfaceCall::collect(&plan.expressions())? {
             return self.open(surface, plan.schema())?.projection(plan, transformed);
         }
-        Ok(self.pass_or_fail(plan, transformed))
+        Ok(self.preserve(plan, transformed))
     }
 
     fn filter(self, plan: LogicalPlan, transformed: bool) -> Result<super::super::Analysis> {
         if let Some(surface) = SurfaceCall::collect(&plan.expressions())? {
             return self.open(surface, plan.schema())?.filter(plan, transformed);
         }
-        Ok(self.pass_or_fail(plan, transformed))
+        Ok(self.preserve(plan, transformed))
     }
 
     fn sort(self, plan: LogicalPlan, transformed: bool) -> Result<super::super::Analysis> {
         if let Some(surface) = SurfaceCall::collect(&plan.expressions())? {
             return self.open(surface, plan.schema())?.sort(plan, transformed);
         }
-        Ok(self.pass_or_fail(plan, transformed))
+        Ok(self.preserve(plan, transformed))
     }
 
     fn limit(self, plan: LogicalPlan, transformed: bool) -> super::super::Analysis {
-        self.pass_or_fail(plan, transformed)
+        self.preserve(plan, transformed)
     }
 
     fn aggregate(self, plan: LogicalPlan, transformed: bool) -> super::super::Analysis {
-        self.pass_or_fail(plan, transformed)
+        self.preserve(plan, transformed)
     }
 
     fn unary(self, plan: LogicalPlan, transformed: bool) -> Result<super::super::Analysis> {
         if let Some(surface) = SurfaceCall::collect(&plan.expressions())? {
             return self.open(surface, plan.schema())?.unary(plan, transformed);
         }
-        Ok(self.pass_or_fail(plan, transformed))
+        Ok(self.preserve(plan, transformed))
     }
 
-    fn pass_or_fail(self, plan: LogicalPlan, transformed: bool) -> super::super::Analysis {
-        if matches!(plan, LogicalPlan::SubqueryAlias(_)) {
-            return super::super::Analysis::new(
-                plan,
-                State::Composite(CompositeState::Batchable(self)),
-                transformed,
-            );
-        }
-        super::super::fatal(
+    fn preserve(self, plan: LogicalPlan, transformed: bool) -> super::super::Analysis {
+        super::super::Analysis::new(
             plan,
+            State::Composite(CompositeState::Batchable(self)),
             transformed,
-            format!(
-                "batchable qdrant composite with {} branches is not yet closed",
-                self.queries.len()
-            ),
         )
     }
 
@@ -293,11 +283,31 @@ impl BatchableState {
     }
 
     fn finish_root(self, plan: &LogicalPlan) -> Result<LogicalPlan> {
-        let schema = Arc::clone(plan.schema());
-        let kernel = QueryBatchKernel::try_new(self.queries)?;
-        Ok(LogicalPlan::Extension(Extension {
-            node: Arc::new(KernelNode::new(schema, KernelSpec::QueryBatch(kernel))),
-        }))
+        self.rewrite_current(plan)?.ok_or_else(|| {
+            datafusion::error::DataFusionError::Plan(
+                "unfinished batchable qdrant composite at query root".to_owned(),
+            )
+        })
+    }
+
+    fn rewrite_current(&self, plan: &LogicalPlan) -> Result<Option<LogicalPlan>> {
+        if matches!(plan, LogicalPlan::Union(_)) {
+            let schema = Arc::clone(plan.schema());
+            let kernel = QueryBatchKernel::try_new(self.queries.clone())?;
+            return Ok(Some(LogicalPlan::Extension(Extension {
+                node: Arc::new(KernelNode::new(schema, KernelSpec::QueryBatch(kernel))),
+            })));
+        }
+        let inputs = plan.inputs();
+        if inputs.len() == 1
+            && let Some(rewritten_input) = self.rewrite_current(inputs[0])?
+        {
+            return plan
+                .with_new_exprs(plan.expressions(), vec![rewritten_input])?
+                .recompute_schema()
+                .map(Some);
+        }
+        Ok(None)
     }
 }
 

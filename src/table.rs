@@ -427,6 +427,19 @@ mod tests {
         if let Some(cooperative) = plan.as_any().downcast_ref::<CooperativeExec>() {
             return qdrant_query_batch(cooperative.input());
         }
+        if let Some(projection) = plan.as_any().downcast_ref::<ProjectionExec>() {
+            return qdrant_query_batch(projection.input());
+        }
+        if let Some(limit) =
+            plan.as_any().downcast_ref::<datafusion::physical_plan::limit::GlobalLimitExec>()
+        {
+            return qdrant_query_batch(limit.input());
+        }
+        if let Some(limit) =
+            plan.as_any().downcast_ref::<datafusion::physical_plan::limit::LocalLimitExec>()
+        {
+            return qdrant_query_batch(limit.input());
+        }
         panic!(
             "expected qdrant query batch exec in plan:
 {}",
@@ -1297,6 +1310,43 @@ mod tests {
         let _query = qdrant_query_batch(&plan);
 
         assert!(display.contains("QdrantQueryBatchExec"), "{display}");
+    }
+
+    #[test]
+    fn physical_plan_composes_qdrant_query_batch_locally_after_projection_and_limit() {
+        let provider = test_provider(Schema::new(vec![
+            Field::new(ID_FIELD_NAME, DataType::Utf8, false),
+            Field::new(PAYLOAD_FIELD_NAME, DataType::Utf8, true),
+            Field::new(
+                "embedding",
+                DataType::new_fixed_size_list(DataType::Float32, 2, false),
+                true,
+            ),
+        ]));
+        let ctx = QdrantSessionContext::from(SessionContext::new());
+        drop(
+            ctx.session_context()
+                .register_table("vectors", Arc::new(provider))
+                .expect("register table"),
+        );
+        let dataframe = ctx
+            .sql(
+                "SELECT id FROM (SELECT * FROM (SELECT id, payload, embedding,                  qdrant_nearest_score(embedding, 1.0, 0.0) AS score FROM vectors ORDER BY score                  DESC LIMIT 2) a UNION ALL SELECT * FROM (SELECT id, payload, embedding,                  qdrant_nearest_score(embedding, 0.0, 1.0) AS score FROM vectors ORDER BY score                  DESC LIMIT 2) b) batched LIMIT 3",
+            )
+            .now_or_never()
+            .expect("sql future is ready")
+            .expect("dataframe");
+        let plan = dataframe
+            .create_physical_plan()
+            .now_or_never()
+            .expect("plan future is ready")
+            .expect("physical plan");
+        let display = displayable(plan.as_ref()).indent(true).to_string();
+        let _query = qdrant_query_batch(&plan);
+
+        assert!(display.contains("QdrantQueryBatchExec"), "{display}");
+        assert!(display.contains("ProjectionExec"), "{display}");
+        assert!(display.contains("GlobalLimitExec"), "{display}");
     }
 
     #[test]
