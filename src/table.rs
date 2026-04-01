@@ -1561,10 +1561,31 @@ mod tests {
 
     #[test]
     fn physical_plan_uses_qdrant_query_exec_for_formula_score_sql() {
-        let provider = test_provider(Schema::new(vec![
-            Field::new(ID_FIELD_NAME, DataType::Utf8, false),
-            Field::new(PAYLOAD_FIELD_NAME, DataType::Utf8, true),
-        ]));
+        let provider = QdrantTableProvider {
+            table: TableReference::bare("vectors"),
+            client: Arc::new(Qdrant::from_url("http://localhost:6334").build().expect("client")),
+            schema: Arc::new(Schema::new(vec![
+                Field::new(ID_FIELD_NAME, DataType::Utf8, false),
+                Field::new(PAYLOAD_FIELD_NAME, DataType::Utf8, true),
+                Field::new(
+                    "embedding",
+                    DataType::new_fixed_size_list(DataType::Float32, 2, false),
+                    true,
+                ),
+            ])),
+            payload_schema: payload_schema([(
+                "rank",
+                PayloadSchemaInfo {
+                    data_type: qdrant_client::qdrant::PayloadSchemaType::Integer as i32,
+                    params: Some(qdrant_client::qdrant::PayloadIndexParams {
+                        index_params: Some(qdrant_client::qdrant::payload_index_params::IndexParams::IntegerIndexParams(
+                            IntegerIndexParams { ..Default::default() },
+                        )),
+                    }),
+                    points: None,
+                },
+            )]),
+        };
         let ctx = QdrantSessionContext::from(SessionContext::new());
         drop(
             ctx.session_context()
@@ -1574,8 +1595,7 @@ mod tests {
         let dataframe =
             ctx
                 .sql(
-                    "SELECT id, payload, qdrant_formula_score('score') AS score FROM vectors \
-                     ORDER BY                  score DESC LIMIT 2",
+                    "SELECT id, payload, formula_score(ranked.base_score + payload_num('rank')) AS score FROM                      (SELECT id, payload, embedding, qdrant_nearest_score(embedding, 1.0, 0.0) AS                      base_score FROM vectors ORDER BY base_score DESC LIMIT 5) ranked ORDER BY                      score DESC LIMIT 2",
                 )
                 .now_or_never()
                 .expect("sql future is ready")

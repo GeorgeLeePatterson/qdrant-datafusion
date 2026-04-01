@@ -7,6 +7,8 @@ mod source;
 mod state;
 mod surface;
 
+use std::sync::Arc;
+
 use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::common::{Result, plan_err};
 use datafusion::logical_expr::LogicalPlan;
@@ -98,7 +100,10 @@ fn analyze_leaf(plan: LogicalPlan, transformed: bool) -> Analysis {
     if let LogicalPlan::Extension(extension) = &plan
         && let Some(node) = extension.node.as_any().downcast_ref::<KernelNode>()
     {
-        let state = State::Kernel(state::KernelState::new(node.spec().clone()));
+        let state = State::Kernel(state::KernelState::with_output_schema(
+            node.spec().clone(),
+            Arc::clone(node.output_schema()),
+        ));
         return Analysis::new(plan, state, transformed);
     }
     Analysis::new(plan, State::local(), transformed)

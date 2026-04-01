@@ -16,8 +16,13 @@ pub use self::context::{CONTEXT_SCORE_FUNCTION_NAME, qdrant_context_score};
 pub(crate) use self::context::{ContextCall, qdrant_context_score_udf};
 pub use self::discover::{DISCOVER_SCORE_FUNCTION_NAME, qdrant_discover_score};
 pub(crate) use self::discover::{DiscoverCall, qdrant_discover_score_udf};
-pub use self::formula::{FORMULA_SCORE_FUNCTION_NAME, qdrant_formula_score};
-pub(crate) use self::formula::{FormulaCall, qdrant_formula_score_udf};
+pub use self::formula::{
+    FORMULA_SCORE_FUNCTION_NAME, PAYLOAD_NUM_FUNCTION_NAME, qdrant_formula_score,
+    qdrant_payload_num,
+};
+pub(crate) use self::formula::{
+    FormulaCall, PayloadNumCall, qdrant_formula_score_udf, qdrant_payload_num_udf,
+};
 pub use self::fusion::{FUSION_SCORE_FUNCTION_NAME, qdrant_fusion_score};
 pub(crate) use self::fusion::{FusionCall, qdrant_fusion_score_udf};
 pub use self::nearest::{
@@ -65,6 +70,7 @@ pub(crate) fn register_functions(ctx: &SessionContext) {
     ctx.register_udf(qdrant_fusion_score_udf());
     ctx.register_udf(qdrant_sample_score_udf());
     ctx.register_udf(qdrant_formula_score_udf());
+    ctx.register_udf(qdrant_payload_num_udf());
     ctx.register_udf(qdrant_nearest_with_mmr_score_udf());
     ctx.register_udf(qdrant_relevance_feedback_score_udf());
 }

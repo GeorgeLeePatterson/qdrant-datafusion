@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use datafusion::common::Result;
 use datafusion::common::tree_node::TreeNode;
+use datafusion::common::{DFSchemaRef, Result};
 use datafusion::logical_expr::{Extension, LogicalPlan};
 
 use super::{FiltersState, ProcessingState, State};
@@ -228,21 +228,21 @@ impl BatchableState {
 
     fn projection(self, plan: LogicalPlan, transformed: bool) -> Result<super::super::Analysis> {
         if let Some(surface) = SurfaceCall::collect(&plan.expressions())? {
-            return self.open(surface)?.projection(plan, transformed);
+            return self.open(surface, plan.schema())?.projection(plan, transformed);
         }
         Ok(self.pass_or_fail(plan, transformed))
     }
 
     fn filter(self, plan: LogicalPlan, transformed: bool) -> Result<super::super::Analysis> {
         if let Some(surface) = SurfaceCall::collect(&plan.expressions())? {
-            return self.open(surface)?.filter(plan, transformed);
+            return self.open(surface, plan.schema())?.filter(plan, transformed);
         }
         Ok(self.pass_or_fail(plan, transformed))
     }
 
     fn sort(self, plan: LogicalPlan, transformed: bool) -> Result<super::super::Analysis> {
         if let Some(surface) = SurfaceCall::collect(&plan.expressions())? {
-            return self.open(surface)?.sort(plan, transformed);
+            return self.open(surface, plan.schema())?.sort(plan, transformed);
         }
         Ok(self.pass_or_fail(plan, transformed))
     }
@@ -257,7 +257,7 @@ impl BatchableState {
 
     fn unary(self, plan: LogicalPlan, transformed: bool) -> Result<super::super::Analysis> {
         if let Some(surface) = SurfaceCall::collect(&plan.expressions())? {
-            return self.open(surface)?.unary(plan, transformed);
+            return self.open(surface, plan.schema())?.unary(plan, transformed);
         }
         Ok(self.pass_or_fail(plan, transformed))
     }
@@ -280,10 +280,13 @@ impl BatchableState {
         )
     }
 
-    fn open(self, surface: SurfaceCall) -> Result<ProcessingState> {
+    fn open(self, surface: SurfaceCall, _output_schema: &DFSchemaRef) -> Result<ProcessingState> {
         let source = self.queries.first().expect("validated batchable state").source().clone();
-        let prefetch =
-            self.queries.iter().map(QueryKernel::branch_plan).collect::<Result<Vec<_>>>()?;
+        let prefetch = self
+            .queries
+            .iter()
+            .map(QueryKernel::prefetch_branch_unqualified)
+            .collect::<Result<Vec<_>>>()?;
         let op =
             crate::analyzer::op::Op::from_surface(surface, &source)?.with_prefetch(prefetch)?;
         Ok(ProcessingState { source, filters: FiltersState::default(), op })

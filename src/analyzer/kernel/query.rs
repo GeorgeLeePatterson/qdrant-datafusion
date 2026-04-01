@@ -1,14 +1,15 @@
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::common::{Result, plan_err};
+use datafusion::common::{Column, DFSchemaRef, Result, plan_err};
 use datafusion::logical_expr::LogicalPlan;
 use qdrant_client::Qdrant;
 
 use super::super::op::QueryOp;
 use super::super::query::{
     QueryBatchRequestPlan, QueryBranchPlan, QueryGroupsRequestPlan, QueryPointsRequestPlan,
-    QueryRequestPlan,
+    QueryPrefetchBranch, QueryRequestPlan,
 };
 use super::super::source::Source;
 use crate::pushdown::filter::QdrantFilters;
@@ -35,7 +36,34 @@ impl QueryKernel {
     }
 
     pub(crate) fn branch_plan(&self) -> Result<QueryBranchPlan> {
-        self.query.branch_plan(Some(self.filters.clone()), Some(self.limit))
+        self.query.branch_plan(&self.source, Some(self.filters.clone()), Some(self.limit))
+    }
+
+    pub(crate) fn prefetch_branch(
+        &self,
+        output_schema: &DFSchemaRef,
+    ) -> Result<QueryPrefetchBranch> {
+        Ok(QueryPrefetchBranch::new(self.branch_plan()?, self.score_output_columns(output_schema)?))
+    }
+
+    fn score_output_columns(&self, output_schema: &DFSchemaRef) -> Result<BTreeSet<Column>> {
+        self.query
+            .score_output_names()
+            .into_iter()
+            .map(|name| {
+                let (qualifier, field) =
+                    output_schema.qualified_field_with_unqualified_name(&name)?;
+                Ok(Column::new(qualifier.cloned(), field.name().clone()))
+            })
+            .collect()
+    }
+
+    fn unqualified_score_output_columns(&self) -> BTreeSet<Column> {
+        self.query.score_output_names().into_iter().map(Column::from_name).collect()
+    }
+
+    pub(crate) fn prefetch_branch_unqualified(&self) -> Result<QueryPrefetchBranch> {
+        Ok(QueryPrefetchBranch::new(self.branch_plan()?, self.unqualified_score_output_columns()))
     }
 
     pub(crate) fn client(&self) -> Arc<Qdrant> { Arc::clone(self.source.client()) }
@@ -52,7 +80,11 @@ impl QueryKernel {
         QueryRequestPlan::points(
             QueryPointsRequestPlan::new(
                 self.source.collection().to_owned(),
-                self.query.branch_plan(Some(self.filters.clone()), Some(self.limit))?,
+                self.query.branch_plan(
+                    &self.source,
+                    Some(self.filters.clone()),
+                    Some(self.limit),
+                )?,
                 output_schema,
             ),
             self.query.score_output_names(),
@@ -90,6 +122,14 @@ impl QueryBatchKernel {
         self.queries.first().expect("validated query batch kernel").collection()
     }
 
+    pub(crate) fn source(&self) -> &Source {
+        self.queries.first().expect("validated query batch kernel").source()
+    }
+
+    pub(crate) fn prefetch_branches(&self) -> Result<Vec<QueryPrefetchBranch>> {
+        self.queries.iter().map(QueryKernel::prefetch_branch_unqualified).collect()
+    }
+
     pub(crate) fn request_plan(&self, output_schema: &SchemaRef) -> Result<QueryRequestPlan> {
         let queries = self
             .queries
@@ -97,7 +137,11 @@ impl QueryBatchKernel {
             .map(|query| {
                 Ok(QueryPointsRequestPlan::new(
                     query.source.collection().to_owned(),
-                    query.query.branch_plan(Some(query.filters.clone()), Some(query.limit))?,
+                    query.query.branch_plan(
+                        &query.source,
+                        Some(query.filters.clone()),
+                        Some(query.limit),
+                    )?,
                     output_schema,
                 ))
             })
@@ -162,7 +206,7 @@ impl QueryGroupsKernel {
         QueryRequestPlan::groups(
             QueryGroupsRequestPlan::new(
                 self.source.collection().to_owned(),
-                self.query.branch_plan(Some(self.filters.clone()), self.limit)?,
+                self.query.branch_plan(&self.source, Some(self.filters.clone()), self.limit)?,
                 output_schema,
                 self.group_by.clone(),
                 self.group_size,

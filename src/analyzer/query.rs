@@ -12,7 +12,7 @@ mod sample;
 use std::collections::BTreeSet;
 
 use datafusion::arrow::array::Array;
-use datafusion::common::{Result, ScalarValue, plan_err};
+use datafusion::common::{Column, Result, ScalarValue, plan_err};
 use datafusion::logical_expr::Expr;
 use qdrant_client::qdrant::point_id::PointIdOptions;
 use qdrant_client::qdrant::{
@@ -443,6 +443,18 @@ pub(crate) struct QueryBranchPlan {
     pub(crate) limit:           Option<u64>,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct QueryPrefetchBranch {
+    pub(crate) branch:               QueryBranchPlan,
+    pub(crate) score_output_columns: BTreeSet<Column>,
+}
+
+impl QueryPrefetchBranch {
+    pub(crate) fn new(branch: QueryBranchPlan, score_output_columns: BTreeSet<Column>) -> Self {
+        Self { branch, score_output_columns }
+    }
+}
+
 impl QueryBranchPlan {
     pub(crate) fn descriptor(
         descriptor: QueryDescriptor,
@@ -726,18 +738,22 @@ impl QueryKind {
         }
     }
 
-    pub(crate) fn descriptor(&self, prefetch_count: usize) -> Result<QueryDescriptor> {
+    pub(crate) fn descriptor(
+        &self,
+        source: &Source,
+        prefetch: &[QueryPrefetchBranch],
+    ) -> Result<QueryDescriptor> {
         match self {
-            Self::Nearest(query) => Ok(query.descriptor(prefetch_count)),
-            Self::Recommend(query) => Ok(query.descriptor(prefetch_count)),
-            Self::Discover(query) => Ok(query.descriptor(prefetch_count)),
-            Self::Context(query) => Ok(query.descriptor(prefetch_count)),
-            Self::OrderBy(query) => Ok(query.descriptor(prefetch_count)),
-            Self::Fusion(query) => query.descriptor(prefetch_count),
-            Self::Sample(query) => Ok(query.descriptor(prefetch_count)),
-            Self::Formula(query) => Ok(query.descriptor(prefetch_count)),
-            Self::NearestWithMmr(query) => Ok(query.descriptor(prefetch_count)),
-            Self::RelevanceFeedback(query) => Ok(query.descriptor(prefetch_count)),
+            Self::Nearest(query) => Ok(query.descriptor(prefetch.len())),
+            Self::Recommend(query) => Ok(query.descriptor(prefetch.len())),
+            Self::Discover(query) => Ok(query.descriptor(prefetch.len())),
+            Self::Context(query) => Ok(query.descriptor(prefetch.len())),
+            Self::OrderBy(query) => Ok(query.descriptor(prefetch.len())),
+            Self::Fusion(query) => query.descriptor(prefetch.len()),
+            Self::Sample(query) => Ok(query.descriptor(prefetch.len())),
+            Self::Formula(query) => query.descriptor(source, prefetch),
+            Self::NearestWithMmr(query) => Ok(query.descriptor(prefetch.len())),
+            Self::RelevanceFeedback(query) => Ok(query.descriptor(prefetch.len())),
         }
     }
 }

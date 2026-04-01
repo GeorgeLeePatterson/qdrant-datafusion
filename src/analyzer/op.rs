@@ -11,7 +11,7 @@ use super::common::count_star_like;
 use super::kernel::{
     FacetKernel, KernelSpec, QueryGroupsKernel, QueryKernel, limit_rows, numeric_literal_f32,
 };
-use super::query::{QueryBranchPlan, QueryDescriptor, QueryKind};
+use super::query::{QueryBranchPlan, QueryDescriptor, QueryKind, QueryPrefetchBranch};
 use super::source::Source;
 use super::state::{FiltersState, KernelState};
 use super::surface::QuerySurfaceCall;
@@ -25,7 +25,7 @@ pub(crate) struct QueryOp {
     query_score_outputs: OutputNames,
     score_threshold:     Option<f32>,
     sorted:              bool,
-    prefetch:            Vec<QueryBranchPlan>,
+    prefetch:            Vec<QueryPrefetchBranch>,
 }
 
 impl QueryOp {
@@ -198,26 +198,27 @@ impl QueryOp {
         Ok(found)
     }
 
-    pub(crate) fn descriptor(&self) -> Result<QueryDescriptor> {
-        self.query.descriptor(self.prefetch.len())
+    pub(crate) fn descriptor(&self, source: &Source) -> Result<QueryDescriptor> {
+        self.query.descriptor(source, &self.prefetch)
     }
 
     pub(crate) fn branch_plan(
         &self,
+        source: &Source,
         filter: Option<QdrantFilters>,
         limit: Option<u64>,
     ) -> Result<QueryBranchPlan> {
         let mut branch = QueryBranchPlan::descriptor(
-            self.descriptor()?,
+            self.descriptor(source)?,
             filter.and_then(|filters| filters.to_filter()),
             self.score_threshold,
             limit,
         );
-        branch.prefetch.clone_from(&self.prefetch);
+        branch.prefetch = self.prefetch.iter().map(|branch| branch.branch.clone()).collect();
         Ok(branch)
     }
 
-    pub(crate) fn with_prefetch(mut self, prefetch: Vec<QueryBranchPlan>) -> Self {
+    pub(crate) fn with_prefetch(mut self, prefetch: Vec<QueryPrefetchBranch>) -> Self {
         self.prefetch = prefetch;
         self
     }
@@ -337,7 +338,7 @@ impl Op {
         }
     }
 
-    pub(super) fn with_prefetch(self, prefetch: Vec<QueryBranchPlan>) -> Result<Self> {
+    pub(super) fn with_prefetch(self, prefetch: Vec<QueryPrefetchBranch>) -> Result<Self> {
         match self {
             Self::Query(op) => Ok(Self::Query(op.with_prefetch(prefetch))),
             Self::Facet(_) => plan_err!("facet operations do not admit query prefetch branches"),
