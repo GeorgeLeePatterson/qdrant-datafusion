@@ -262,9 +262,10 @@ mod tests {
         assert_eq!(item.data_type(), &DataType::Float32);
         assert!(!item.is_nullable());
         assert!(field.is_nullable());
-        assert_eq!(QdrantFieldBinding::from_field(&field), QdrantFieldBinding::DenseFixed {
-            width: 3,
-        });
+        assert_eq!(
+            QdrantFieldBinding::from_field(&field),
+            QdrantFieldBinding::DenseFixed { width: 3 }
+        );
     }
 
     #[test]
@@ -283,9 +284,10 @@ mod tests {
         assert_eq!(extension.uniform_shapes(), Some(&[None, Some(3)][..]));
         assert_eq!(field.extension_type_name(), Some(VariableShapeTensor::NAME));
         assert!(field.is_nullable());
-        assert_eq!(QdrantFieldBinding::from_field(&field), QdrantFieldBinding::MultiDense {
-            width: Some(3),
-        });
+        assert_eq!(
+            QdrantFieldBinding::from_field(&field),
+            QdrantFieldBinding::MultiDense { width: Some(3) }
+        );
     }
 
     #[test]

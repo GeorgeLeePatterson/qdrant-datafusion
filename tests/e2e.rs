@@ -93,6 +93,22 @@ e2e_test!(
 
 #[cfg(feature = "test-utils")]
 e2e_test!(
+    coordinated_formula_sql_variants,
+    tests::test_coordinated_formula_sql_variants,
+    TRACING_DIRECTIVES,
+    None
+);
+
+#[cfg(feature = "test-utils")]
+e2e_test!(
+    explicit_fusion_sql_variants,
+    tests::test_explicit_fusion_sql_variants,
+    TRACING_DIRECTIVES,
+    None
+);
+
+#[cfg(feature = "test-utils")]
+e2e_test!(
     qdrant_raw_ordered_scroll_integer_contracts,
     tests::test_qdrant_raw_ordered_scroll_integer_contracts,
     TRACING_DIRECTIVES,
@@ -186,6 +202,96 @@ mod tests {
 
     fn assert_f32_eq(left: f32, right: f32) {
         assert!((left - right).abs() < 1.0e-6, "left={left}, right={right}");
+    }
+
+    fn assert_scored_rows_eq(left: &[(u64, f32)], right: &[(u64, f32)]) {
+        assert_eq!(left.len(), right.len(), "left={left:?}, right={right:?}");
+        for ((left_id, left_score), (right_id, right_score)) in left.iter().zip(right) {
+            assert_eq!(left_id, right_id, "left={left:?}, right={right:?}");
+            assert_f32_eq(*left_score, *right_score);
+        }
+    }
+
+    async fn create_dual_vector_query_context(
+        c: &Arc<QdrantContainer>,
+        collection_name: &str,
+    ) -> Result<QdrantSessionContext> {
+        let client = create_qdrant_client(c)?;
+
+        let mut vectors_config = VectorsConfigBuilder::default();
+        let _ = vectors_config.add_named_vector_params(
+            "embedding",
+            VectorParamsBuilder::new(2, Distance::Dot).build(),
+        );
+        let _ = vectors_config
+            .add_named_vector_params("aux", VectorParamsBuilder::new(2, Distance::Dot).build());
+        let _ = client
+            .create_collection(
+                CreateCollectionBuilder::new(collection_name).vectors_config(vectors_config),
+            )
+            .await?;
+
+        let points = vec![
+            PointStruct::new(
+                1,
+                NamedVectors::default()
+                    .add_vector("embedding", vec![1.0, 0.0])
+                    .add_vector("aux", vec![0.0, 1.0]),
+                qdrant_client::Payload::new(),
+            ),
+            PointStruct::new(
+                2,
+                NamedVectors::default()
+                    .add_vector("embedding", vec![0.4, 0.0])
+                    .add_vector("aux", vec![1.0, 0.0]),
+                qdrant_client::Payload::new(),
+            ),
+            PointStruct::new(
+                3,
+                NamedVectors::default()
+                    .add_vector("embedding", vec![0.0, 1.0])
+                    .add_vector("aux", vec![0.4, 0.0]),
+                qdrant_client::Payload::new(),
+            ),
+        ];
+        drop(client.upsert_points(UpsertPointsBuilder::new(collection_name, points)).await?);
+
+        let table_provider = QdrantTableProvider::try_new(client.clone(), collection_name).await?;
+        let ctx = QdrantSessionContext::from(SessionContext::new());
+        drop(ctx.session_context().register_table("vectors", Arc::new(table_provider))?);
+        Ok(ctx)
+    }
+
+    async fn collect_scored_rows(
+        ctx: &QdrantSessionContext,
+        sql: &str,
+    ) -> Result<(Vec<(u64, f32)>, String)> {
+        let dataframe = ctx.sql(sql).await?;
+        let plan = dataframe.clone().create_physical_plan().await?;
+        let display =
+            datafusion::physical_plan::displayable(plan.as_ref()).indent(true).to_string();
+        let batches = dataframe.collect().await?;
+        let rows = batches
+            .iter()
+            .flat_map(|batch| {
+                let ids = batch
+                    .column(batch.schema().index_of("id").expect("id column"))
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .expect("id string array");
+                let scores = batch
+                    .column(batch.schema().index_of("score").expect("score column"))
+                    .as_any()
+                    .downcast_ref::<Float32Array>()
+                    .expect("score float32 array");
+                (0..batch.num_rows())
+                    .map(|row| {
+                        (ids.value(row).parse::<u64>().expect("numeric id"), scores.value(row))
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        Ok((rows, display))
     }
 
     async fn create_scalar_collection(client: &Qdrant, collection_name: &str) -> Result<()> {
@@ -407,13 +513,10 @@ mod tests {
         let schema = batch.schema();
 
         assert_eq!(batch.num_rows(), 3);
-        assert_eq!(field_names(schema.as_ref()), vec![
-            "id",
-            "payload",
-            "text_embedding",
-            "multi_embedding",
-            "keywords"
-        ],);
+        assert_eq!(
+            field_names(schema.as_ref()),
+            vec!["id", "payload", "text_embedding", "multi_embedding", "keywords"],
+        );
 
         let payload = batch
             .column(schema.index_of("payload").expect("payload index"))
@@ -788,16 +891,114 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(ids, vec![1, 2]);
-        assert_eq!(field_names(batch.schema().as_ref()), vec![
-            "id",
-            "payload",
-            "embedding",
-            "aux",
-            "score"
-        ],);
+        assert_eq!(
+            field_names(batch.schema().as_ref()),
+            vec!["id", "payload", "embedding", "aux", "score"],
+        );
         assert_f32_eq(scores[0], 1.0);
         assert_f32_eq(scores[1], 0.4);
         assert!(display.contains("QdrantQueryExec"), "{display}");
+
+        Ok(())
+    }
+
+    pub(super) async fn test_coordinated_formula_sql_variants(
+        c: Arc<QdrantContainer>,
+    ) -> Result<()> {
+        let ctx =
+            create_dual_vector_query_context(&c, "test_coordinated_formula_sql_variants").await?;
+
+        let canonical_sql = "SELECT dense.id, qdrant_formula_score(dense.score + sparse.score) AS \
+                             score FROM (SELECT id, qdrant_nearest_score(embedding, 1.0, 0.0) AS \
+                             score FROM vectors ORDER BY score DESC LIMIT 5) dense FULL OUTER \
+                             JOIN (SELECT id, qdrant_nearest_score(aux, 0.0, 1.0) AS score FROM \
+                             vectors ORDER BY score DESC LIMIT 5) sparse USING (id) ORDER BY \
+                             score DESC LIMIT 2";
+        let alias_wrapped_sql = "SELECT ranked.id, ranked.score FROM (SELECT dense.id AS id, \
+                                 qdrant_formula_score(dense.score + sparse.score) AS score FROM \
+                                 (SELECT id, qdrant_nearest_score(embedding, 1.0, 0.0) AS score \
+                                 FROM vectors ORDER BY score DESC LIMIT 5) dense FULL OUTER JOIN \
+                                 (SELECT id, qdrant_nearest_score(aux, 0.0, 1.0) AS score FROM \
+                                 vectors ORDER BY score DESC LIMIT 5) sparse USING (id)) ranked \
+                                 ORDER BY ranked.score DESC LIMIT 2";
+        let redundant_sort_sql = "SELECT ranked.id, ranked.score FROM (SELECT dense.id AS id, \
+                                  qdrant_formula_score(dense.score + sparse.score) AS score FROM \
+                                  (SELECT id, qdrant_nearest_score(embedding, 1.0, 0.0) AS score \
+                                  FROM vectors ORDER BY score DESC LIMIT 5) dense FULL OUTER JOIN \
+                                  (SELECT id, qdrant_nearest_score(aux, 0.0, 1.0) AS score FROM \
+                                  vectors ORDER BY score DESC LIMIT 5) sparse USING (id) ORDER BY \
+                                  score DESC) ranked ORDER BY ranked.score DESC LIMIT 2";
+        let alias_threaded_sql = "SELECT final.id, final.score FROM (SELECT ranked.id AS id, \
+                                  ranked.score AS score FROM (SELECT dense.id AS id, \
+                                  qdrant_formula_score(dense.score + sparse.score) AS score FROM \
+                                  (SELECT id, qdrant_nearest_score(embedding, 1.0, 0.0) AS score \
+                                  FROM vectors ORDER BY score DESC LIMIT 5) dense FULL OUTER JOIN \
+                                  (SELECT id, qdrant_nearest_score(aux, 0.0, 1.0) AS score FROM \
+                                  vectors ORDER BY score DESC LIMIT 5) sparse USING (id)) ranked) \
+                                  final ORDER BY final.score DESC LIMIT 2";
+
+        let (canonical_rows, canonical_display) = collect_scored_rows(&ctx, canonical_sql).await?;
+        let (alias_rows, alias_display) = collect_scored_rows(&ctx, alias_wrapped_sql).await?;
+        let (redundant_sort_rows, redundant_sort_display) =
+            collect_scored_rows(&ctx, redundant_sort_sql).await?;
+        let (alias_threaded_rows, alias_threaded_display) =
+            collect_scored_rows(&ctx, alias_threaded_sql).await?;
+
+        assert_scored_rows_eq(&canonical_rows, &alias_rows);
+        assert_scored_rows_eq(&canonical_rows, &redundant_sort_rows);
+        assert_scored_rows_eq(&canonical_rows, &alias_threaded_rows);
+
+        for display in
+            [&canonical_display, &alias_display, &redundant_sort_display, &alias_threaded_display]
+        {
+            assert_eq!(display.matches("QdrantQueryExec").count(), 1, "{display}");
+            assert!(display.contains("prefetch=2"), "{display}");
+            assert!(!display.contains("JoinExec"), "{display}");
+            assert!(!display.contains("HashJoinExec"), "{display}");
+        }
+
+        Ok(())
+    }
+
+    pub(super) async fn test_explicit_fusion_sql_variants(c: Arc<QdrantContainer>) -> Result<()> {
+        let ctx = create_dual_vector_query_context(&c, "test_explicit_fusion_sql_variants").await?;
+
+        let canonical_sql = "SELECT id, qdrant_fusion_score('RRF', dense.score, sparse.score) AS \
+                             score FROM (SELECT id, qdrant_nearest_score(embedding, 1.0, 0.0) AS \
+                             score FROM vectors ORDER BY score DESC LIMIT 5) dense FULL OUTER \
+                             JOIN (SELECT id, qdrant_nearest_score(aux, 0.0, 1.0) AS score FROM \
+                             vectors ORDER BY score DESC LIMIT 5) sparse USING (id) ORDER BY \
+                             score DESC LIMIT 2";
+        let alias_wrapped_sql = "SELECT ranked.id, ranked.score FROM (SELECT dense.id AS id, \
+                                 qdrant_fusion_score('RRF', dense.score, sparse.score) AS score \
+                                 FROM (SELECT id, qdrant_nearest_score(embedding, 1.0, 0.0) AS \
+                                 score FROM vectors ORDER BY score DESC LIMIT 5) dense FULL OUTER \
+                                 JOIN (SELECT id, qdrant_nearest_score(aux, 0.0, 1.0) AS score \
+                                 FROM vectors ORDER BY score DESC LIMIT 5) sparse USING (id)) \
+                                 ranked ORDER BY ranked.score DESC LIMIT 2";
+        let alias_threaded_sql = "SELECT final.id, final.score FROM (SELECT ranked.id AS id, \
+                                  ranked.score AS score FROM (SELECT dense.id AS id, \
+                                  qdrant_fusion_score('RRF', dense.score, sparse.score) AS score \
+                                  FROM (SELECT id, qdrant_nearest_score(embedding, 1.0, 0.0) AS \
+                                  score FROM vectors ORDER BY score DESC LIMIT 5) dense FULL OUTER \
+                                  JOIN (SELECT id, qdrant_nearest_score(aux, 0.0, 1.0) AS score \
+                                  FROM vectors ORDER BY score DESC LIMIT 5) sparse USING (id)) \
+                                  ranked) final ORDER BY final.score DESC LIMIT 2";
+
+        let (canonical_rows, canonical_display) = collect_scored_rows(&ctx, canonical_sql).await?;
+        let (alias_rows, alias_display) = collect_scored_rows(&ctx, alias_wrapped_sql).await?;
+        let (alias_threaded_rows, alias_threaded_display) =
+            collect_scored_rows(&ctx, alias_threaded_sql).await?;
+
+        assert_scored_rows_eq(&canonical_rows, &alias_rows);
+        assert_scored_rows_eq(&canonical_rows, &alias_threaded_rows);
+
+        for display in [&canonical_display, &alias_display, &alias_threaded_display] {
+            assert_eq!(display.matches("QdrantQueryExec").count(), 1, "{display}");
+            assert!(display.contains("prefetch=2"), "{display}");
+            assert!(!display.contains("JoinExec"), "{display}");
+            assert!(!display.contains("HashJoinExec"), "{display}");
+        }
 
         Ok(())
     }
@@ -1591,9 +1792,10 @@ mod tests {
             scroll_ordered_page(&client, float_collection, "score", Direction::Asc, None, &[], 3)
                 .await?;
         assert!(float_page.next_page_offset.is_none());
-        assert_eq!(float_page.result.iter().map(float_order_value).collect::<Vec<_>>(), vec![
-            1.5, 1.5, 2.25
-        ],);
+        assert_eq!(
+            float_page.result.iter().map(float_order_value).collect::<Vec<_>>(),
+            vec![1.5, 1.5, 2.25],
+        );
         let float_pages = collect_ordered_pages(
             &client,
             float_collection,
@@ -1652,10 +1854,10 @@ mod tests {
         )
         .await?;
         assert!(datetime_page.next_page_offset.is_none());
-        assert_eq!(datetime_page.result.iter().map(int_order_value).collect::<Vec<_>>(), vec![
-            1_704_067_200_000_000,
-            1_704_067_200_000_000
-        ],);
+        assert_eq!(
+            datetime_page.result.iter().map(int_order_value).collect::<Vec<_>>(),
+            vec![1_704_067_200_000_000, 1_704_067_200_000_000],
+        );
 
         let datetime_pages = collect_ordered_pages(
             &client,
@@ -1669,12 +1871,15 @@ mod tests {
         .await?;
         let datetime_values = datetime_pages.iter().map(|(_, value)| *value).collect::<Vec<_>>();
         let datetime_ids = datetime_pages.iter().map(|(id, _)| *id).collect::<Vec<_>>();
-        assert_eq!(datetime_values, vec![
-            1_704_067_200_000_000,
-            1_704_067_200_000_000,
-            1_704_153_600_000_000,
-            1_704_240_000_000_000,
-        ],);
+        assert_eq!(
+            datetime_values,
+            vec![
+                1_704_067_200_000_000,
+                1_704_067_200_000_000,
+                1_704_153_600_000_000,
+                1_704_240_000_000_000,
+            ],
+        );
         assert_eq!(
             datetime_ids.iter().copied().collect::<BTreeSet<_>>(),
             (1_u64..=4).collect::<BTreeSet<_>>(),

@@ -13,7 +13,7 @@ enum FusionMethod {
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct FusionQuery {
-    method:       FusionMethod,
+    method: FusionMethod,
     score_inputs: Vec<Expr>,
 }
 
@@ -26,7 +26,7 @@ impl TryFrom<FusionCall> for FusionQuery {
             "RRF" => {
                 if let Some(rrf_k) = &call.rrf_k {
                     FusionMethod::Rrf(Rrf {
-                        k:       Some(u32_literal(rrf_k, FUSION_SCORE_FUNCTION_NAME, "rrf k")?),
+                        k: Some(u32_literal(rrf_k, FUSION_SCORE_FUNCTION_NAME, "rrf k")?),
                         weights: vec![],
                     })
                 } else {
@@ -52,11 +52,17 @@ impl TryFrom<FusionCall> for FusionQuery {
 }
 
 impl FusionQuery {
-    pub(crate) fn same_semantics(&self, other: &Self) -> bool { self == other }
+    pub(crate) fn same_semantics(&self, other: &Self) -> bool {
+        self == other
+    }
 
-    pub(crate) fn has_explicit_inputs(&self) -> bool { !self.score_inputs.is_empty() }
+    pub(crate) fn has_explicit_inputs(&self) -> bool {
+        !self.score_inputs.is_empty()
+    }
 
-    pub(crate) fn score_inputs(&self) -> &[Expr] { &self.score_inputs }
+    pub(crate) fn score_inputs(&self) -> &[Expr] {
+        &self.score_inputs
+    }
 
     pub(super) fn descriptor(&self, prefetch_count: usize) -> Result<QueryDescriptor> {
         if prefetch_count == 0 {

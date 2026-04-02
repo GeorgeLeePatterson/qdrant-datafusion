@@ -10,9 +10,9 @@ const ALIASES: &[&str] = &["relevance_feedback_score", "feedback_score"];
 
 #[derive(Debug, Clone)]
 pub(crate) struct RelevanceFeedbackCall {
-    pub(crate) vector_field:   String,
-    pub(crate) target:         Expr,
-    pub(crate) feedback:       Expr,
+    pub(crate) vector_field: String,
+    pub(crate) target: Expr,
+    pub(crate) feedback: Expr,
     pub(crate) naive_strategy: Option<(Expr, Expr, Expr)>,
 }
 

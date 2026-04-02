@@ -11,8 +11,8 @@ const ALIASES: &[&str] = &["nearest_with_mmr_score", "mmr_score"];
 
 #[derive(Debug, Clone)]
 pub(crate) struct NearestWithMmrCall {
-    pub(crate) vector_field:     String,
-    pub(crate) diversity:        Expr,
+    pub(crate) vector_field: String,
+    pub(crate) diversity: Expr,
     pub(crate) candidates_limit: Expr,
     pub(crate) query_components: Vec<Expr>,
 }
@@ -28,8 +28,8 @@ impl NearestWithMmrCall {
             );
         }
         Ok(Some(Self {
-            vector_field:     column_name(&args[0], NEAREST_WITH_MMR_SCORE_FUNCTION_NAME)?,
-            diversity:        args[1].clone(),
+            vector_field: column_name(&args[0], NEAREST_WITH_MMR_SCORE_FUNCTION_NAME)?,
+            diversity: args[1].clone(),
             candidates_limit: args[2].clone(),
             query_components: args[3..].to_vec(),
         }))

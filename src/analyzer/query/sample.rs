@@ -33,7 +33,9 @@ impl TryFrom<SampleCall> for SampleQuery {
 }
 
 impl SampleQuery {
-    pub(crate) fn same_semantics(&self, other: &Self) -> bool { self == other }
+    pub(crate) fn same_semantics(&self, other: &Self) -> bool {
+        self == other
+    }
 
     pub(super) fn descriptor(&self, _prefetch_count: usize) -> QueryDescriptor {
         QueryDescriptor::new(

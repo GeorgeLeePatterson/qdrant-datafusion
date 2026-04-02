@@ -16,10 +16,10 @@ use crate::pushdown::filter::QdrantFilters;
 
 #[derive(Debug, Clone)]
 pub(crate) struct QueryKernel {
-    source:  Source,
+    source: Source,
     filters: QdrantFilters,
-    query:   QueryOp,
-    limit:   u64,
+    query: QueryOp,
+    limit: u64,
 }
 
 impl QueryKernel {
@@ -66,15 +66,25 @@ impl QueryKernel {
         Ok(QueryPrefetchBranch::new(self.branch_plan()?, self.unqualified_score_output_columns()))
     }
 
-    pub(crate) fn client(&self) -> Arc<Qdrant> { Arc::clone(self.source.client()) }
+    pub(crate) fn client(&self) -> Arc<Qdrant> {
+        Arc::clone(self.source.client())
+    }
 
-    pub(crate) fn source(&self) -> &Source { &self.source }
+    pub(crate) fn source(&self) -> &Source {
+        &self.source
+    }
 
-    pub(crate) fn collection(&self) -> &str { self.source.collection() }
+    pub(crate) fn collection(&self) -> &str {
+        self.source.collection()
+    }
 
-    pub(crate) fn filters(&self) -> &QdrantFilters { &self.filters }
+    pub(crate) fn filters(&self) -> &QdrantFilters {
+        &self.filters
+    }
 
-    pub(crate) fn query(&self) -> &QueryOp { &self.query }
+    pub(crate) fn query(&self) -> &QueryOp {
+        &self.query
+    }
 
     pub(crate) fn request_plan(&self, output_schema: &SchemaRef) -> Result<QueryRequestPlan> {
         QueryRequestPlan::points(
@@ -91,7 +101,9 @@ impl QueryKernel {
         )
     }
 
-    pub(crate) fn limit(&self) -> u64 { self.limit }
+    pub(crate) fn limit(&self) -> u64 {
+        self.limit
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -155,12 +167,12 @@ impl QueryBatchKernel {
 
 #[derive(Debug, Clone)]
 pub(crate) struct QueryGroupsKernel {
-    source:           Source,
-    filters:          QdrantFilters,
-    query:            QueryOp,
-    limit:            Option<u64>,
-    group_by:         String,
-    group_size:       u64,
+    source: Source,
+    filters: QdrantFilters,
+    query: QueryOp,
+    limit: Option<u64>,
+    group_by: String,
+    group_size: u64,
     group_descending: bool,
 }
 
@@ -185,17 +197,29 @@ impl QueryGroupsKernel {
         Ok(Some(self))
     }
 
-    pub(crate) fn client(&self) -> Arc<Qdrant> { Arc::clone(self.source.client()) }
+    pub(crate) fn client(&self) -> Arc<Qdrant> {
+        Arc::clone(self.source.client())
+    }
 
-    pub(crate) fn collection(&self) -> &str { self.source.collection() }
+    pub(crate) fn collection(&self) -> &str {
+        self.source.collection()
+    }
 
-    pub(crate) fn group_by(&self) -> &str { &self.group_by }
+    pub(crate) fn group_by(&self) -> &str {
+        &self.group_by
+    }
 
-    pub(crate) fn group_size(&self) -> u64 { self.group_size }
+    pub(crate) fn group_size(&self) -> u64 {
+        self.group_size
+    }
 
-    pub(crate) fn group_descending(&self) -> bool { self.group_descending }
+    pub(crate) fn group_descending(&self) -> bool {
+        self.group_descending
+    }
 
-    pub(crate) fn limit(&self) -> Option<u64> { self.limit }
+    pub(crate) fn limit(&self) -> Option<u64> {
+        self.limit
+    }
 
     pub(crate) fn with_limit(mut self, limit: Option<u64>) -> Self {
         self.limit = limit;

@@ -53,9 +53,9 @@ impl TryFrom<&str> for FormulaFunction {
 
 #[derive(Debug, Clone, PartialEq)]
 struct DecayExpr {
-    x:        Box<FormulaExpr>,
-    target:   Option<Box<FormulaExpr>>,
-    scale:    f32,
+    x: Box<FormulaExpr>,
+    target: Option<Box<FormulaExpr>>,
+    scale: f32,
     midpoint: Option<f32>,
 }
 
@@ -84,12 +84,12 @@ impl DecayExpr {
         prefetch: &[QueryPrefetchBranch],
     ) -> Result<DecayParamsExpression> {
         Ok(DecayParamsExpression {
-            x:        self.x.into_proto(source, prefetch).map(Box::new).map(Some)?,
-            target:   self
+            x: self.x.into_proto(source, prefetch).map(Box::new).map(Some)?,
+            target: self
                 .target
                 .map(|target| target.into_proto(source, prefetch).map(Box::new))
                 .transpose()?,
-            scale:    Some(self.scale),
+            scale: Some(self.scale),
             midpoint: self.midpoint,
         })
     }
@@ -147,7 +147,7 @@ impl FormulaExpr {
                     lon: f64_literal(&call.lon, GEO_DISTANCE_FUNCTION_NAME, "longitude")?,
                     lat: f64_literal(&call.lat, GEO_DISTANCE_FUNCTION_NAME, "latitude")?,
                 },
-                to:     payload_path_arg(&call.path, GEO_DISTANCE_FUNCTION_NAME, "payload path")?,
+                to: payload_path_arg(&call.path, GEO_DISTANCE_FUNCTION_NAME, "payload path")?,
             });
         }
         if let Some(call) = DecayCall::from_expr(expr)? {
@@ -181,7 +181,7 @@ impl FormulaExpr {
 
     fn from_payload_num_call(call: &PayloadNumCall) -> Result<Self> {
         Ok(Self::PayloadNum {
-            path:    payload_path_arg(&call.path, PAYLOAD_NUM_FUNCTION_NAME, "payload path")?,
+            path: payload_path_arg(&call.path, PAYLOAD_NUM_FUNCTION_NAME, "payload path")?,
             default: call
                 .default
                 .as_ref()
@@ -192,7 +192,7 @@ impl FormulaExpr {
 
     fn from_payload_datetime_call(call: &PayloadDatetimeCall) -> Result<Self> {
         Ok(Self::PayloadDatetime {
-            path:    payload_path_arg(&call.path, PAYLOAD_DATETIME_FUNCTION_NAME, "payload path")?,
+            path: payload_path_arg(&call.path, PAYLOAD_DATETIME_FUNCTION_NAME, "payload path")?,
             default: call
                 .default
                 .as_ref()
@@ -203,9 +203,9 @@ impl FormulaExpr {
 
     fn from_decay_call(call: &DecayCall) -> Result<Self> {
         let decay = DecayExpr {
-            x:        Box::new(Self::from_expr(&call.x)?),
-            target:   call.target.as_ref().map(Self::from_expr).transpose()?.map(Box::new),
-            scale:    f32_literal(&call.scale, call.kind.function_name(), "scale")?,
+            x: Box::new(Self::from_expr(&call.x)?),
+            target: call.target.as_ref().map(Self::from_expr).transpose()?.map(Box::new),
+            scale: f32_literal(&call.scale, call.kind.function_name(), "scale")?,
             midpoint: call
                 .midpoint
                 .as_ref()
@@ -342,8 +342,8 @@ impl FormulaExpr {
                     .collect::<Result<Vec<_>>>()?,
             }),
             Self::Div(lhs, rhs) => expression::Variant::Div(Box::new(DivExpression {
-                left:            Some(Box::new(lhs.into_proto(source, prefetch)?)),
-                right:           Some(Box::new(rhs.into_proto(source, prefetch)?)),
+                left: Some(Box::new(lhs.into_proto(source, prefetch)?)),
+                right: Some(Box::new(rhs.into_proto(source, prefetch)?)),
                 by_zero_default: None,
             })),
             Self::Neg(expr) => {
@@ -356,7 +356,7 @@ impl FormulaExpr {
                 expression::Variant::Sqrt(Box::new(expr.into_proto(source, prefetch)?))
             }
             Self::Pow(base, exponent) => expression::Variant::Pow(Box::new(PowExpression {
-                base:     Some(Box::new(base.into_proto(source, prefetch)?)),
+                base: Some(Box::new(base.into_proto(source, prefetch)?)),
                 exponent: Some(Box::new(exponent.into_proto(source, prefetch)?)),
             })),
             Self::Exp(expr) => {
@@ -429,7 +429,9 @@ impl TryFrom<FormulaCall> for FormulaQuery {
 }
 
 impl FormulaQuery {
-    pub(crate) fn same_semantics(&self, other: &Self) -> bool { self == other }
+    pub(crate) fn same_semantics(&self, other: &Self) -> bool {
+        self == other
+    }
 
     pub(super) fn validate_on_source(&self, source: &Source) -> Result<()> {
         self.expression.validate_on_source(source)
@@ -623,8 +625,8 @@ fn rewrite_condition_expr(expr: Expr) -> Result<Expr> {
 
 fn payload_path_expr(path: &str) -> Expr {
     Expr::BinaryExpr(BinaryExpr {
-        left:  Box::new(Expr::Column(Column::from_name(PAYLOAD_FIELD_NAME))),
-        op:    Operator::Colon,
+        left: Box::new(Expr::Column(Column::from_name(PAYLOAD_FIELD_NAME))),
+        op: Operator::Colon,
         right: Box::new(Expr::Literal(ScalarValue::Utf8(Some(path.to_owned())), None)),
     })
 }
@@ -852,15 +854,9 @@ mod tests {
 
     fn test_source(payload_schema: QdrantPayloadSchema) -> Source {
         Source {
-            client:         Arc::new(
-                Qdrant::from_url("http://localhost:6334").build().expect("client"),
-            ),
-            collection:     "vectors".to_owned(),
-            schema:         Arc::new(Schema::new(vec![Field::new(
-                "payload",
-                DataType::Utf8,
-                true,
-            )])),
+            client: Arc::new(Qdrant::from_url("http://localhost:6334").build().expect("client")),
+            collection: "vectors".to_owned(),
+            schema: Arc::new(Schema::new(vec![Field::new("payload", DataType::Utf8, true)])),
             payload_schema: Arc::new(payload_schema),
         }
     }
@@ -880,8 +876,8 @@ mod tests {
     #[test]
     fn formula_query_lowers_expr_tree_with_sql_columns() {
         let formula = Expr::BinaryExpr(BinaryExpr {
-            left:  Box::new(Expr::Column(Column::from_name("score"))),
-            op:    Operator::Plus,
+            left: Box::new(Expr::Column(Column::from_name("score"))),
+            op: Operator::Plus,
             right: Box::new(Expr::Column(Column::from_name("rank"))),
         });
         let query = FormulaQuery::try_from(FormulaCall { formula }).expect("formula query");
@@ -889,8 +885,8 @@ mod tests {
             "rank".to_owned(),
             PayloadSchemaInfo {
                 data_type: PayloadSchemaType::Integer as i32,
-                params:    None,
-                points:    None,
+                params: None,
+                points: None,
             },
         )])));
 
@@ -921,10 +917,13 @@ mod tests {
         let source = test_source(QdrantPayloadSchema::default());
         drop(
             query
-                .descriptor(&source, &[
-                    test_prefetch(Column::new(Some(TableReference::bare("lhs")), "score")),
-                    test_prefetch(Column::new(Some(TableReference::bare("rhs")), "score")),
-                ])
+                .descriptor(
+                    &source,
+                    &[
+                        test_prefetch(Column::new(Some(TableReference::bare("lhs")), "score")),
+                        test_prefetch(Column::new(Some(TableReference::bare("rhs")), "score")),
+                    ],
+                )
                 .expect("qualified score column resolves"),
         );
     }
@@ -937,10 +936,13 @@ mod tests {
         .expect("formula query");
         let source = test_source(QdrantPayloadSchema::default());
         let error = query
-            .descriptor(&source, &[
-                test_prefetch(Column::new(Some(TableReference::bare("lhs")), "score")),
-                test_prefetch(Column::new(Some(TableReference::bare("rhs")), "score")),
-            ])
+            .descriptor(
+                &source,
+                &[
+                    test_prefetch(Column::new(Some(TableReference::bare("lhs")), "score")),
+                    test_prefetch(Column::new(Some(TableReference::bare("rhs")), "score")),
+                ],
+            )
             .expect_err("ambiguous score columns are rejected");
         assert!(error.to_string().contains("ambiguous"), "{error}");
     }
@@ -960,8 +962,8 @@ mod tests {
     fn formula_query_collects_payload_defaults() {
         let query = FormulaQuery::try_from(FormulaCall {
             formula: Expr::BinaryExpr(BinaryExpr {
-                left:  Box::new(qdrant_payload_num("rank")),
-                op:    Operator::Plus,
+                left: Box::new(qdrant_payload_num("rank")),
+                op: Operator::Plus,
                 right: Box::new(qdrant_payload_datetime("created_at")),
             }),
         })
@@ -972,11 +974,11 @@ mod tests {
 
         let query = FormulaQuery::try_from(FormulaCall {
             formula: Expr::BinaryExpr(BinaryExpr {
-                left:  Box::new(crate::expr_fn::qdrant_payload_num_udf().call(vec![
+                left: Box::new(crate::expr_fn::qdrant_payload_num_udf().call(vec![
                     Expr::Literal(ScalarValue::Utf8(Some("rank".to_owned())), None),
                     Expr::Literal(ScalarValue::Int64(Some(7)), None),
                 ])),
-                op:    Operator::Plus,
+                op: Operator::Plus,
                 right: Box::new(crate::expr_fn::qdrant_payload_datetime_udf().call(vec![
                     Expr::Literal(ScalarValue::Utf8(Some("created_at".to_owned())), None),
                     Expr::Literal(ScalarValue::Utf8(Some("2024-01-01".to_owned())), None),
@@ -993,8 +995,8 @@ mod tests {
     #[test]
     fn formula_query_lowers_condition_leaf() {
         let predicate = Expr::BinaryExpr(BinaryExpr {
-            left:  Box::new(qdrant_payload_num("rank")),
-            op:    Operator::Gt,
+            left: Box::new(qdrant_payload_num("rank")),
+            op: Operator::Gt,
             right: Box::new(Expr::Literal(ScalarValue::Int64(Some(3)), None)),
         });
         let query = FormulaQuery::try_from(FormulaCall { formula: qdrant_condition(predicate) })
@@ -1003,8 +1005,8 @@ mod tests {
             "rank".to_owned(),
             PayloadSchemaInfo {
                 data_type: PayloadSchemaType::Integer as i32,
-                params:    None,
-                points:    None,
+                params: None,
+                points: None,
             },
         )])));
         let Expression { variant } = query
@@ -1030,8 +1032,8 @@ mod tests {
             "created_at".to_owned(),
             PayloadSchemaInfo {
                 data_type: PayloadSchemaType::Datetime as i32,
-                params:    None,
-                points:    None,
+                params: None,
+                points: None,
             },
         )])));
         let Expression { variant } = query
@@ -1052,8 +1054,8 @@ mod tests {
             "location".to_owned(),
             PayloadSchemaInfo {
                 data_type: PayloadSchemaType::Geo as i32,
-                params:    None,
-                points:    None,
+                params: None,
+                points: None,
             },
         )])));
         let Expression { variant } = query
@@ -1068,11 +1070,11 @@ mod tests {
     fn formula_query_rejects_conflicting_defaults() {
         let query = FormulaQuery::try_from(FormulaCall {
             formula: Expr::BinaryExpr(BinaryExpr {
-                left:  Box::new(crate::expr_fn::qdrant_payload_num_udf().call(vec![
+                left: Box::new(crate::expr_fn::qdrant_payload_num_udf().call(vec![
                     Expr::Literal(ScalarValue::Utf8(Some("rank".to_owned())), None),
                     Expr::Literal(ScalarValue::Int64(Some(1)), None),
                 ])),
-                op:    Operator::Plus,
+                op: Operator::Plus,
                 right: Box::new(crate::expr_fn::qdrant_payload_num_udf().call(vec![
                     Expr::Literal(ScalarValue::Utf8(Some("rank".to_owned())), None),
                     Expr::Literal(ScalarValue::Int64(Some(2)), None),

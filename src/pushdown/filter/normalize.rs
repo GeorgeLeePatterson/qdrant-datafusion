@@ -39,7 +39,7 @@ pub(super) fn exact_physical_expr(
 }
 
 struct QdrantExprNormalizer<'a> {
-    base_schema:    &'a SchemaRef,
+    base_schema: &'a SchemaRef,
     payload_schema: &'a QdrantPayloadSchema,
 }
 

@@ -42,9 +42,13 @@ pub(crate) struct QueryDescriptor {
 }
 
 impl QueryDescriptor {
-    pub(crate) fn new(query: Query, using: Option<String>) -> Self { Self { query, using } }
+    pub(crate) fn new(query: Query, using: Option<String>) -> Self {
+        Self { query, using }
+    }
 
-    fn into_parts(self) -> (Query, Option<String>) { (self.query, self.using) }
+    fn into_parts(self) -> (Query, Option<String>) {
+        (self.query, self.using)
+    }
 }
 
 pub(super) fn string_literal(expr: &Expr, function_name: &str, argument: &str) -> Result<String> {
@@ -436,16 +440,16 @@ impl QueryVectorsSelector {
 
 #[derive(Debug, Clone)]
 pub(crate) struct QueryBranchPlan {
-    pub(crate) prefetch:        Vec<QueryBranchPlan>,
-    pub(crate) descriptor:      Option<QueryDescriptor>,
-    pub(crate) filter:          Option<Filter>,
+    pub(crate) prefetch: Vec<QueryBranchPlan>,
+    pub(crate) descriptor: Option<QueryDescriptor>,
+    pub(crate) filter: Option<Filter>,
     pub(crate) score_threshold: Option<f32>,
-    pub(crate) limit:           Option<u64>,
+    pub(crate) limit: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct QueryPrefetchBranch {
-    pub(crate) branch:               QueryBranchPlan,
+    pub(crate) branch: QueryBranchPlan,
     pub(crate) score_output_columns: BTreeSet<Column>,
 }
 
@@ -493,10 +497,10 @@ impl QueryBranchPlan {
 #[derive(Debug, Clone)]
 pub(crate) struct QueryPointsRequestPlan {
     collection: String,
-    branch:     QueryBranchPlan,
-    offset:     Option<u64>,
-    payload:    bool,
-    vectors:    QueryVectorsSelector,
+    branch: QueryBranchPlan,
+    offset: Option<u64>,
+    payload: bool,
+    vectors: QueryVectorsSelector,
 }
 
 impl QueryPointsRequestPlan {
@@ -550,7 +554,7 @@ impl QueryPointsRequestPlan {
 #[derive(Debug, Clone)]
 pub(crate) struct QueryBatchRequestPlan {
     collection: String,
-    queries:    Vec<QueryPointsRequestPlan>,
+    queries: Vec<QueryPointsRequestPlan>,
 }
 
 impl QueryBatchRequestPlan {
@@ -560,14 +564,14 @@ impl QueryBatchRequestPlan {
 
     fn into_proto(self) -> Result<QueryBatchPoints> {
         Ok(QueryBatchPoints {
-            collection_name:  self.collection,
-            query_points:     self
+            collection_name: self.collection,
+            query_points: self
                 .queries
                 .into_iter()
                 .map(QueryPointsRequestPlan::into_proto)
                 .collect::<Result<Vec<_>>>()?,
             read_consistency: None,
-            timeout:          None,
+            timeout: None,
         })
     }
 }
@@ -575,10 +579,10 @@ impl QueryBatchRequestPlan {
 #[derive(Debug, Clone)]
 pub(crate) struct QueryGroupsRequestPlan {
     collection: String,
-    branch:     QueryBranchPlan,
-    payload:    bool,
-    vectors:    QueryVectorsSelector,
-    group_by:   String,
+    branch: QueryBranchPlan,
+    payload: bool,
+    vectors: QueryVectorsSelector,
+    group_by: String,
     group_size: u64,
 }
 
@@ -643,7 +647,7 @@ pub(crate) enum QueryRequest {
 
 #[derive(Debug, Clone)]
 pub(crate) struct QueryRequestPlan {
-    request:            QueryRequest,
+    request: QueryRequest,
     score_output_names: BTreeSet<String>,
 }
 
@@ -669,9 +673,13 @@ impl QueryRequestPlan {
         Ok(Self { request: QueryRequest::Groups(request.into_proto()?), score_output_names })
     }
 
-    pub(crate) fn request(&self) -> &QueryRequest { &self.request }
+    pub(crate) fn request(&self) -> &QueryRequest {
+        &self.request
+    }
 
-    pub(crate) fn score_output_names(&self) -> &BTreeSet<String> { &self.score_output_names }
+    pub(crate) fn score_output_names(&self) -> &BTreeSet<String> {
+        &self.score_output_names
+    }
 }
 
 #[derive(Debug, Clone)]

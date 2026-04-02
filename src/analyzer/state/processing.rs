@@ -7,9 +7,9 @@ use crate::analyzer::source::Source;
 
 #[derive(Debug, Clone)]
 pub(crate) struct ProcessingState {
-    pub(super) source:  Source,
+    pub(super) source: Source,
     pub(super) filters: FiltersState,
-    pub(super) op:      Op,
+    pub(super) op: Op,
 }
 
 #[expect(

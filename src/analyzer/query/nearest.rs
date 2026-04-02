@@ -89,7 +89,7 @@ impl NearestInput {
                 variant: Some(qdrant_client::qdrant::query::Variant::Nearest(VectorInput {
                     variant: Some(vector_input::Variant::Sparse(
                         qdrant_client::qdrant::SparseVector {
-                            values:  input.values.clone(),
+                            values: input.values.clone(),
                             indices: input.indices.clone(),
                         },
                     )),
@@ -115,8 +115,8 @@ impl NearestInput {
             Self::Document(input) => Query {
                 variant: Some(qdrant_client::qdrant::query::Variant::Nearest(VectorInput {
                     variant: Some(vector_input::Variant::Document(Document {
-                        text:    input.text.clone(),
-                        model:   input.model.clone().unwrap_or_default(),
+                        text: input.text.clone(),
+                        model: input.model.clone().unwrap_or_default(),
                         options: std::collections::HashMap::new(),
                     })),
                 })),
@@ -124,8 +124,8 @@ impl NearestInput {
             Self::Image(input) => Query {
                 variant: Some(qdrant_client::qdrant::query::Variant::Nearest(VectorInput {
                     variant: Some(vector_input::Variant::Image(Image {
-                        image:   Some(input.image.clone()),
-                        model:   input.model.clone().unwrap_or_default(),
+                        image: Some(input.image.clone()),
+                        model: input.model.clone().unwrap_or_default(),
                         options: std::collections::HashMap::new(),
                     })),
                 })),
@@ -133,8 +133,8 @@ impl NearestInput {
             Self::Object(input) => Query {
                 variant: Some(qdrant_client::qdrant::query::Variant::Nearest(VectorInput {
                     variant: Some(vector_input::Variant::Object(InferenceObject {
-                        object:  Some(input.object.clone()),
-                        model:   input.model.clone().unwrap_or_default(),
+                        object: Some(input.object.clone()),
+                        model: input.model.clone().unwrap_or_default(),
                         options: std::collections::HashMap::new(),
                     })),
                 })),
@@ -218,7 +218,7 @@ impl DenseNearestInput {
 #[derive(Debug, Clone)]
 pub(crate) struct SparseNearestInput {
     indices: Vec<u32>,
-    values:  Vec<f32>,
+    values: Vec<f32>,
 }
 
 impl SparseNearestInput {
@@ -341,7 +341,7 @@ impl IdNearestInput {
 
 #[derive(Debug, Clone)]
 pub(crate) struct DocumentNearestInput {
-    text:  String,
+    text: String,
     model: Option<String>,
 }
 
@@ -418,7 +418,7 @@ impl ImageNearestInput {
 #[derive(Debug, Clone)]
 pub(crate) struct ObjectNearestInput {
     object: Value,
-    model:  Option<String>,
+    model: Option<String>,
 }
 
 impl ObjectNearestInput {

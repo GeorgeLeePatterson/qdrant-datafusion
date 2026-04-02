@@ -11,8 +11,8 @@ const ALIASES: &[&str] = &["discover_score"];
 #[derive(Debug, Clone)]
 pub(crate) struct DiscoverCall {
     pub(crate) vector_field: String,
-    pub(crate) target:       Expr,
-    pub(crate) context:      Expr,
+    pub(crate) target: Expr,
+    pub(crate) context: Expr,
 }
 
 impl DiscoverCall {
@@ -27,8 +27,8 @@ impl DiscoverCall {
         }
         Ok(Some(Self {
             vector_field: column_name(&args[0], DISCOVER_SCORE_FUNCTION_NAME)?,
-            target:       args[1].clone(),
-            context:      args[2].clone(),
+            target: args[1].clone(),
+            context: args[2].clone(),
         }))
     }
 }

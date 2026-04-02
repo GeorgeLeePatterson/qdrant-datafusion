@@ -8,7 +8,7 @@ use crate::pushdown::QdrantPayloadPath;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct OrderByQuery {
-    key:        String,
+    key: String,
     descending: bool,
 }
 
@@ -50,7 +50,9 @@ impl TryFrom<OrderByCall> for OrderByQuery {
 }
 
 impl OrderByQuery {
-    pub(crate) fn same_semantics(&self, other: &Self) -> bool { self == other }
+    pub(crate) fn same_semantics(&self, other: &Self) -> bool {
+        self == other
+    }
 
     pub(super) fn validate_on_source(&self, source: &Source) -> Result<()> {
         if source.payload_schema.field(&self.key).is_none() {
@@ -63,9 +65,9 @@ impl OrderByQuery {
         QueryDescriptor::new(
             Query {
                 variant: Some(query::Variant::OrderBy(OrderBy {
-                    key:        self.key.clone(),
-                    direction:  Some(
-                        if self.descending { Direction::Desc } else { Direction::Asc } as i32,
+                    key: self.key.clone(),
+                    direction: Some(
+                        if self.descending { Direction::Desc } else { Direction::Asc } as i32
                     ),
                     start_from: None,
                 })),

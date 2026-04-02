@@ -46,7 +46,7 @@ impl FormulaCall {
 
 #[derive(Debug, Clone)]
 pub(crate) struct PayloadNumCall {
-    pub(crate) path:    Expr,
+    pub(crate) path: Expr,
     pub(crate) default: Option<Expr>,
 }
 
@@ -70,7 +70,7 @@ impl PayloadNumCall {
 
 #[derive(Debug, Clone)]
 pub(crate) struct PayloadDatetimeCall {
-    pub(crate) path:    Expr,
+    pub(crate) path: Expr,
     pub(crate) default: Option<Expr>,
 }
 
@@ -136,8 +136,8 @@ impl ConditionCall {
 #[derive(Debug, Clone)]
 pub(crate) struct GeoDistanceCall {
     pub(crate) path: Expr,
-    pub(crate) lon:  Expr,
-    pub(crate) lat:  Expr,
+    pub(crate) lon: Expr,
+    pub(crate) lat: Expr,
 }
 
 impl GeoDistanceCall {
@@ -179,15 +179,17 @@ impl DecayKind {
         }
     }
 
-    fn iter() -> impl Iterator<Item = Self> { [Self::Exp, Self::Gauss, Self::Lin].into_iter() }
+    fn iter() -> impl Iterator<Item = Self> {
+        [Self::Exp, Self::Gauss, Self::Lin].into_iter()
+    }
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct DecayCall {
-    pub(crate) kind:     DecayKind,
-    pub(crate) x:        Expr,
-    pub(crate) target:   Option<Expr>,
-    pub(crate) scale:    Expr,
+    pub(crate) kind: DecayKind,
+    pub(crate) x: Expr,
+    pub(crate) target: Option<Expr>,
+    pub(crate) scale: Expr,
     pub(crate) midpoint: Option<Expr>,
 }
 
@@ -250,7 +252,9 @@ pub fn qdrant_datetime_value(value: impl Into<String>) -> Expr {
 }
 
 #[must_use]
-pub fn qdrant_condition(predicate: Expr) -> Expr { qdrant_condition_udf().call(vec![predicate]) }
+pub fn qdrant_condition(predicate: Expr) -> Expr {
+    qdrant_condition_udf().call(vec![predicate])
+}
 
 #[must_use]
 pub fn qdrant_geo_distance(path: impl Into<String>, lon: f64, lat: f64) -> Expr {

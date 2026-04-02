@@ -41,11 +41,13 @@ impl AnalyzerRule for PrototypePushdown {
         analyze_root(plan).map(|analysis| analysis.transformed.data)
     }
 
-    fn name(&self) -> &'static str { "prototype_qdrant_pushdown" }
+    fn name(&self) -> &'static str {
+        "prototype_qdrant_pushdown"
+    }
 }
 
 struct Analysis {
-    state:       State,
+    state: State,
     transformed: Transformed<LogicalPlan>,
 }
 
@@ -64,7 +66,9 @@ impl Analysis {
     }
 }
 
-fn analyze_root(plan: LogicalPlan) -> Result<Analysis> { analyze_plan(plan)?.finish_root() }
+fn analyze_root(plan: LogicalPlan) -> Result<Analysis> {
+    analyze_plan(plan)?.finish_root()
+}
 
 fn analyze_plan(plan: LogicalPlan) -> Result<Analysis> {
     let with_subqueries = plan

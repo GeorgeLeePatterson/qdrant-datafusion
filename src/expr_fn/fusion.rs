@@ -11,8 +11,8 @@ const ALIASES: &[&str] = &["fusion_score"];
 
 #[derive(Debug, Clone)]
 pub(crate) struct FusionCall {
-    pub(crate) method:       Expr,
-    pub(crate) rrf_k:        Option<Expr>,
+    pub(crate) method: Expr,
+    pub(crate) rrf_k: Option<Expr>,
     pub(crate) score_inputs: Vec<Expr>,
 }
 

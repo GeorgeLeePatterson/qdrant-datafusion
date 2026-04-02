@@ -11,9 +11,9 @@ const ALIASES: &[&str] = &["recommend_score"];
 #[derive(Debug, Clone)]
 pub(crate) struct RecommendCall {
     pub(crate) vector_field: String,
-    pub(crate) strategy:     Option<Expr>,
-    pub(crate) positive:     Expr,
-    pub(crate) negative:     Expr,
+    pub(crate) strategy: Option<Expr>,
+    pub(crate) positive: Expr,
+    pub(crate) negative: Expr,
 }
 
 impl RecommendCall {

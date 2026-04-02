@@ -17,10 +17,10 @@ use crate::arrow::deserialize::QdrantRecordBatchBuilder;
 
 #[derive(Clone)]
 pub(super) struct QdrantScrollState {
-    pub(super) client:       Arc<Qdrant>,
-    pub(super) collection:   String,
-    pub(super) pushdown:     Arc<QdrantScanSpec>,
-    pub(super) remaining:    Option<usize>,
+    pub(super) client: Arc<Qdrant>,
+    pub(super) collection: String,
+    pub(super) pushdown: Arc<QdrantScanSpec>,
+    pub(super) remaining: Option<usize>,
     pub(super) continuation: QdrantContinuation,
 }
 

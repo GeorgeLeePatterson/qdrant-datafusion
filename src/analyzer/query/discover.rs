@@ -7,9 +7,9 @@ use crate::expr_fn::{DISCOVER_SCORE_FUNCTION_NAME, DiscoverCall};
 
 #[derive(Debug, Clone)]
 pub(crate) struct DiscoverQuery {
-    using:  Option<String>,
+    using: Option<String>,
     target: VectorQueryInput,
-    pairs:  Vec<(VectorQueryInput, VectorQueryInput)>,
+    pairs: Vec<(VectorQueryInput, VectorQueryInput)>,
 }
 
 impl TryFrom<DiscoverCall> for DiscoverQuery {
@@ -17,13 +17,13 @@ impl TryFrom<DiscoverCall> for DiscoverQuery {
 
     fn try_from(call: DiscoverCall) -> Result<Self> {
         Ok(Self {
-            using:  Some(call.vector_field),
+            using: Some(call.vector_field),
             target: vector_input_literal(
                 &call.target,
                 DISCOVER_SCORE_FUNCTION_NAME,
                 "target input",
             )?,
-            pairs:  vector_input_pair_list(
+            pairs: vector_input_pair_list(
                 &call.context,
                 DISCOVER_SCORE_FUNCTION_NAME,
                 "context pairs",
@@ -74,7 +74,7 @@ impl DiscoverQuery {
     pub(super) fn descriptor(&self, _prefetch_count: usize) -> QueryDescriptor {
         QueryDescriptor::new(
             Query::new_discover(DiscoverInput {
-                target:  Some(self.target.clone().into_proto()),
+                target: Some(self.target.clone().into_proto()),
                 context: Some(ContextInput {
                     pairs: self
                         .pairs

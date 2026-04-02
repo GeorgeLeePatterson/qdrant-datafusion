@@ -10,25 +10,39 @@ pub(crate) const KERNEL_NODE_NAME: &str = "QdrantKernelNode";
 #[derive(Debug, Clone)]
 pub(crate) struct KernelNode {
     schema: DFSchemaRef,
-    spec:   KernelSpec,
+    spec: KernelSpec,
 }
 
 impl KernelNode {
-    pub(crate) fn new(schema: DFSchemaRef, spec: KernelSpec) -> Self { Self { schema, spec } }
+    pub(crate) fn new(schema: DFSchemaRef, spec: KernelSpec) -> Self {
+        Self { schema, spec }
+    }
 
-    pub(crate) fn spec(&self) -> &KernelSpec { &self.spec }
+    pub(crate) fn spec(&self) -> &KernelSpec {
+        &self.spec
+    }
 
-    pub(crate) fn output_schema(&self) -> &DFSchemaRef { &self.schema }
+    pub(crate) fn output_schema(&self) -> &DFSchemaRef {
+        &self.schema
+    }
 }
 
 impl UserDefinedLogicalNodeCore for KernelNode {
-    fn name(&self) -> &str { KERNEL_NODE_NAME }
+    fn name(&self) -> &str {
+        KERNEL_NODE_NAME
+    }
 
-    fn inputs(&self) -> Vec<&LogicalPlan> { vec![] }
+    fn inputs(&self) -> Vec<&LogicalPlan> {
+        vec![]
+    }
 
-    fn schema(&self) -> &DFSchemaRef { &self.schema }
+    fn schema(&self) -> &DFSchemaRef {
+        &self.schema
+    }
 
-    fn expressions(&self) -> Vec<Expr> { vec![] }
+    fn expressions(&self) -> Vec<Expr> {
+        vec![]
+    }
 
     fn fmt_for_explain(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{KERNEL_NODE_NAME}: {:?}", self.spec)

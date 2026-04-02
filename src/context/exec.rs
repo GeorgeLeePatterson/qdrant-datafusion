@@ -25,36 +25,36 @@ use crate::arrow::deserialize::QdrantRecordBatchBuilder;
 
 #[derive(Clone)]
 pub(crate) struct QdrantCountExec {
-    spec:       CountKernel,
-    schema:     SchemaRef,
+    spec: CountKernel,
+    schema: SchemaRef,
     properties: Arc<PlanProperties>,
 }
 
 #[derive(Clone)]
 pub(crate) struct QdrantFacetExec {
-    spec:       FacetKernel,
-    schema:     SchemaRef,
+    spec: FacetKernel,
+    schema: SchemaRef,
     properties: Arc<PlanProperties>,
 }
 
 #[derive(Clone)]
 pub(crate) struct QdrantQueryExec {
-    spec:       QueryKernel,
-    schema:     SchemaRef,
+    spec: QueryKernel,
+    schema: SchemaRef,
     properties: Arc<PlanProperties>,
 }
 
 #[derive(Clone)]
 pub(crate) struct QdrantQueryBatchExec {
-    spec:       QueryBatchKernel,
-    schema:     SchemaRef,
+    spec: QueryBatchKernel,
+    schema: SchemaRef,
     properties: Arc<PlanProperties>,
 }
 
 #[derive(Clone)]
 pub(crate) struct QdrantQueryGroupsExec {
-    spec:       QueryGroupsKernel,
-    schema:     SchemaRef,
+    spec: QueryGroupsKernel,
+    schema: SchemaRef,
     properties: Arc<PlanProperties>,
 }
 
@@ -68,11 +68,17 @@ fn expect_partition_zero(name: &'static str, partition: usize) -> Result<()> {
 
 macro_rules! impl_leaf_execution_plan {
     ($ty:ty, $name:literal) => {
-        fn name(&self) -> &'static str { $name }
+        fn name(&self) -> &'static str {
+            $name
+        }
 
-        fn as_any(&self) -> &dyn Any { self }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
 
-        fn properties(&self) -> &Arc<PlanProperties> { &self.properties }
+        fn properties(&self) -> &Arc<PlanProperties> {
+            &self.properties
+        }
 
         fn apply_expressions(
             &self,
@@ -81,7 +87,9 @@ macro_rules! impl_leaf_execution_plan {
             Ok(TreeNodeRecursion::Continue)
         }
 
-        fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> { vec![] }
+        fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+            vec![]
+        }
 
         fn with_new_children(
             self: Arc<Self>,
@@ -225,9 +233,10 @@ impl ExecutionPlan for QdrantCountExec {
             let count = i64::try_from(count).map_err(|_| {
                 datafusion::error::DataFusionError::Execution("Qdrant count exceeds i64".to_owned())
             })?;
-            let batch = RecordBatch::try_new(Arc::clone(&schema), vec![
-                Arc::new(Int64Array::from(vec![count])) as ArrayRef,
-            ])?;
+            let batch = RecordBatch::try_new(
+                Arc::clone(&schema),
+                vec![Arc::new(Int64Array::from(vec![count])) as ArrayRef],
+            )?;
             Ok(batch)
         };
         Ok(Box::pin(RecordBatchStreamAdapter::new(Arc::clone(&self.schema), stream::once(fut))))
