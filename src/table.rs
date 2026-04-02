@@ -221,6 +221,7 @@ impl std::fmt::Debug for QdrantScanExec {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::{BTreeMap, BTreeSet};
     use std::sync::Arc;
 
     use datafusion::arrow::compute::SortOptions;
@@ -424,6 +425,9 @@ mod tests {
         }
         if let Some(cooperative) = plan.as_any().downcast_ref::<CooperativeExec>() {
             return qdrant_query(cooperative.input());
+        }
+        if let Some(projection) = plan.as_any().downcast_ref::<ProjectionExec>() {
+            return qdrant_query(projection.input());
         }
         panic!("expected qdrant query exec in plan:\n{}", displayable(plan.as_ref()).indent(true));
     }
@@ -1187,6 +1191,52 @@ mod tests {
         let _query = qdrant_query(&plan);
 
         assert!(display.contains("QdrantQueryExec"), "{display}");
+    }
+
+    #[test]
+    fn physical_plan_requests_payload_for_payload_path_query_projection() {
+        let provider = test_provider(Schema::new(vec![
+            Field::new(ID_FIELD_NAME, DataType::Utf8, false),
+            Field::new(PAYLOAD_FIELD_NAME, DataType::Utf8, true),
+            Field::new(
+                "embedding",
+                DataType::new_fixed_size_list(DataType::Float32, 2, false),
+                true,
+            ),
+        ]));
+        let ctx = QdrantSessionContext::from(SessionContext::new());
+        drop(
+            ctx.session_context()
+                .register_table("vectors", Arc::new(provider))
+                .expect("register table"),
+        );
+        let dataframe = ctx
+            .sql(
+                "SELECT id, payload:rank AS rank, qdrant_nearest_score(embedding, 1.0, 0.0) AS \
+                 score FROM vectors ORDER BY score DESC LIMIT 2",
+            )
+            .now_or_never()
+            .expect("sql future is ready")
+            .expect("dataframe");
+        let plan = dataframe
+            .create_physical_plan()
+            .now_or_never()
+            .expect("plan future is ready")
+            .expect("physical plan");
+        let query = qdrant_query(&plan);
+        let request_plan = query.request_plan().expect("request plan");
+        let crate::analyzer::QueryRequest::Points(request) = request_plan.request() else {
+            panic!("expected points query request");
+        };
+
+        assert_eq!(
+            request_plan.payload_output_paths(),
+            &BTreeMap::from([("rank".to_owned(), "rank".to_owned())]),
+        );
+        assert!(matches!(
+            request.with_payload.as_ref().and_then(|selector| selector.selector_options.as_ref()),
+            Some(qdrant_client::qdrant::with_payload_selector::SelectorOptions::Enable(true))
+        ));
     }
 
     #[test]
@@ -1967,12 +2017,14 @@ mod tests {
             .expect("plan future is ready")
             .expect("physical plan");
         let display = displayable(plan.as_ref()).indent(true).to_string();
-        let _query = qdrant_query(&plan);
+        let query = qdrant_query(&plan);
+        let request_plan = query.request_plan().expect("request plan");
 
         assert_eq!(display.matches("QdrantQueryExec").count(), 1, "{display}");
         assert!(display.contains("prefetch=2"), "{display}");
         assert!(!display.contains("JoinExec"), "{display}");
         assert!(!display.contains("HashJoinExec"), "{display}");
+        assert_eq!(request_plan.score_output_names(), &BTreeSet::from(["score".to_owned()]));
     }
 
     #[test]
@@ -2000,6 +2052,50 @@ mod tests {
                  DESC LIMIT 5) dense FULL OUTER JOIN (SELECT id, qdrant_nearest_score(aux, 0.0, \
                  1.0) AS score FROM vectors ORDER BY score DESC LIMIT 5) sparse USING (id)) \
                  ranked ORDER BY ranked.score DESC LIMIT 2",
+            )
+            .now_or_never()
+            .expect("sql future is ready")
+            .expect("dataframe");
+        let plan = dataframe
+            .create_physical_plan()
+            .now_or_never()
+            .expect("plan future is ready")
+            .expect("physical plan");
+        let display = displayable(plan.as_ref()).indent(true).to_string();
+        let query = qdrant_query(&plan);
+        let request_plan = query.request_plan().expect("request plan");
+
+        assert_eq!(display.matches("QdrantQueryExec").count(), 1, "{display}");
+        assert!(display.contains("prefetch=2"), "{display}");
+        assert!(!display.contains("JoinExec"), "{display}");
+        assert!(!display.contains("HashJoinExec"), "{display}");
+        assert_eq!(request_plan.score_output_names(), &BTreeSet::from(["score".to_owned()]));
+    }
+
+    #[test]
+    fn physical_plan_uses_qdrant_query_exec_for_sort_only_coordinated_formula_sql() {
+        let provider = test_provider(Schema::new(vec![
+            Field::new(ID_FIELD_NAME, DataType::Utf8, false),
+            Field::new(
+                "embedding",
+                DataType::new_fixed_size_list(DataType::Float32, 2, false),
+                true,
+            ),
+            Field::new("aux", DataType::new_fixed_size_list(DataType::Float32, 2, false), true),
+        ]));
+        let ctx = QdrantSessionContext::from(SessionContext::new());
+        drop(
+            ctx.session_context()
+                .register_table("vectors", Arc::new(provider))
+                .expect("register table"),
+        );
+        let dataframe = ctx
+            .sql(
+                "SELECT dense.id FROM (SELECT id, qdrant_nearest_score(embedding, 1.0, 0.0) AS \
+                 score FROM vectors ORDER BY score DESC LIMIT 5) dense FULL OUTER JOIN (SELECT \
+                 id, qdrant_nearest_score(aux, 0.0, 1.0) AS score FROM vectors ORDER BY score \
+                 DESC LIMIT 5) sparse USING (id) ORDER BY qdrant_formula_score(dense.score + \
+                 sparse.score) DESC LIMIT 2",
             )
             .now_or_never()
             .expect("sql future is ready")
@@ -2250,6 +2346,46 @@ mod tests {
                  ORDER BY score DESC LIMIT 5) dense JOIN (SELECT id, qdrant_nearest_score(aux, \
                  0.0, 1.0) AS score FROM vectors ORDER BY score DESC LIMIT 5) sparse ON dense.id \
                  = sparse.id ORDER BY score DESC LIMIT 2",
+            )
+            .now_or_never()
+            .expect("sql future is ready")
+            .expect("dataframe");
+        let plan = dataframe
+            .create_physical_plan()
+            .now_or_never()
+            .expect("plan future is ready")
+            .expect("physical plan");
+        let display = displayable(plan.as_ref()).indent(true).to_string();
+
+        assert_eq!(display.matches("QdrantQueryExec").count(), 2, "{display}");
+        assert!(display.contains("JoinExec") || display.contains("HashJoinExec"), "{display}");
+        assert!(!display.contains("prefetch=2"), "{display}");
+    }
+
+    #[test]
+    fn physical_plan_composes_sort_only_formula_locally_for_plain_sql_expr() {
+        let provider = test_provider(Schema::new(vec![
+            Field::new(ID_FIELD_NAME, DataType::Utf8, false),
+            Field::new(
+                "embedding",
+                DataType::new_fixed_size_list(DataType::Float32, 2, false),
+                true,
+            ),
+            Field::new("aux", DataType::new_fixed_size_list(DataType::Float32, 2, false), true),
+        ]));
+        let ctx = QdrantSessionContext::from(SessionContext::new());
+        drop(
+            ctx.session_context()
+                .register_table("vectors", Arc::new(provider))
+                .expect("register table"),
+        );
+        let dataframe = ctx
+            .sql(
+                "SELECT dense.id FROM (SELECT id, qdrant_nearest_score(embedding, 1.0, 0.0) AS \
+                 score FROM vectors ORDER BY score DESC LIMIT 5) dense JOIN (SELECT id, \
+                 qdrant_nearest_score(aux, 0.0, 1.0) AS score FROM vectors ORDER BY score DESC \
+                 LIMIT 5) sparse ON dense.id = sparse.id ORDER BY qdrant_formula_score(dense.score \
+                 + sparse.score) DESC LIMIT 2",
             )
             .now_or_never()
             .expect("sql future is ready")

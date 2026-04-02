@@ -9,7 +9,7 @@ mod recommend;
 mod relevance_feedback;
 mod sample;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use datafusion::arrow::array::Array;
 use datafusion::common::{Column, Result, ScalarValue, plan_err};
@@ -508,8 +508,10 @@ impl QueryPointsRequestPlan {
         collection: String,
         branch: QueryBranchPlan,
         output_schema: &datafusion::arrow::datatypes::SchemaRef,
+        payload_outputs: bool,
     ) -> Self {
-        let payload = output_schema.fields().iter().any(|field| field.name() == PAYLOAD_FIELD_NAME);
+        let payload = payload_outputs
+            || output_schema.fields().iter().any(|field| field.name() == PAYLOAD_FIELD_NAME);
         let vectors = QueryVectorsSelector::from_schema(output_schema);
         Self { collection, branch, offset: None, payload, vectors }
     }
@@ -591,10 +593,12 @@ impl QueryGroupsRequestPlan {
         collection: String,
         branch: QueryBranchPlan,
         output_schema: &datafusion::arrow::datatypes::SchemaRef,
+        payload_outputs: bool,
         group_by: String,
         group_size: u64,
     ) -> Self {
-        let payload = output_schema.fields().iter().any(|field| field.name() == PAYLOAD_FIELD_NAME);
+        let payload = payload_outputs
+            || output_schema.fields().iter().any(|field| field.name() == PAYLOAD_FIELD_NAME);
         let vectors = QueryVectorsSelector::from_schema(output_schema);
         Self { collection, branch, payload, vectors, group_by, group_size }
     }
@@ -649,28 +653,44 @@ pub(crate) enum QueryRequest {
 pub(crate) struct QueryRequestPlan {
     request: QueryRequest,
     score_output_names: BTreeSet<String>,
+    payload_output_paths: BTreeMap<String, String>,
 }
 
 impl QueryRequestPlan {
     pub(crate) fn points(
         request: QueryPointsRequestPlan,
         score_output_names: BTreeSet<String>,
+        payload_output_paths: BTreeMap<String, String>,
     ) -> Result<Self> {
-        Ok(Self { request: QueryRequest::Points(request.into_proto()?), score_output_names })
+        Ok(Self {
+            request: QueryRequest::Points(request.into_proto()?),
+            score_output_names,
+            payload_output_paths,
+        })
     }
 
     pub(crate) fn batch(
         request: QueryBatchRequestPlan,
         score_output_names: BTreeSet<String>,
+        payload_output_paths: BTreeMap<String, String>,
     ) -> Result<Self> {
-        Ok(Self { request: QueryRequest::Batch(request.into_proto()?), score_output_names })
+        Ok(Self {
+            request: QueryRequest::Batch(request.into_proto()?),
+            score_output_names,
+            payload_output_paths,
+        })
     }
 
     pub(crate) fn groups(
         request: QueryGroupsRequestPlan,
         score_output_names: BTreeSet<String>,
+        payload_output_paths: BTreeMap<String, String>,
     ) -> Result<Self> {
-        Ok(Self { request: QueryRequest::Groups(request.into_proto()?), score_output_names })
+        Ok(Self {
+            request: QueryRequest::Groups(request.into_proto()?),
+            score_output_names,
+            payload_output_paths,
+        })
     }
 
     pub(crate) fn request(&self) -> &QueryRequest {
@@ -679,6 +699,10 @@ impl QueryRequestPlan {
 
     pub(crate) fn score_output_names(&self) -> &BTreeSet<String> {
         &self.score_output_names
+    }
+
+    pub(crate) fn payload_output_paths(&self) -> &BTreeMap<String, String> {
+        &self.payload_output_paths
     }
 }
 

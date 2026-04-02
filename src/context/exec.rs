@@ -1,6 +1,6 @@
 use std::any::Any;
 use std::cmp::Ordering;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::sync::Arc;
 
@@ -132,6 +132,11 @@ impl QdrantFacetExec {
 impl QdrantQueryExec {
     pub(crate) fn new(spec: QueryKernel, schema: &SchemaRef) -> Self {
         Self { spec, schema: Arc::clone(schema), properties: leaf_properties(schema) }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn request_plan(&self) -> Result<QueryRequestPlan> {
+        self.spec.request_plan(&self.schema)
     }
 }
 
@@ -318,10 +323,15 @@ fn append_scored_points_to_batch(
     schema: &SchemaRef,
     point_count: usize,
     score_output_names: &BTreeSet<String>,
+    payload_output_paths: &BTreeMap<String, String>,
     points: impl IntoIterator<Item = ScoredPoint>,
 ) -> Result<RecordBatch> {
-    let mut builder =
-        QdrantRecordBatchBuilder::new(Arc::clone(schema), point_count, Some(score_output_names))?;
+    let mut builder = QdrantRecordBatchBuilder::new(
+        Arc::clone(schema),
+        point_count,
+        Some(score_output_names),
+        payload_output_paths,
+    )?;
     for point in points {
         builder.append_point(point)?;
     }
@@ -369,6 +379,7 @@ async fn execute_query_request_plan(
     group_descending: bool,
 ) -> Result<RecordBatch> {
     let score_output_names = request_plan.score_output_names().clone();
+    let payload_output_paths = request_plan.payload_output_paths().clone();
     match request_plan.request() {
         QueryRequest::Points(request) => {
             if query_limit == Some(0) {
@@ -382,6 +393,7 @@ async fn execute_query_request_plan(
                 &schema,
                 response.result.len(),
                 &score_output_names,
+                &payload_output_paths,
                 response.result,
             )
         }
@@ -393,7 +405,13 @@ async fn execute_query_request_plan(
             let point_count = response.result.iter().map(|batch| batch.result.len()).sum();
             let points =
                 response.result.into_iter().flat_map(|batch| batch.result).collect::<Vec<_>>();
-            append_scored_points_to_batch(&schema, point_count, &score_output_names, points)
+            append_scored_points_to_batch(
+                &schema,
+                point_count,
+                &score_output_names,
+                &payload_output_paths,
+                points,
+            )
         }
         QueryRequest::Groups(request) => {
             let response = client
@@ -411,7 +429,13 @@ async fn execute_query_request_plan(
             sort_point_groups(&mut groups, group_descending);
             let point_count = groups.iter().map(|group| group.hits.len()).sum();
             let points = groups.into_iter().flat_map(|group| group.hits).collect::<Vec<_>>();
-            append_scored_points_to_batch(&schema, point_count, &score_output_names, points)
+            append_scored_points_to_batch(
+                &schema,
+                point_count,
+                &score_output_names,
+                &payload_output_paths,
+                points,
+            )
         }
     }
 }
@@ -517,6 +541,10 @@ impl DisplayAs for QdrantQueryExec {
     fn fmt_as(&self, t: DisplayFormatType, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match t {
             DisplayFormatType::Default | DisplayFormatType::Verbose => {
+                let score_output_names = self.spec.request_plan(&self.schema).map_or_else(
+                    |_| self.spec.query().score_output_names(),
+                    |plan| plan.score_output_names().clone(),
+                );
                 write!(
                     f,
                     "QdrantQueryExec: collection={}, limit={}",
@@ -526,7 +554,7 @@ impl DisplayAs for QdrantQueryExec {
                 if let Some(threshold) = self.spec.query().score_threshold() {
                     write!(f, ", score_threshold={threshold}")?;
                 }
-                write!(f, ", score_outputs={:?}", self.spec.query().score_output_names())?;
+                write!(f, ", score_outputs={score_output_names:?}")?;
                 write!(f, ", prefetch={}", self.spec.query().prefetch_count())
             }
             DisplayFormatType::TreeRender => write!(f, "QdrantQueryExec"),

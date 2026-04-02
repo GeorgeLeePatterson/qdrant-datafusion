@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::arrow::datatypes::{DataType, SchemaRef};
 use datafusion::common::{Column, DFSchemaRef, Result, plan_err};
 use datafusion::logical_expr::LogicalPlan;
 use qdrant_client::Qdrant;
@@ -62,6 +62,19 @@ impl QueryKernel {
         self.query.score_output_names().into_iter().map(Column::from_name).collect()
     }
 
+    fn effective_score_output_names(&self, output_schema: &SchemaRef) -> BTreeSet<String> {
+        let mut score_outputs = self.query.score_output_names();
+        let payload_output_paths = self.query.payload_output_paths();
+        for field in output_schema.fields() {
+            if field.data_type() == &DataType::Float32
+                && !payload_output_paths.contains_key(field.name())
+            {
+                let _ = score_outputs.insert(field.name().clone());
+            }
+        }
+        score_outputs
+    }
+
     pub(crate) fn prefetch_branch_unqualified(&self) -> Result<QueryPrefetchBranch> {
         Ok(QueryPrefetchBranch::new(self.branch_plan()?, self.unqualified_score_output_columns()))
     }
@@ -87,6 +100,8 @@ impl QueryKernel {
     }
 
     pub(crate) fn request_plan(&self, output_schema: &SchemaRef) -> Result<QueryRequestPlan> {
+        let payload_output_paths = self.query.payload_output_paths();
+        let score_output_names = self.effective_score_output_names(output_schema);
         QueryRequestPlan::points(
             QueryPointsRequestPlan::new(
                 self.source.collection().to_owned(),
@@ -96,8 +111,10 @@ impl QueryKernel {
                     Some(self.limit),
                 )?,
                 output_schema,
+                !payload_output_paths.is_empty(),
             ),
-            self.query.score_output_names(),
+            score_output_names,
+            payload_output_paths,
         )
     }
 
@@ -123,6 +140,11 @@ impl QueryBatchKernel {
         if queries.iter().skip(1).any(|query| query.query.score_output_names() != score_outputs) {
             return plan_err!("qdrant query batch requires consistent score output names");
         }
+        let payload_outputs = first.query.payload_output_paths();
+        if queries.iter().skip(1).any(|query| query.query.payload_output_paths() != payload_outputs)
+        {
+            return plan_err!("qdrant query batch requires consistent payload output paths");
+        }
         Ok(Self { queries })
     }
 
@@ -143,6 +165,17 @@ impl QueryBatchKernel {
     }
 
     pub(crate) fn request_plan(&self, output_schema: &SchemaRef) -> Result<QueryRequestPlan> {
+        let score_output_names = self
+            .queries
+            .first()
+            .expect("validated query batch kernel")
+            .effective_score_output_names(output_schema);
+        let payload_output_paths = self
+            .queries
+            .first()
+            .expect("validated query batch kernel")
+            .query
+            .payload_output_paths();
         let queries = self
             .queries
             .iter()
@@ -155,12 +188,14 @@ impl QueryBatchKernel {
                         Some(query.limit),
                     )?,
                     output_schema,
+                    !payload_output_paths.is_empty(),
                 ))
             })
             .collect::<Result<Vec<_>>>()?;
         QueryRequestPlan::batch(
             QueryBatchRequestPlan::new(self.collection().to_owned(), queries),
-            self.queries.first().expect("validated query batch kernel").query.score_output_names(),
+            score_output_names,
+            payload_output_paths,
         )
     }
 }
@@ -227,15 +262,26 @@ impl QueryGroupsKernel {
     }
 
     pub(crate) fn request_plan(&self, output_schema: &SchemaRef) -> Result<QueryRequestPlan> {
+        let payload_output_paths = self.query.payload_output_paths();
+        let mut score_output_names = self.query.score_output_names();
+        for field in output_schema.fields() {
+            if field.data_type() == &DataType::Float32
+                && !payload_output_paths.contains_key(field.name())
+            {
+                let _ = score_output_names.insert(field.name().clone());
+            }
+        }
         QueryRequestPlan::groups(
             QueryGroupsRequestPlan::new(
                 self.source.collection().to_owned(),
                 self.query.branch_plan(&self.source, Some(self.filters.clone()), self.limit)?,
                 output_schema,
+                !payload_output_paths.is_empty(),
                 self.group_by.clone(),
                 self.group_size,
             ),
-            self.query.score_output_names(),
+            score_output_names,
+            payload_output_paths,
         )
     }
 }

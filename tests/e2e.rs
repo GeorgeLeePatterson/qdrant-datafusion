@@ -93,6 +93,14 @@ e2e_test!(
 
 #[cfg(feature = "test-utils")]
 e2e_test!(
+    nearest_query_projects_payload_path,
+    tests::test_nearest_query_projects_payload_path,
+    TRACING_DIRECTIVES,
+    None
+);
+
+#[cfg(feature = "test-utils")]
+e2e_test!(
     coordinated_formula_sql_variants,
     tests::test_coordinated_formula_sql_variants,
     TRACING_DIRECTIVES,
@@ -172,6 +180,7 @@ mod tests {
     use datafusion::arrow::array::{
         Array, FixedSizeListArray, Float32Array, Int64Array, StringArray, StructArray,
     };
+    use datafusion::arrow::datatypes::DataType;
     use datafusion::prelude::*;
     use ndarrow::{
         csr_matrix_batch_iter, fixed_size_list_as_array2, fixed_size_list_as_array2_masked,
@@ -270,7 +279,11 @@ mod tests {
         let plan = dataframe.clone().create_physical_plan().await?;
         let display =
             datafusion::physical_plan::displayable(plan.as_ref()).indent(true).to_string();
-        let batches = dataframe.collect().await?;
+        let batches = dataframe.collect().await.map_err(|err| {
+            datafusion::error::DataFusionError::Execution(format!(
+                "failed to collect SQL `{sql}` with physical plan:\n{display}\nerror: {err}"
+            ))
+        })?;
         let rows = batches
             .iter()
             .flat_map(|batch| {
@@ -288,6 +301,32 @@ mod tests {
                     .map(|row| {
                         (ids.value(row).parse::<u64>().expect("numeric id"), scores.value(row))
                     })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        Ok((rows, display))
+    }
+
+    async fn collect_id_rows(ctx: &QdrantSessionContext, sql: &str) -> Result<(Vec<u64>, String)> {
+        let dataframe = ctx.sql(sql).await?;
+        let plan = dataframe.clone().create_physical_plan().await?;
+        let display =
+            datafusion::physical_plan::displayable(plan.as_ref()).indent(true).to_string();
+        let batches = dataframe.collect().await.map_err(|err| {
+            datafusion::error::DataFusionError::Execution(format!(
+                "failed to collect SQL `{sql}` with physical plan:\n{display}\nerror: {err}"
+            ))
+        })?;
+        let rows = batches
+            .iter()
+            .flat_map(|batch| {
+                let ids = batch
+                    .column(batch.schema().index_of("id").expect("id column"))
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .expect("id string array");
+                (0..batch.num_rows())
+                    .map(|row| ids.value(row).parse::<u64>().expect("numeric id"))
                     .collect::<Vec<_>>()
             })
             .collect::<Vec<_>>();
@@ -902,6 +941,93 @@ mod tests {
         Ok(())
     }
 
+    pub(super) async fn test_nearest_query_projects_payload_path(
+        c: Arc<QdrantContainer>,
+    ) -> Result<()> {
+        let client = create_qdrant_client(&c)?;
+        let collection_name = "test_nearest_query_projects_payload_path";
+
+        let _ = client
+            .create_collection(
+                CreateCollectionBuilder::new(collection_name)
+                    .vectors_config(VectorParamsBuilder::new(2, Distance::Dot)),
+            )
+            .await?;
+
+        let mut payload1 = qdrant_client::Payload::new();
+        payload1.insert("rank", 30_i64);
+        let mut payload2 = qdrant_client::Payload::new();
+        payload2.insert("rank", 20_i64);
+        let mut payload3 = qdrant_client::Payload::new();
+        payload3.insert("rank", 10_i64);
+
+        let points = vec![
+            PointStruct::new(1, Vector::new_dense(vec![1.0, 0.0]), payload1),
+            PointStruct::new(2, Vector::new_dense(vec![0.4, 0.0]), payload2),
+            PointStruct::new(3, Vector::new_dense(vec![0.0, 1.0]), payload3),
+        ];
+        drop(client.upsert_points(UpsertPointsBuilder::new(collection_name, points)).await?);
+
+        let table_provider = QdrantTableProvider::try_new(client.clone(), collection_name).await?;
+        let ctx = QdrantSessionContext::from(SessionContext::new());
+        drop(ctx.session_context().register_table("vectors", Arc::new(table_provider))?);
+
+        let dataframe = ctx
+            .sql(
+                "SELECT id, payload:rank AS rank, qdrant_nearest_score(vector, 1.0, 0.0) AS \
+                 score FROM vectors ORDER BY score DESC LIMIT 2",
+            )
+            .await?;
+        let plan = dataframe.clone().create_physical_plan().await?;
+        let display =
+            datafusion::physical_plan::displayable(plan.as_ref()).indent(true).to_string();
+        let batches = dataframe.collect().await?;
+        let batch = batches.into_iter().next().expect("nearest payload batch");
+
+        let ids = batch
+            .column(batch.schema().index_of("id").expect("id column"))
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("id string array")
+            .iter()
+            .map(|value| value.expect("non-null id").parse::<u64>().expect("numeric id"))
+            .collect::<Vec<_>>();
+        let scores = batch
+            .column(batch.schema().index_of("score").expect("score column"))
+            .as_any()
+            .downcast_ref::<Float32Array>()
+            .expect("score float32 array")
+            .iter()
+            .map(|value| value.expect("non-null score"))
+            .collect::<Vec<_>>();
+        let rank_column = batch.column(batch.schema().index_of("rank").expect("rank column"));
+        let ranks = match rank_column.data_type() {
+            DataType::Int64 => rank_column
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .expect("rank int64 array")
+                .iter()
+                .map(|value| value.expect("non-null rank").to_string())
+                .collect::<Vec<_>>(),
+            DataType::Utf8 => rank_column
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .expect("rank string array")
+                .iter()
+                .map(|value| value.expect("non-null rank").to_owned())
+                .collect::<Vec<_>>(),
+            other => panic!("unexpected rank column type: {other:?}"),
+        };
+
+        assert_eq!(ids, vec![1, 2]);
+        assert_eq!(ranks, vec!["30".to_owned(), "20".to_owned()]);
+        assert_f32_eq(scores[0], 1.0);
+        assert_f32_eq(scores[1], 0.4);
+        assert!(display.contains("QdrantQueryExec"), "{display}");
+
+        Ok(())
+    }
+
     pub(super) async fn test_coordinated_formula_sql_variants(
         c: Arc<QdrantContainer>,
     ) -> Result<()> {
@@ -936,6 +1062,12 @@ mod tests {
                                   (SELECT id, qdrant_nearest_score(aux, 0.0, 1.0) AS score FROM \
                                   vectors ORDER BY score DESC LIMIT 5) sparse USING (id)) ranked) \
                                   final ORDER BY final.score DESC LIMIT 2";
+        let sort_only_sql = "SELECT dense.id AS id FROM (SELECT id, \
+                             qdrant_nearest_score(embedding, 1.0, 0.0) AS score FROM vectors \
+                             ORDER BY score DESC LIMIT 5) dense FULL OUTER JOIN (SELECT id, \
+                             qdrant_nearest_score(aux, 0.0, 1.0) AS score FROM vectors ORDER BY \
+                             score DESC LIMIT 5) sparse USING (id) ORDER BY \
+                             qdrant_formula_score(dense.score + sparse.score) DESC LIMIT 2";
 
         let (canonical_rows, canonical_display) = collect_scored_rows(&ctx, canonical_sql).await?;
         let (alias_rows, alias_display) = collect_scored_rows(&ctx, alias_wrapped_sql).await?;
@@ -943,10 +1075,12 @@ mod tests {
             collect_scored_rows(&ctx, redundant_sort_sql).await?;
         let (alias_threaded_rows, alias_threaded_display) =
             collect_scored_rows(&ctx, alias_threaded_sql).await?;
+        let (sort_only_rows, sort_only_display) = collect_id_rows(&ctx, sort_only_sql).await?;
 
         assert_scored_rows_eq(&canonical_rows, &alias_rows);
         assert_scored_rows_eq(&canonical_rows, &redundant_sort_rows);
         assert_scored_rows_eq(&canonical_rows, &alias_threaded_rows);
+        assert_eq!(sort_only_rows, canonical_rows.iter().map(|(id, _)| *id).collect::<Vec<_>>(),);
 
         for display in
             [&canonical_display, &alias_display, &redundant_sort_display, &alias_threaded_display]
@@ -956,6 +1090,11 @@ mod tests {
             assert!(!display.contains("JoinExec"), "{display}");
             assert!(!display.contains("HashJoinExec"), "{display}");
         }
+
+        assert_eq!(sort_only_display.matches("QdrantQueryExec").count(), 1, "{sort_only_display}");
+        assert!(sort_only_display.contains("prefetch=2"), "{sort_only_display}");
+        assert!(!sort_only_display.contains("JoinExec"), "{sort_only_display}");
+        assert!(!sort_only_display.contains("HashJoinExec"), "{sort_only_display}");
 
         Ok(())
     }

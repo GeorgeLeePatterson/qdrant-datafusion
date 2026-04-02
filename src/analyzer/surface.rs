@@ -44,7 +44,7 @@ impl SurfaceCall {
         }
     }
 
-    fn same_semantics(&self, other: &Self) -> bool {
+    pub(super) fn same_semantics(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Query(lhs), Self::Query(rhs)) => lhs.same_semantics(rhs),
         }

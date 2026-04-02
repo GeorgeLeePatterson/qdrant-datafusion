@@ -99,9 +99,7 @@ fn coordinated_candidate(plan: &LogicalPlan) -> Result<Option<CoordinatedCandida
         surface,
         branch_input,
     } = search;
-    let (Some(surface), Some(combiner_projection), Some(branch_input)) =
-        (surface, combiner_projection, branch_input)
-    else {
+    let (Some(surface), Some(branch_input)) = (surface, branch_input) else {
         return Ok(None);
     };
     if !surface.allows_multi_branch_coordination() {
@@ -116,7 +114,7 @@ fn coordinated_candidate(plan: &LogicalPlan) -> Result<Option<CoordinatedCandida
     if prefetch.len() < 2 {
         return Ok(None);
     }
-    let mut projection_chain = vec![combiner_projection];
+    let mut projection_chain = combiner_projection.into_iter().collect::<Vec<_>>();
     projection_chain.extend(preserved_projections.into_iter().rev());
     Ok(Some(CoordinatedCandidate { surface, source, prefetch, projection_chain, sort_plan }))
 }
@@ -135,27 +133,50 @@ fn descend_to_combiner<'a>(
     mut search: CoordinationSearch<'a>,
 ) -> Result<Option<CoordinationSearch<'a>>> {
     match plan {
-        LogicalPlan::SubqueryAlias(alias) => descend_to_combiner(alias.input.as_ref(), search),
+        LogicalPlan::SubqueryAlias(alias) => {
+            if search.surface.is_some() {
+                search.branch_input = Some(alias.input.as_ref());
+            }
+            descend_to_combiner(alias.input.as_ref(), search)
+        }
         LogicalPlan::Sort(sort) => {
             if search.effective_sort.is_none() {
                 search.effective_sort = Some(LogicalPlan::Sort(sort.clone()));
+            }
+            if search.surface.is_none()
+                && let Some(surface) = SurfaceCall::collect(
+                    &sort.expr.iter().map(|sort_expr| sort_expr.expr.clone()).collect::<Vec<_>>(),
+                )?
+            {
+                search.surface = Some(surface);
+                search.branch_input = Some(sort.input.as_ref());
+            } else if search.surface.is_some() {
+                search.branch_input = Some(sort.input.as_ref());
             }
             descend_to_combiner(sort.input.as_ref(), search)
         }
         LogicalPlan::Projection(projection) => {
             if let Some(surface) = SurfaceCall::collect(&projection.expr)? {
+                if let Some(existing) = &search.surface
+                    && !existing.same_semantics(&surface)
+                {
+                    return Ok(None);
+                }
                 search.surface = Some(surface);
                 search.combiner_projection = Some(LogicalPlan::Projection(projection.clone()));
                 search.branch_input = Some(projection.input.as_ref());
                 Ok(Some(search))
             } else if projection_preserves_coordination(projection) {
                 search.preserved_projections.push(LogicalPlan::Projection(projection.clone()));
+                if search.surface.is_some() {
+                    search.branch_input = Some(projection.input.as_ref());
+                }
                 descend_to_combiner(projection.input.as_ref(), search)
             } else {
                 Ok(None)
             }
         }
-        _ => Ok(None),
+        _ => Ok(search.surface.is_some().then_some(search)),
     }
 }
 
@@ -170,44 +191,38 @@ fn projection_expr_preserves_coordination(expr: &Expr) -> bool {
 }
 
 fn try_rewrite_local_formula(plan: &LogicalPlan) -> Result<Option<LogicalPlan>> {
-    let LogicalPlan::Projection(projection) = plan else {
+    let exprs = plan.expressions();
+    if exprs.is_empty() {
         return Ok(None);
-    };
+    }
     let mut transformed = false;
-    let mut exprs = Vec::with_capacity(projection.expr.len());
-    for expr in &projection.expr {
-        let rewritten = rewrite_local_formula_expr(expr, projection.input.schema())?;
+    let mut rewritten_exprs = Vec::with_capacity(exprs.len());
+    for expr in &exprs {
+        let rewritten = rewrite_local_formula_expr(expr)?;
         transformed |= rewritten.transformed;
-        exprs.push(rewritten.data);
+        rewritten_exprs.push(rewritten.data);
     }
     if !transformed {
         return Ok(None);
     }
-    plan.with_new_exprs(exprs, vec![projection.input.as_ref().clone()])?
+    plan.with_new_exprs(rewritten_exprs, plan.inputs().into_iter().cloned().collect())?
         .recompute_schema()
         .map(Some)
 }
 
-fn rewrite_local_formula_expr(
-    expr: &Expr,
-    input_schema: &DFSchemaRef,
-) -> Result<Transformed<Expr>> {
+fn rewrite_local_formula_expr(expr: &Expr) -> Result<Transformed<Expr>> {
     expr.clone().transform_up(|nested| {
         let Some(call) = FormulaCall::from_expr(&nested)? else {
             return Ok(Transformed::no(nested));
         };
-        let Some(rewritten) = rewrite_formula_for_local_fallback(&call.formula, input_schema)?
-        else {
+        let Some(rewritten) = rewrite_formula_for_local_fallback(&call.formula)? else {
             return Ok(Transformed::no(nested));
         };
         Ok(Transformed::yes(rewritten))
     })
 }
 
-fn rewrite_formula_for_local_fallback(
-    expr: &Expr,
-    _input_schema: &DFSchemaRef,
-) -> Result<Option<Expr>> {
+fn rewrite_formula_for_local_fallback(expr: &Expr) -> Result<Option<Expr>> {
     let mut supported = true;
     let rewritten = expr.clone().transform_up(|nested| {
         if SurfaceCall::from_expr(&nested)?.is_some()

@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::hash::Hash;
 
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
@@ -23,6 +23,7 @@ use crate::pushdown::filter::QdrantFilters;
 pub(crate) struct QueryOp {
     query: QueryKind,
     query_score_outputs: OutputNames,
+    payload_outputs: PayloadOutputs,
     score_threshold: Option<f32>,
     sorted: bool,
     prefetch: Vec<QueryPrefetchBranch>,
@@ -33,6 +34,7 @@ impl QueryOp {
         Self {
             query: QueryKind::from_surface(surface),
             query_score_outputs: OutputNames::default(),
+            payload_outputs: PayloadOutputs::default(),
             score_threshold: None,
             sorted: false,
             prefetch: vec![],
@@ -54,6 +56,8 @@ impl QueryOp {
         }
         self.query_score_outputs =
             OutputNames::from_projection(plan, |expr| self.is_query_score_expr(expr))?;
+        self.payload_outputs =
+            PayloadOutputs::from_projection(plan, |expr| self.payload_output_path(expr));
         Ok(Some(self))
     }
 
@@ -158,6 +162,11 @@ impl QueryOp {
             &distinct_on.schema,
             |expr| self.is_query_score_expr(expr),
         )?;
+        self.payload_outputs = PayloadOutputs::from_exprs_and_schema(
+            &distinct_on.select_expr,
+            &distinct_on.schema,
+            |expr| self.payload_output_path(expr),
+        );
         let exact_filters = filters.exact(&source)?;
         Ok(Some(KernelState::new(KernelSpec::QueryGroups(QueryGroupsKernel::new(
             source,
@@ -172,7 +181,16 @@ impl QueryOp {
 
     fn projection_expr_supported(&self, expr: &Expr) -> Result<bool> {
         let expr = expr.clone().unalias_nested().data;
-        Ok(matches!(expr, Expr::Column(_)) || self.is_query_score_expr(&expr)?)
+        Ok(matches!(expr, Expr::Column(_))
+            || self.is_query_score_expr(&expr)?
+            || self.payload_output_path(&expr).is_some())
+    }
+
+    fn payload_output_path(&self, expr: &Expr) -> Option<String> {
+        if let Some(path) = self.payload_outputs.path_for_expr(expr) {
+            return Some(path);
+        }
+        QdrantPayloadPath::from_logical_expr(expr).map(|path| path.key().to_owned())
     }
 
     fn is_query_score_expr(&self, expr: &Expr) -> Result<bool> {
@@ -230,6 +248,10 @@ impl QueryOp {
 
     pub(crate) fn score_output_names(&self) -> BTreeSet<String> {
         self.query_score_outputs.names()
+    }
+
+    pub(crate) fn payload_output_paths(&self) -> BTreeMap<String, String> {
+        self.payload_outputs.paths()
     }
 
     pub(crate) fn score_threshold(&self) -> Option<f32> {
@@ -472,5 +494,42 @@ impl OutputNames {
             }
         }
         Ok(Self(names))
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct PayloadOutputs(BTreeMap<String, String>);
+
+impl PayloadOutputs {
+    fn path_for_expr(&self, expr: &Expr) -> Option<String> {
+        match expr.clone().unalias_nested().data {
+            Expr::Column(column) => self.0.get(&column.name).cloned(),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn paths(&self) -> BTreeMap<String, String> {
+        self.0.clone()
+    }
+
+    fn from_projection(plan: &LogicalPlan, matches: impl FnMut(&Expr) -> Option<String>) -> Self {
+        let LogicalPlan::Projection(projection) = plan else {
+            unreachable!("prototype projection state mismatch");
+        };
+        Self::from_exprs_and_schema(&projection.expr, &projection.schema, matches)
+    }
+
+    fn from_exprs_and_schema(
+        exprs: &[Expr],
+        schema: &DFSchemaRef,
+        mut matches: impl FnMut(&Expr) -> Option<String>,
+    ) -> Self {
+        let mut paths = BTreeMap::new();
+        for (index, expr) in exprs.iter().enumerate() {
+            if let Some(path) = matches(expr) {
+                drop(paths.insert(schema.field(index).name().clone(), path));
+            }
+        }
+        Self(paths)
     }
 }

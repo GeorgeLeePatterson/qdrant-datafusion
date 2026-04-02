@@ -1,5 +1,5 @@
 //! Schema-driven [`RecordBatch`] builder for `Qdrant` data.
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
 use datafusion::arrow::array::{
@@ -9,10 +9,10 @@ use datafusion::arrow::array::{
 use datafusion::arrow::buffer::{NullBuffer, OffsetBuffer, ScalarBuffer};
 use datafusion::arrow::datatypes::{DataType, Field, SchemaRef};
 use datafusion::arrow::record_batch::RecordBatch;
-use datafusion::common::exec_err;
+use datafusion::common::{ScalarValue, exec_err};
 use datafusion::error::{DataFusionError, Result as DataFusionResult};
 use qdrant_client::qdrant::{
-    PointId, RetrievedPoint, ScoredPoint, Value, VectorOutput, VectorsOutput, point_id,
+    PointId, RetrievedPoint, ScoredPoint, Value, VectorOutput, VectorsOutput, point_id, value,
     vector_output, vectors_output,
 };
 
@@ -365,10 +365,46 @@ impl SparseVectorRows {
 enum FieldAppender {
     Id(StringBuilder),
     Payload(StringBuilder),
+    PayloadScalar(PayloadScalarRows),
     Score(Float32Builder),
     DenseVector(DenseVectorRows),
     MultiVector(MultiVectorRows),
     SparseVector(SparseVectorRows),
+}
+
+struct PayloadScalarRows {
+    name: String,
+    path: String,
+    data_type: DataType,
+    values: Vec<ScalarValue>,
+}
+
+impl PayloadScalarRows {
+    fn new(field: &Field, path: String, capacity: usize) -> Self {
+        Self {
+            name: field.name().clone(),
+            path,
+            data_type: field.data_type().clone(),
+            values: Vec::with_capacity(capacity),
+        }
+    }
+
+    fn push(&mut self, payload: &HashMap<String, Value>) -> DataFusionResult<()> {
+        self.values.push(payload_scalar_value(
+            &self.name,
+            &self.path,
+            &self.data_type,
+            payload_value_at_path(payload, &self.path),
+        )?);
+        Ok(())
+    }
+
+    fn finish(self) -> DataFusionResult<ArrayRef> {
+        if self.values.is_empty() {
+            return Ok(datafusion::arrow::array::new_empty_array(&self.data_type));
+        }
+        ScalarValue::iter_to_array(self.values)
+    }
 }
 
 pub struct QdrantRecordBatchBuilder {
@@ -385,6 +421,7 @@ impl QdrantRecordBatchBuilder {
         schema: SchemaRef,
         point_count: usize,
         score_field_names: Option<&BTreeSet<String>>,
+        payload_output_paths: &BTreeMap<String, String>,
     ) -> DataFusionResult<Self> {
         let field_appenders = schema
             .fields()
@@ -399,6 +436,12 @@ impl QdrantRecordBatchBuilder {
                     Ok(FieldAppender::Payload(StringBuilder::with_capacity(
                         point_count,
                         point_count * 64,
+                    )))
+                } else if let Some(path) = payload_output_paths.get(field.name()) {
+                    Ok(FieldAppender::PayloadScalar(PayloadScalarRows::new(
+                        field,
+                        path.clone(),
+                        point_count,
                     )))
                 } else if score_field_names.is_some_and(|names| names.contains(field.name())) {
                     Ok(FieldAppender::Score(Float32Builder::with_capacity(point_count)))
@@ -496,6 +539,7 @@ impl QdrantRecordBatchBuilder {
                     serde_json::to_string(payload)
                         .map_err(|error| DataFusionError::External(Box::new(error)))?,
                 ),
+                FieldAppender::PayloadScalar(rows) => rows.push(payload)?,
                 FieldAppender::Score(builder) => builder.append_option(score),
                 FieldAppender::DenseVector(rows) => {
                     rows.push(take_vector(
@@ -539,6 +583,7 @@ impl QdrantRecordBatchBuilder {
                 FieldAppender::Id(mut builder) | FieldAppender::Payload(mut builder) => {
                     Ok(Arc::new(builder.finish()) as ArrayRef)
                 }
+                FieldAppender::PayloadScalar(rows) => rows.finish(),
                 FieldAppender::Score(mut builder) => Ok(Arc::new(builder.finish()) as ArrayRef),
                 FieldAppender::DenseVector(rows) => rows.finish(),
                 FieldAppender::MultiVector(rows) => rows.finish(),
@@ -588,6 +633,161 @@ fn take_vector(
     }
 }
 
+fn payload_value_at_path<'a>(payload: &'a HashMap<String, Value>, path: &str) -> Option<&'a Value> {
+    let mut segments = path.split('.');
+    let mut current = payload.get(segments.next()?)?;
+    for segment in segments {
+        let value::Kind::StructValue(struct_value) = current.kind.as_ref()? else {
+            return None;
+        };
+        current = struct_value.fields.get(segment)?;
+    }
+    Some(current)
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "payload scalar materialization follows the projected Arrow type contract"
+)]
+fn payload_scalar_value(
+    name: &str,
+    path: &str,
+    data_type: &DataType,
+    value: Option<&Value>,
+) -> DataFusionResult<ScalarValue> {
+    let Some(value) = value else {
+        return ScalarValue::try_new_null(data_type);
+    };
+    match data_type {
+        DataType::Utf8 => Ok(ScalarValue::Utf8(Some(payload_string_value(value)))),
+        DataType::LargeUtf8 => Ok(ScalarValue::LargeUtf8(Some(payload_string_value(value)))),
+        DataType::Boolean => Ok(ScalarValue::Boolean(Some(payload_bool_value(name, path, value)?))),
+        DataType::Int8 => Ok(ScalarValue::Int8(Some(
+            i8::try_from(payload_i64_value(name, path, value)?).map_err(|_| {
+                DataFusionError::Execution(format!(
+                    "payload output field '{name}' at path '{path}' exceeds Int8 range"
+                ))
+            })?,
+        ))),
+        DataType::Int16 => Ok(ScalarValue::Int16(Some(
+            i16::try_from(payload_i64_value(name, path, value)?).map_err(|_| {
+                DataFusionError::Execution(format!(
+                    "payload output field '{name}' at path '{path}' exceeds Int16 range"
+                ))
+            })?,
+        ))),
+        DataType::Int32 => Ok(ScalarValue::Int32(Some(
+            i32::try_from(payload_i64_value(name, path, value)?).map_err(|_| {
+                DataFusionError::Execution(format!(
+                    "payload output field '{name}' at path '{path}' exceeds Int32 range"
+                ))
+            })?,
+        ))),
+        DataType::Int64 => Ok(ScalarValue::Int64(Some(payload_i64_value(name, path, value)?))),
+        DataType::UInt8 => Ok(ScalarValue::UInt8(Some(
+            u8::try_from(payload_u64_value(name, path, value)?).map_err(|_| {
+                DataFusionError::Execution(format!(
+                    "payload output field '{name}' at path '{path}' exceeds UInt8 range"
+                ))
+            })?,
+        ))),
+        DataType::UInt16 => Ok(ScalarValue::UInt16(Some(
+            u16::try_from(payload_u64_value(name, path, value)?).map_err(|_| {
+                DataFusionError::Execution(format!(
+                    "payload output field '{name}' at path '{path}' exceeds UInt16 range"
+                ))
+            })?,
+        ))),
+        DataType::UInt32 => Ok(ScalarValue::UInt32(Some(
+            u32::try_from(payload_u64_value(name, path, value)?).map_err(|_| {
+                DataFusionError::Execution(format!(
+                    "payload output field '{name}' at path '{path}' exceeds UInt32 range"
+                ))
+            })?,
+        ))),
+        DataType::UInt64 => Ok(ScalarValue::UInt64(Some(payload_u64_value(name, path, value)?))),
+        DataType::Float32 => {
+            Ok(ScalarValue::Float32(Some(payload_f64_value(name, path, value)? as f32)))
+        }
+        DataType::Float64 => Ok(ScalarValue::Float64(Some(payload_f64_value(name, path, value)?))),
+        _ => exec_err!(
+            "payload output field '{name}' at path '{path}' has unsupported projected type {}",
+            data_type
+        ),
+    }
+}
+
+fn payload_string_value(value: &Value) -> String {
+    match value.kind.as_ref() {
+        Some(value::Kind::StringValue(string)) => string.clone(),
+        Some(value::Kind::IntegerValue(integer)) => integer.to_string(),
+        Some(value::Kind::DoubleValue(double)) => double.to_string(),
+        Some(value::Kind::BoolValue(boolean)) => boolean.to_string(),
+        Some(value::Kind::NullValue(_)) | None => "null".to_owned(),
+        Some(value::Kind::StructValue(_) | value::Kind::ListValue(_)) => {
+            serde_json::Value::from(value.clone()).to_string()
+        }
+    }
+}
+
+fn payload_bool_value(name: &str, path: &str, value: &Value) -> DataFusionResult<bool> {
+    if let Some(value::Kind::BoolValue(boolean)) = value.kind.as_ref() {
+        Ok(*boolean)
+    } else {
+        exec_err!(
+            "payload output field '{name}' at path '{path}' expected bool, found {}",
+            payload_value_kind(value)
+        )
+    }
+}
+
+fn payload_i64_value(name: &str, path: &str, value: &Value) -> DataFusionResult<i64> {
+    if let Some(value::Kind::IntegerValue(integer)) = value.kind.as_ref() {
+        Ok(*integer)
+    } else {
+        exec_err!(
+            "payload output field '{name}' at path '{path}' expected integer, found {}",
+            payload_value_kind(value)
+        )
+    }
+}
+
+fn payload_u64_value(name: &str, path: &str, value: &Value) -> DataFusionResult<u64> {
+    let integer = payload_i64_value(name, path, value)?;
+    u64::try_from(integer).map_err(|_| {
+        DataFusionError::Execution(format!(
+            "payload output field '{name}' at path '{path}' expected non-negative integer"
+        ))
+    })
+}
+
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "integer payload values may be projected into floating-point outputs"
+)]
+fn payload_f64_value(name: &str, path: &str, value: &Value) -> DataFusionResult<f64> {
+    match value.kind.as_ref() {
+        Some(value::Kind::DoubleValue(double)) => Ok(*double),
+        Some(value::Kind::IntegerValue(integer)) => Ok(*integer as f64),
+        _ => exec_err!(
+            "payload output field '{name}' at path '{path}' expected numeric, found {}",
+            payload_value_kind(value)
+        ),
+    }
+}
+
+fn payload_value_kind(value: &Value) -> &'static str {
+    match value.kind.as_ref() {
+        Some(value::Kind::BoolValue(_)) => "bool",
+        Some(value::Kind::IntegerValue(_)) => "integer",
+        Some(value::Kind::DoubleValue(_)) => "double",
+        Some(value::Kind::StringValue(_)) => "string",
+        Some(value::Kind::StructValue(_)) => "struct",
+        Some(value::Kind::ListValue(_)) => "list",
+        Some(value::Kind::NullValue(_)) | None => "null",
+    }
+}
+
 fn validate_null_count(
     name: &str,
     row_count: usize,
@@ -615,6 +815,7 @@ mod tests {
     };
     use datafusion::arrow::array::Array;
     use datafusion::arrow::array::types::Float32Type;
+    use datafusion::arrow::array::{Int64Array, StringArray};
     use datafusion::arrow::datatypes::Schema;
     use ndarrow::{
         CsrMatrixBatchExtension, csr_matrix_batch_iter, fixed_size_list_as_array2,
@@ -661,7 +862,8 @@ mod tests {
             ),
         ]));
         let mut builder =
-            QdrantRecordBatchBuilder::new(Arc::clone(&schema), 1, None).expect("builder");
+            QdrantRecordBatchBuilder::new(Arc::clone(&schema), 1, None, &BTreeMap::new())
+                .expect("builder");
 
         builder
             .append_retrieved_point(RetrievedPoint {
@@ -701,7 +903,8 @@ mod tests {
                 true,
             ),
         ]));
-        let mut builder = QdrantRecordBatchBuilder::new(schema, 1, None).expect("builder");
+        let mut builder =
+            QdrantRecordBatchBuilder::new(schema, 1, None, &BTreeMap::new()).expect("builder");
 
         let result = builder.append_retrieved_point(RetrievedPoint {
             id: Some(1_u64.into()),
@@ -719,6 +922,61 @@ mod tests {
         });
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn append_retrieved_point_materializes_payload_path_outputs() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(ID_FIELD_NAME, DataType::Utf8, false),
+            Field::new("rank", DataType::Int64, true),
+            Field::new("tag", DataType::Utf8, true),
+            Field::new("nested_rank", DataType::Int64, true),
+        ]));
+        let payload_outputs = BTreeMap::from([
+            ("rank".to_owned(), "rank".to_owned()),
+            ("tag".to_owned(), "tag".to_owned()),
+            ("nested_rank".to_owned(), "metadata.rank".to_owned()),
+        ]);
+        let mut builder =
+            QdrantRecordBatchBuilder::new(schema, 1, None, &payload_outputs).expect("builder");
+
+        let mut payload = HashMap::new();
+        drop(payload.insert("rank".to_owned(), Value { kind: Some(value::Kind::IntegerValue(7)) }));
+        drop(payload.insert(
+            "tag".to_owned(),
+            Value { kind: Some(value::Kind::StringValue("gold".to_owned())) },
+        ));
+        drop(payload.insert(
+            "metadata".to_owned(),
+            Value {
+                kind: Some(value::Kind::StructValue(qdrant_client::qdrant::Struct {
+                    fields: HashMap::from([(
+                        "rank".to_owned(),
+                        Value { kind: Some(value::Kind::IntegerValue(3)) },
+                    )]),
+                })),
+            },
+        ));
+
+        builder
+            .append_retrieved_point(RetrievedPoint {
+                id: Some(1_u64.into()),
+                payload,
+                vectors: None,
+                shard_key: None,
+                order_value: None,
+            })
+            .expect("append point");
+
+        let batch = builder.finish().expect("batch");
+        let ranks = batch.column(1).as_any().downcast_ref::<Int64Array>().expect("rank int64");
+        let tags = batch.column(2).as_any().downcast_ref::<StringArray>().expect("tag utf8");
+        let nested =
+            batch.column(3).as_any().downcast_ref::<Int64Array>().expect("nested rank int64");
+
+        assert_eq!(ranks.value(0), 7);
+        assert_eq!(tags.value(0), "gold");
+        assert_eq!(nested.value(0), 3);
     }
 
     #[test]

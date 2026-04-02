@@ -92,8 +92,13 @@ impl QdrantScrollState {
         }
         let ordered = ordered.map(|ordered| ordered.next(&result)).transpose()?;
         let point_count = result.len();
-        let mut builder =
-            QdrantRecordBatchBuilder::new(Arc::clone(&pushdown.schema), point_count, None)?;
+        let payload_output_paths = std::collections::BTreeMap::new();
+        let mut builder = QdrantRecordBatchBuilder::new(
+            Arc::clone(&pushdown.schema),
+            point_count,
+            None,
+            &payload_output_paths,
+        )?;
         for point in result {
             builder.append_retrieved_point(point)?;
         }
