@@ -17,6 +17,8 @@ use crate::arrow::schema::ID_FIELD_NAME;
 use crate::expr_fn::{
     ConditionCall, DatetimeValueCall, DecayCall, FORMULA_SCORE_FUNCTION_NAME,
     FUSION_SCORE_FUNCTION_NAME, FormulaCall, GeoDistanceCall, PayloadDatetimeCall, PayloadNumCall,
+    qdrant_payload_bool_access, qdrant_payload_datetime_access, qdrant_payload_float_access,
+    qdrant_payload_int_access, qdrant_payload_text_access,
 };
 use crate::pushdown::QdrantPayloadPath;
 
@@ -43,7 +45,21 @@ impl OptimizerRule for CoordinatedCombiners {
         _config: &dyn OptimizerConfig,
     ) -> std::result::Result<Transformed<LogicalPlan>, datafusion::common::DataFusionError> {
         let transformed = plan.transform_up(|plan| {
+            if let Some(rewritten) = try_rewrite_sort_through_projection(&plan)? {
+                Ok(Transformed::yes(rewritten))
+            } else {
+                Ok(Transformed::no(plan))
+            }
+        })?;
+        let transformed = transformed.data.transform_up(|plan| {
             if let Some(rewritten) = try_rewrite_combiner(&plan)? {
+                Ok(Transformed::yes(rewritten))
+            } else {
+                Ok(Transformed::no(plan))
+            }
+        })?;
+        let transformed = transformed.data.transform_up(|plan| {
+            if let Some(rewritten) = try_rewrite_local_payload_projection(&plan)? {
                 Ok(Transformed::yes(rewritten))
             } else {
                 Ok(Transformed::no(plan))
@@ -59,6 +75,56 @@ impl OptimizerRule for CoordinatedCombiners {
         reject_unlowered_coordinated_combiners(&transformed.data)?;
         Ok(transformed)
     }
+}
+
+fn try_rewrite_sort_through_projection(plan: &LogicalPlan) -> Result<Option<LogicalPlan>> {
+    let LogicalPlan::Sort(sort) = plan else {
+        return Ok(None);
+    };
+    let LogicalPlan::Projection(projection) = sort.input.as_ref() else {
+        return Ok(None);
+    };
+    if SurfaceCall::collect(&projection.expr)?.is_some() {
+        return Ok(None);
+    }
+    let mut rewritten = false;
+    let mut rewritten_sort_exprs = Vec::with_capacity(sort.expr.len());
+    for sort_expr in &sort.expr {
+        let rewritten_expr = rewrite_sort_expr_through_projection(&sort_expr.expr, projection)?;
+        rewritten |= rewritten_expr.transformed;
+        rewritten_sort_exprs.push(datafusion::logical_expr::SortExpr {
+            expr: rewritten_expr.data,
+            asc: sort_expr.asc,
+            nulls_first: sort_expr.nulls_first,
+        });
+    }
+    if !rewritten {
+        return Ok(None);
+    }
+    let rewritten_sort = LogicalPlan::Sort(datafusion::logical_expr::logical_plan::Sort {
+        expr: rewritten_sort_exprs,
+        input: Arc::new(projection.input.as_ref().clone()),
+        fetch: sort.fetch,
+    });
+    LogicalPlan::Projection(projection.clone())
+        .with_new_exprs(projection.expr.clone(), vec![rewritten_sort])?
+        .recompute_schema()
+        .map(Some)
+}
+
+fn rewrite_sort_expr_through_projection(
+    expr: &Expr,
+    projection: &datafusion::logical_expr::logical_plan::Projection,
+) -> Result<Transformed<Expr>> {
+    expr.clone().transform_up(|nested| {
+        let Expr::Column(column) = &nested else {
+            return Ok(Transformed::no(nested));
+        };
+        let Ok(index) = projection.schema.index_of_column(column) else {
+            return Ok(Transformed::no(nested));
+        };
+        Ok(Transformed::yes(projection.expr[index].clone().unalias_nested().data))
+    })
 }
 
 fn try_rewrite_combiner(plan: &LogicalPlan) -> Result<Option<LogicalPlan>> {
@@ -188,6 +254,103 @@ fn projection_preserves_coordination(
 
 fn projection_expr_preserves_coordination(expr: &Expr) -> bool {
     matches!(expr.clone().unalias_nested().data, Expr::Column(_))
+}
+
+fn try_rewrite_local_payload_projection(plan: &LogicalPlan) -> Result<Option<LogicalPlan>> {
+    let LogicalPlan::Projection(projection) = plan else {
+        return Ok(None);
+    };
+    let mut transformed = false;
+    let mut rewritten_exprs = Vec::with_capacity(projection.expr.len());
+    for (index, expr) in projection.expr.iter().enumerate() {
+        if SurfaceCall::collect(std::slice::from_ref(expr))?.is_some() {
+            rewritten_exprs.push(expr.clone());
+            continue;
+        }
+        let rewritten = rewrite_local_payload_projection_expr(
+            expr,
+            projection.schema.field(index).data_type(),
+        )?;
+        transformed |= rewritten.transformed;
+        rewritten_exprs.push(rewritten.data);
+    }
+    if !transformed {
+        return Ok(None);
+    }
+    plan.with_new_exprs(rewritten_exprs, vec![projection.input.as_ref().clone()])?
+        .recompute_schema()
+        .map(Some)
+}
+
+fn rewrite_local_payload_projection_expr(
+    expr: &Expr,
+    data_type: &datafusion::arrow::datatypes::DataType,
+) -> Result<Transformed<Expr>> {
+    expr.clone()
+        .transform_up(|nested| Ok(rewrite_direct_payload_projection_expr(&nested, data_type)))
+}
+
+fn rewrite_direct_payload_projection_expr(
+    expr: &Expr,
+    data_type: &datafusion::arrow::datatypes::DataType,
+) -> Transformed<Expr> {
+    let Expr::BinaryExpr(binary) = expr.clone().unalias_nested().data else {
+        return Transformed::no(expr.clone());
+    };
+    if binary.op != datafusion::logical_expr::Operator::Colon {
+        return Transformed::no(expr.clone());
+    }
+    let Expr::Column(column) = binary.left.as_ref() else {
+        return Transformed::no(expr.clone());
+    };
+    if column.name != crate::arrow::schema::PAYLOAD_FIELD_NAME {
+        return Transformed::no(expr.clone());
+    }
+    let Some(path) = QdrantPayloadPath::from_logical_expr(expr).map(|path| path.key().to_owned())
+    else {
+        return Transformed::no(expr.clone());
+    };
+    let payload = Expr::Column(column.clone());
+    let rewritten = match data_type {
+        datafusion::arrow::datatypes::DataType::Utf8 => qdrant_payload_text_access(payload, path),
+        datafusion::arrow::datatypes::DataType::LargeUtf8 => {
+            Expr::Cast(datafusion::logical_expr::expr::Cast::new(
+                Box::new(qdrant_payload_text_access(payload, path)),
+                datafusion::arrow::datatypes::DataType::LargeUtf8,
+            ))
+        }
+        datafusion::arrow::datatypes::DataType::Boolean => {
+            qdrant_payload_bool_access(payload, path)
+        }
+        datafusion::arrow::datatypes::DataType::Int64 => qdrant_payload_int_access(payload, path),
+        datafusion::arrow::datatypes::DataType::Int8
+        | datafusion::arrow::datatypes::DataType::Int16
+        | datafusion::arrow::datatypes::DataType::Int32
+        | datafusion::arrow::datatypes::DataType::UInt8
+        | datafusion::arrow::datatypes::DataType::UInt16
+        | datafusion::arrow::datatypes::DataType::UInt32
+        | datafusion::arrow::datatypes::DataType::UInt64 => {
+            Expr::Cast(datafusion::logical_expr::expr::Cast::new(
+                Box::new(qdrant_payload_int_access(payload, path)),
+                data_type.clone(),
+            ))
+        }
+        datafusion::arrow::datatypes::DataType::Float64 => {
+            qdrant_payload_float_access(payload, path)
+        }
+        datafusion::arrow::datatypes::DataType::Float32 => {
+            Expr::Cast(datafusion::logical_expr::expr::Cast::new(
+                Box::new(qdrant_payload_float_access(payload, path)),
+                datafusion::arrow::datatypes::DataType::Float32,
+            ))
+        }
+        datafusion::arrow::datatypes::DataType::Timestamp(
+            datafusion::arrow::datatypes::TimeUnit::Millisecond,
+            None,
+        ) => qdrant_payload_datetime_access(payload, path),
+        _ => return Transformed::no(expr.clone()),
+    };
+    Transformed::yes(rewritten)
 }
 
 fn try_rewrite_local_formula(plan: &LogicalPlan) -> Result<Option<LogicalPlan>> {

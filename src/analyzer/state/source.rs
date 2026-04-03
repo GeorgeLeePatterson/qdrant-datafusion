@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::common::{Result, plan_err};
 use datafusion::datasource::source_as_provider;
 use datafusion::logical_expr::expr::Alias;
@@ -10,6 +11,10 @@ use crate::analyzer::kernel::{CountKernel, KernelSpec};
 use crate::analyzer::op::{FacetOp, Op, OutputNames};
 use crate::analyzer::source::Source;
 use crate::analyzer::surface::SurfaceCall;
+use crate::expr_fn::{
+    qdrant_payload_bool_access, qdrant_payload_datetime_access, qdrant_payload_float_access,
+    qdrant_payload_int_access, qdrant_payload_text_access,
+};
 use crate::pushdown::QdrantPayloadPath;
 use crate::pushdown::filter::QdrantFilters;
 use crate::table::QdrantTableProvider;
@@ -90,12 +95,17 @@ impl SourceState {
 
     pub(super) fn projection(
         self,
-        plan: LogicalPlan,
+        mut plan: LogicalPlan,
         transformed: bool,
     ) -> Result<super::super::Analysis> {
         let surface = SurfaceCall::collect(&plan.expressions())?;
         if let Some(surface) = surface {
             return self.open(surface)?.projection(plan, transformed);
+        }
+        let mut transformed = transformed;
+        if let Some(rewritten) = rewrite_typed_payload_projection(&plan, &self.source)? {
+            plan = rewritten;
+            transformed = true;
         }
         if let LogicalPlan::Projection(projection) = &plan
             && projection.expr.iter().all(|expr| {
@@ -211,4 +221,71 @@ impl SourceState {
             op: Op::from_surface(surface, &self.source)?,
         })
     }
+}
+
+fn rewrite_typed_payload_projection(
+    plan: &LogicalPlan,
+    source: &Source,
+) -> Result<Option<LogicalPlan>> {
+    let LogicalPlan::Projection(projection) = plan else {
+        return Ok(None);
+    };
+    let mut transformed = false;
+    let mut rewritten_exprs = Vec::with_capacity(projection.expr.len());
+    for expr in &projection.expr {
+        let rewritten = expr
+            .clone()
+            .transform_up(|nested| Ok(rewrite_typed_payload_projection_expr(&nested, source)))?;
+        transformed |= rewritten.transformed;
+        rewritten_exprs.push(rewritten.data);
+    }
+    if !transformed {
+        return Ok(None);
+    }
+    plan.with_new_exprs(rewritten_exprs, vec![projection.input.as_ref().clone()])?
+        .recompute_schema()
+        .map(Some)
+}
+
+fn rewrite_typed_payload_projection_expr(expr: &Expr, source: &Source) -> Transformed<Expr> {
+    let Expr::BinaryExpr(binary) = expr.clone().unalias_nested().data else {
+        return Transformed::no(expr.clone());
+    };
+    if binary.op != datafusion::logical_expr::Operator::Colon {
+        return Transformed::no(expr.clone());
+    }
+    let Expr::Column(column) = binary.left.as_ref() else {
+        return Transformed::no(expr.clone());
+    };
+    if column.name != crate::arrow::schema::PAYLOAD_FIELD_NAME {
+        return Transformed::no(expr.clone());
+    }
+    let Some(path) = QdrantPayloadPath::from_logical_expr(expr).map(|path| path.key().to_owned())
+    else {
+        return Transformed::no(expr.clone());
+    };
+    let payload = Expr::Column(column.clone());
+    let rewritten = match source.payload_field(&path) {
+        None => qdrant_payload_text_access(payload, path),
+        Some(field) => match field.projection_data_type() {
+            Some(datafusion::arrow::datatypes::DataType::Utf8) => {
+                qdrant_payload_text_access(payload, path)
+            }
+            Some(datafusion::arrow::datatypes::DataType::Int64) => {
+                qdrant_payload_int_access(payload, path)
+            }
+            Some(datafusion::arrow::datatypes::DataType::Float64) => {
+                qdrant_payload_float_access(payload, path)
+            }
+            Some(datafusion::arrow::datatypes::DataType::Boolean) => {
+                qdrant_payload_bool_access(payload, path)
+            }
+            Some(datafusion::arrow::datatypes::DataType::Timestamp(
+                datafusion::arrow::datatypes::TimeUnit::Millisecond,
+                None,
+            )) => qdrant_payload_datetime_access(payload, path),
+            _ => return Transformed::no(expr.clone()),
+        },
+    };
+    Transformed::yes(rewritten)
 }

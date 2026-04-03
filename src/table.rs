@@ -765,6 +765,60 @@ mod tests {
     }
 
     #[test]
+    fn physical_plan_drops_sort_exec_for_order_by_aliased_payload_path() {
+        let provider = QdrantTableProvider {
+            payload_schema: payload_schema([(
+                "rank",
+                PayloadSchemaInfo {
+                    data_type: qdrant_client::qdrant::PayloadSchemaType::Integer as i32,
+                    params: Some(qdrant_client::qdrant::PayloadIndexParams {
+                        index_params: Some(
+                            qdrant_client::qdrant::payload_index_params::IndexParams::IntegerIndexParams(
+                                IntegerIndexParams {
+                                    range: Some(true),
+                                    ..Default::default()
+                                },
+                            ),
+                        ),
+                    }),
+                    points: None,
+                },
+            )]),
+            ..test_provider(Schema::new(vec![
+                Field::new(ID_FIELD_NAME, DataType::Utf8, false),
+                Field::new(PAYLOAD_FIELD_NAME, DataType::Utf8, true),
+            ]))
+        };
+        let ctx = QdrantSessionContext::from(SessionContext::new());
+        drop(
+            ctx.session_context()
+                .register_table("vectors", Arc::new(provider.clone()))
+                .expect("register table"),
+        );
+        let dataframe = ctx
+            .sql("SELECT id, payload:rank AS rank FROM vectors ORDER BY rank")
+            .now_or_never()
+            .expect("sql future is ready")
+            .expect("dataframe");
+        let plan = dataframe
+            .create_physical_plan()
+            .now_or_never()
+            .expect("plan future is ready")
+            .expect("physical plan");
+        let display = displayable(plan.as_ref()).indent(true).to_string();
+        let scan = qdrant_scan(&plan);
+
+        assert!(!display.contains("SortExec"), "{display}");
+        assert_eq!(
+            scan.pushdown.ordering,
+            QdrantOrdering::ByPayload(QdrantPayloadOrdering {
+                field: "rank".to_owned(),
+                descending: false,
+            }),
+        );
+    }
+
+    #[test]
     fn physical_plan_drops_filter_exec_for_id_in() {
         let provider =
             test_provider(Schema::new(vec![Field::new(ID_FIELD_NAME, DataType::Utf8, false)]));

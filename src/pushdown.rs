@@ -2,6 +2,7 @@ pub(crate) mod filter;
 
 use std::collections::HashMap;
 
+use datafusion::arrow::datatypes::{DataType, TimeUnit};
 use datafusion::common::ScalarValue;
 use datafusion::logical_expr::expr::BinaryExpr;
 use datafusion::logical_expr::{Expr, Operator};
@@ -30,6 +31,17 @@ pub(crate) enum QdrantPayloadField {
 }
 
 impl QdrantPayloadField {
+    pub(crate) fn projection_data_type(self) -> Option<DataType> {
+        match self {
+            QdrantPayloadField::Keyword | QdrantPayloadField::Uuid => Some(DataType::Utf8),
+            QdrantPayloadField::Integer { .. } => Some(DataType::Int64),
+            QdrantPayloadField::Float => Some(DataType::Float64),
+            QdrantPayloadField::Bool => Some(DataType::Boolean),
+            QdrantPayloadField::Datetime => Some(DataType::Timestamp(TimeUnit::Millisecond, None)),
+            QdrantPayloadField::Geo => None,
+        }
+    }
+
     pub(crate) fn supports_equality(self) -> bool {
         matches!(
             self,
@@ -109,6 +121,10 @@ impl QdrantPayloadPath {
 impl QdrantPayloadSchema {
     pub(crate) fn field(&self, field: &str) -> Option<QdrantPayloadField> {
         self.fields.get(field).copied()
+    }
+
+    pub(crate) fn field_for_path(&self, path: &str) -> Option<QdrantPayloadField> {
+        self.field(path).or_else(|| path.split('.').next().and_then(|prefix| self.field(prefix)))
     }
 }
 
@@ -321,5 +337,10 @@ mod tests {
         assert_eq!(schema.field("tag"), Some(QdrantPayloadField::Keyword));
         assert_eq!(schema.field("active"), Some(QdrantPayloadField::Bool));
         assert_eq!(schema.field("doc_id"), Some(QdrantPayloadField::Uuid));
+        assert_eq!(schema.field_for_path("rank.value"), schema.field("rank"));
+        assert_eq!(
+            QdrantPayloadField::Datetime.projection_data_type(),
+            Some(DataType::Timestamp(TimeUnit::Millisecond, None))
+        );
     }
 }

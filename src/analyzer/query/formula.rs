@@ -471,11 +471,7 @@ fn normalize_payload_path(path: &str) -> String {
 }
 
 fn validate_payload_num(path: &str, source: &Source) -> Result<()> {
-    let field = source
-        .payload_schema
-        .field(path)
-        .or_else(|| path.split('.').next().and_then(|prefix| source.payload_schema.field(prefix)));
-    match field {
+    match source.payload_field(path) {
         Some(QdrantPayloadField::Float | QdrantPayloadField::Integer { .. }) => Ok(()),
         Some(field) => plan_err!(
             "{PAYLOAD_NUM_FUNCTION_NAME} requires '{}' to be a numeric payload field, found {:?}",
@@ -489,11 +485,7 @@ fn validate_payload_num(path: &str, source: &Source) -> Result<()> {
 }
 
 fn validate_payload_datetime(path: &str, source: &Source) -> Result<()> {
-    let field = source
-        .payload_schema
-        .field(path)
-        .or_else(|| path.split('.').next().and_then(|prefix| source.payload_schema.field(prefix)));
-    match field {
+    match source.payload_field(path) {
         Some(QdrantPayloadField::Datetime) => Ok(()),
         Some(field) => plan_err!(
             "{PAYLOAD_DATETIME_FUNCTION_NAME} requires '{}' to be a datetime payload field, found \
@@ -509,11 +501,7 @@ fn validate_payload_datetime(path: &str, source: &Source) -> Result<()> {
 }
 
 fn validate_geo_distance(path: &str, source: &Source) -> Result<()> {
-    let field = source
-        .payload_schema
-        .field(path)
-        .or_else(|| path.split('.').next().and_then(|prefix| source.payload_schema.field(prefix)));
-    match field {
+    match source.payload_field(path) {
         Some(QdrantPayloadField::Geo) => Ok(()),
         Some(field) => plan_err!(
             "{GEO_DISTANCE_FUNCTION_NAME} requires '{}' to be a geo payload field, found {:?}",
@@ -568,7 +556,7 @@ fn resolve_column(
         }
     }
 
-    match source.payload_schema.field(&column.name) {
+    match source.payload_field(&column.name) {
         Some(QdrantPayloadField::Float | QdrantPayloadField::Integer { .. }) => {
             Ok(column.name.clone())
         }

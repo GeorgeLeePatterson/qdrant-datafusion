@@ -6,6 +6,7 @@ use datafusion::config::ConfigOptions;
 use datafusion::error::Result as DataFusionResult;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr::PhysicalExpr;
+use datafusion::physical_expr::ScalarFunctionExpr;
 use datafusion::physical_expr::expressions::{BinaryExpr, Column, Literal};
 use datafusion::physical_plan::expressions::PhysicalSortExpr;
 use datafusion::physical_plan::filter_pushdown::{
@@ -18,6 +19,11 @@ use datafusion::physical_plan::{
 use super::scroll::QdrantScrollState;
 use super::{QdrantOrdering, QdrantScanExec};
 use crate::arrow::schema::{ID_FIELD_NAME, PAYLOAD_FIELD_NAME};
+use crate::expr_fn::{
+    PAYLOAD_BOOL_ACCESS_FUNCTION_NAME, PAYLOAD_DATETIME_ACCESS_FUNCTION_NAME,
+    PAYLOAD_FLOAT_ACCESS_FUNCTION_NAME, PAYLOAD_INT_ACCESS_FUNCTION_NAME,
+    PAYLOAD_TEXT_ACCESS_FUNCTION_NAME,
+};
 use crate::stream::QdrantQueryStream;
 
 impl ExecutionPlan for QdrantScanExec {
@@ -64,24 +70,7 @@ impl ExecutionPlan for QdrantScanExec {
             }
             return Ok(SortOrderPushdownResult::Exact { inner: Arc::new(self.clone()) });
         }
-        let Some(expr) = sort.expr.as_any().downcast_ref::<BinaryExpr>() else {
-            return Ok(SortOrderPushdownResult::Unsupported);
-        };
-        if *expr.op() != datafusion::logical_expr::Operator::Colon {
-            return Ok(SortOrderPushdownResult::Unsupported);
-        }
-        let Some(column) = expr.left().as_any().downcast_ref::<Column>() else {
-            return Ok(SortOrderPushdownResult::Unsupported);
-        };
-        if column.name() != PAYLOAD_FIELD_NAME {
-            return Ok(SortOrderPushdownResult::Unsupported);
-        }
-        let Some(path) = expr.right().as_any().downcast_ref::<Literal>().and_then(|literal| {
-            match literal.value() {
-                datafusion::common::ScalarValue::Utf8(Some(path)) => Some(path),
-                _ => None,
-            }
-        }) else {
+        let Some(path) = payload_sort_path(sort.expr.as_ref()) else {
             return Ok(SortOrderPushdownResult::Unsupported);
         };
         let Some(ordering) = self.payload_schema.ordering_for(path, sort.options.descending) else {
@@ -156,6 +145,45 @@ impl ExecutionPlan for QdrantScanExec {
         }));
         let stream = QdrantQueryStream::new(Arc::clone(&self.pushdown.schema), inner);
         Ok(Box::pin(stream))
+    }
+}
+
+fn payload_sort_path(expr: &dyn PhysicalExpr) -> Option<&str> {
+    if let Some(binary) = expr.as_any().downcast_ref::<BinaryExpr>()
+        && *binary.op() == datafusion::logical_expr::Operator::Colon
+    {
+        let column = binary.left().as_any().downcast_ref::<Column>()?;
+        if column.name() != PAYLOAD_FIELD_NAME {
+            return None;
+        }
+        return binary.right().as_any().downcast_ref::<Literal>().and_then(path_literal_value);
+    }
+    let function = expr.as_any().downcast_ref::<ScalarFunctionExpr>()?;
+    if !matches!(
+        function.name(),
+        PAYLOAD_TEXT_ACCESS_FUNCTION_NAME
+            | PAYLOAD_INT_ACCESS_FUNCTION_NAME
+            | PAYLOAD_FLOAT_ACCESS_FUNCTION_NAME
+            | PAYLOAD_BOOL_ACCESS_FUNCTION_NAME
+            | PAYLOAD_DATETIME_ACCESS_FUNCTION_NAME
+    ) {
+        return None;
+    }
+    let [payload, path] = function.args() else {
+        return None;
+    };
+    let column = payload.as_any().downcast_ref::<Column>()?;
+    if column.name() != PAYLOAD_FIELD_NAME {
+        return None;
+    }
+    path.as_any().downcast_ref::<Literal>().and_then(path_literal_value)
+}
+
+fn path_literal_value(literal: &Literal) -> Option<&str> {
+    match literal.value() {
+        datafusion::common::ScalarValue::Utf8(Some(path))
+        | datafusion::common::ScalarValue::LargeUtf8(Some(path)) => Some(path),
+        _ => None,
     }
 }
 

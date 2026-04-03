@@ -12,7 +12,7 @@ use qdrant_client::qdrant::point_id::PointIdOptions;
 
 use super::state::State;
 use crate::arrow::schema::QdrantFieldBinding;
-use crate::pushdown::QdrantPayloadSchema;
+use crate::pushdown::{QdrantPayloadField, QdrantPayloadSchema};
 use crate::table::QdrantTableProvider;
 
 pub(crate) fn full_row_join_keys(join: &datafusion::logical_expr::logical_plan::Join) -> bool {
@@ -85,6 +85,10 @@ impl Source {
             return datafusion::common::plan_err!("query vector field '{using}' not found");
         };
         Ok(QdrantFieldBinding::from_field(field))
+    }
+
+    pub(crate) fn payload_field(&self, path: &str) -> Option<QdrantPayloadField> {
+        self.payload_schema.field_for_path(path)
     }
 }
 

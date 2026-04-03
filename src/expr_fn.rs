@@ -6,6 +6,7 @@ mod fusion;
 mod nearest;
 mod nearest_with_mmr;
 mod order_by;
+mod payload_access;
 mod recommend;
 mod relevance_feedback;
 mod sample;
@@ -54,6 +55,14 @@ pub use self::nearest_with_mmr::{
 pub(crate) use self::nearest_with_mmr::{NearestWithMmrCall, qdrant_nearest_with_mmr_score_udf};
 pub use self::order_by::{ORDER_BY_SCORE_FUNCTION_NAME, qdrant_order_by_score};
 pub(crate) use self::order_by::{OrderByCall, qdrant_order_by_score_udf};
+pub(crate) use self::payload_access::{
+    PAYLOAD_BOOL_ACCESS_FUNCTION_NAME, PAYLOAD_DATETIME_ACCESS_FUNCTION_NAME,
+    PAYLOAD_FLOAT_ACCESS_FUNCTION_NAME, PAYLOAD_INT_ACCESS_FUNCTION_NAME,
+    PAYLOAD_TEXT_ACCESS_FUNCTION_NAME, qdrant_payload_bool_access, qdrant_payload_bool_access_udf,
+    qdrant_payload_datetime_access, qdrant_payload_datetime_access_udf,
+    qdrant_payload_float_access, qdrant_payload_float_access_udf, qdrant_payload_int_access,
+    qdrant_payload_int_access_udf, qdrant_payload_text_access, qdrant_payload_text_access_udf,
+};
 pub use self::recommend::{RECOMMEND_SCORE_FUNCTION_NAME, qdrant_recommend_score};
 pub(crate) use self::recommend::{RecommendCall, qdrant_recommend_score_udf};
 pub use self::relevance_feedback::{
@@ -82,6 +91,11 @@ pub(crate) fn register_functions(ctx: &SessionContext) {
     ctx.register_udf(qdrant_formula_score_udf());
     ctx.register_udf(qdrant_payload_num_udf());
     ctx.register_udf(qdrant_payload_datetime_udf());
+    ctx.register_udf(qdrant_payload_text_access_udf());
+    ctx.register_udf(qdrant_payload_int_access_udf());
+    ctx.register_udf(qdrant_payload_float_access_udf());
+    ctx.register_udf(qdrant_payload_bool_access_udf());
+    ctx.register_udf(qdrant_payload_datetime_access_udf());
     ctx.register_udf(qdrant_datetime_value_udf());
     ctx.register_udf(qdrant_condition_udf());
     ctx.register_udf(qdrant_geo_distance_udf());

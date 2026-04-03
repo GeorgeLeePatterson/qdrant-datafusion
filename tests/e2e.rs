@@ -29,6 +29,22 @@ e2e_test!(
 
 #[cfg(feature = "test-utils")]
 e2e_test!(
+    table_provider_orders_by_aliased_payload_field,
+    tests::test_table_provider_orders_by_aliased_payload_field,
+    TRACING_DIRECTIVES,
+    None
+);
+
+#[cfg(feature = "test-utils")]
+e2e_test!(
+    table_provider_projects_typed_payload_fields,
+    tests::test_table_provider_projects_typed_payload_fields,
+    TRACING_DIRECTIVES,
+    None
+);
+
+#[cfg(feature = "test-utils")]
+e2e_test!(
     table_provider_filters_by_id_and_vector_presence,
     tests::test_table_provider_filters_by_id_and_vector_presence,
     TRACING_DIRECTIVES,
@@ -178,7 +194,7 @@ mod tests {
 
     use datafusion::arrow::array::types::Float32Type;
     use datafusion::arrow::array::{
-        Array, FixedSizeListArray, Float32Array, Int64Array, StringArray, StructArray,
+        Array, BooleanArray, FixedSizeListArray, Float32Array, Int64Array, StringArray, StructArray,
     };
     use datafusion::arrow::datatypes::DataType;
     use datafusion::prelude::*;
@@ -772,6 +788,151 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(ids, vec![2, 3, 1]);
+
+        Ok(())
+    }
+
+    pub(super) async fn test_table_provider_orders_by_aliased_payload_field(
+        c: Arc<QdrantContainer>,
+    ) -> Result<()> {
+        let client = create_qdrant_client(&c)?;
+        let collection_name = "test_order_by_aliased_payload_field";
+        create_scalar_collection(&client, collection_name).await?;
+        create_payload_index(
+            &client,
+            collection_name,
+            "rank",
+            FieldType::Integer,
+            qdrant_client::qdrant::IntegerIndexParamsBuilder::new(true, true).build(),
+        )
+        .await?;
+        let points = vec![
+            scalar_point(1, "rank", 30_i64),
+            scalar_point(2, "rank", 10_i64),
+            scalar_point(3, "rank", 20_i64),
+        ];
+        drop(client.upsert_points(UpsertPointsBuilder::new(collection_name, points)).await?);
+
+        let table_provider = QdrantTableProvider::try_new(client.clone(), collection_name).await?;
+        let ctx = QdrantSessionContext::from(SessionContext::new());
+        drop(ctx.session_context().register_table("vectors", Arc::new(table_provider))?);
+
+        let (ids, display) =
+            collect_id_rows(&ctx, "SELECT id, payload:rank AS rank FROM vectors ORDER BY rank")
+                .await?;
+
+        assert_eq!(ids, vec![2, 3, 1]);
+        assert!(display.contains("QdrantScanExec"), "{display}");
+        assert!(!display.contains("SortExec"), "{display}");
+
+        Ok(())
+    }
+
+    pub(super) async fn test_table_provider_projects_typed_payload_fields(
+        c: Arc<QdrantContainer>,
+    ) -> Result<()> {
+        let client = create_qdrant_client(&c)?;
+        let collection_name = "test_projects_typed_payload_fields";
+        create_scalar_collection(&client, collection_name).await?;
+        create_payload_index(
+            &client,
+            collection_name,
+            "rank",
+            FieldType::Integer,
+            qdrant_client::qdrant::IntegerIndexParamsBuilder::new(true, true).build(),
+        )
+        .await?;
+        create_payload_index(
+            &client,
+            collection_name,
+            "active",
+            FieldType::Bool,
+            qdrant_client::qdrant::BoolIndexParamsBuilder::default().build(),
+        )
+        .await?;
+        create_payload_index(
+            &client,
+            collection_name,
+            "tag",
+            FieldType::Keyword,
+            qdrant_client::qdrant::KeywordIndexParamsBuilder::default().build(),
+        )
+        .await?;
+
+        let mut payload1 = qdrant_client::Payload::new();
+        payload1.insert("rank", 10_i64);
+        payload1.insert("active", true);
+        payload1.insert("tag", "red");
+        let mut payload2 = qdrant_client::Payload::new();
+        payload2.insert("rank", 20_i64);
+        payload2.insert("active", false);
+        payload2.insert("tag", "blue");
+
+        let points = vec![
+            PointStruct::new(1, Vector::new_dense(vec![0.0]), payload1),
+            PointStruct::new(2, Vector::new_dense(vec![0.0]), payload2),
+        ];
+        drop(client.upsert_points(UpsertPointsBuilder::new(collection_name, points)).await?);
+
+        let table_provider = QdrantTableProvider::try_new(client.clone(), collection_name).await?;
+        let ctx = QdrantSessionContext::from(SessionContext::new());
+        drop(ctx.session_context().register_table("vectors", Arc::new(table_provider))?);
+
+        let dataframe = ctx
+            .sql(
+                "SELECT id, payload:rank AS rank, payload:active AS active, payload:tag AS tag, \
+                 CAST(payload:rank AS BIGINT) + 1 AS next_rank FROM vectors ORDER BY id",
+            )
+            .await?;
+        let batches = dataframe.collect().await?;
+        let batch = batches.into_iter().next().expect("typed payload batch");
+
+        let ids = batch
+            .column(batch.schema().index_of("id").expect("id column"))
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("id string array")
+            .iter()
+            .map(|value| value.expect("non-null id").parse::<u64>().expect("numeric id"))
+            .collect::<Vec<_>>();
+        let ranks = batch
+            .column(batch.schema().index_of("rank").expect("rank column"))
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .expect("rank int64 array")
+            .iter()
+            .map(|value| value.expect("non-null rank"))
+            .collect::<Vec<_>>();
+        let active = batch
+            .column(batch.schema().index_of("active").expect("active column"))
+            .as_any()
+            .downcast_ref::<BooleanArray>()
+            .expect("active bool array")
+            .iter()
+            .map(|value| value.expect("non-null active"))
+            .collect::<Vec<_>>();
+        let tags = batch
+            .column(batch.schema().index_of("tag").expect("tag column"))
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("tag string array")
+            .iter()
+            .map(|value| value.expect("non-null tag").to_owned())
+            .collect::<Vec<_>>();
+        let next_ranks = batch
+            .column(batch.schema().index_of("next_rank").expect("next_rank column"))
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .expect("next_rank int64 array")
+            .iter()
+            .map(|value| value.expect("non-null next_rank"))
+            .collect::<Vec<_>>();
+
+        assert_eq!(ids, vec![1, 2]);
+        assert_eq!(ranks, vec![10, 20]);
+        assert_eq!(active, vec![true, false]);
+        assert_eq!(tags, vec!["red".to_owned(), "blue".to_owned()]);
+        assert_eq!(next_ranks, vec![11, 21]);
 
         Ok(())
     }
