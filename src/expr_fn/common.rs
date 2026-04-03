@@ -29,8 +29,8 @@ pub(crate) fn column_name(expr: &Expr, function_name: &str) -> Result<String> {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct NonExecutableScoreUdf {
-    name: &'static str,
-    aliases: Vec<String>,
+    name:      &'static str,
+    aliases:   Vec<String>,
     signature: Signature,
 }
 
@@ -45,25 +45,15 @@ impl NonExecutableScoreUdf {
 }
 
 impl ScalarUDFImpl for NonExecutableScoreUdf {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
+    fn as_any(&self) -> &dyn Any { self }
 
-    fn name(&self) -> &str {
-        self.name
-    }
+    fn name(&self) -> &str { self.name }
 
-    fn aliases(&self) -> &[String] {
-        &self.aliases
-    }
+    fn aliases(&self) -> &[String] { &self.aliases }
 
-    fn signature(&self) -> &Signature {
-        &self.signature
-    }
+    fn signature(&self) -> &Signature { &self.signature }
 
-    fn return_type(&self, _arg_types: &[DataType]) -> Result<DataType> {
-        Ok(DataType::Float32)
-    }
+    fn return_type(&self, _arg_types: &[DataType]) -> Result<DataType> { Ok(DataType::Float32) }
 
     fn return_field_from_args(
         &self,
@@ -79,9 +69,9 @@ impl ScalarUDFImpl for NonExecutableScoreUdf {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct NonExecutableMarkerUdf {
-    name: &'static str,
-    aliases: Vec<String>,
-    signature: Signature,
+    name:        &'static str,
+    aliases:     Vec<String>,
+    signature:   Signature,
     return_type: DataType,
 }
 
@@ -97,21 +87,13 @@ impl NonExecutableMarkerUdf {
 }
 
 impl ScalarUDFImpl for NonExecutableMarkerUdf {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
+    fn as_any(&self) -> &dyn Any { self }
 
-    fn name(&self) -> &str {
-        self.name
-    }
+    fn name(&self) -> &str { self.name }
 
-    fn aliases(&self) -> &[String] {
-        &self.aliases
-    }
+    fn aliases(&self) -> &[String] { &self.aliases }
 
-    fn signature(&self) -> &Signature {
-        &self.signature
-    }
+    fn signature(&self) -> &Signature { &self.signature }
 
     fn return_type(&self, _arg_types: &[DataType]) -> Result<DataType> {
         Ok(self.return_type.clone())

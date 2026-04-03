@@ -15,9 +15,7 @@ use datafusion::physical_expr::utils::{
 };
 
 use super::value::point_id_scalar;
-use super::{
-    QdrantFieldRef, QdrantFilterExpr, QdrantPayloadPath, QdrantPayloadSchema, QdrantPredicate,
-};
+use super::{QdrantFieldRef, QdrantFilterExpr, QdrantPayloadSchema, QdrantPredicate};
 use crate::arrow::schema::{ID_FIELD_NAME, QdrantFieldBinding, UNNAMED_VECTOR_FIELD_NAME};
 
 pub(super) fn exact_expr(
@@ -37,7 +35,7 @@ pub(super) fn exact_physical_expr(
 }
 
 struct QdrantExprNormalizer<'a> {
-    base_schema: &'a SchemaRef,
+    base_schema:    &'a SchemaRef,
     payload_schema: &'a QdrantPayloadSchema,
 }
 
@@ -63,19 +61,23 @@ impl<'a> QdrantExprNormalizer<'a> {
                     .collect::<Option<Vec<_>>>()?,
             )),
             Expr::BinaryExpr(BinaryExpr { left, op, right }) => self.filter_expr_from_refs(
-                QdrantFieldRef::from_logical_expr(self.base_schema, left),
-                QdrantFieldRef::from_logical_expr(self.base_schema, right),
+                QdrantFieldRef::from_logical_expr(self.base_schema, self.payload_schema, left),
+                QdrantFieldRef::from_logical_expr(self.base_schema, self.payload_schema, right),
                 *op,
                 Self::logical_scalar_literal(left),
                 Self::logical_scalar_literal(right),
             ),
             Expr::InList(InList { expr, list, negated }) => self.in_list_expr_from_refs(
-                QdrantFieldRef::from_logical_expr(self.base_schema, expr),
+                QdrantFieldRef::from_logical_expr(self.base_schema, self.payload_schema, expr),
                 list.iter().map(Self::logical_scalar_literal).collect::<Option<Vec<_>>>(),
                 *negated,
             ),
             Expr::IsNull(expr) => {
-                match QdrantFieldRef::from_logical_expr(self.base_schema, expr)? {
+                match QdrantFieldRef::from_logical_expr(
+                    self.base_schema,
+                    self.payload_schema,
+                    expr,
+                )? {
                     QdrantFieldRef::Vector(name) => Some(QdrantFilterExpr::not(
                         QdrantFilterExpr::Predicate(QdrantPredicate::HasVector(name)),
                     )),
@@ -84,7 +86,11 @@ impl<'a> QdrantExprNormalizer<'a> {
                 }
             }
             Expr::IsNotNull(expr) => {
-                match QdrantFieldRef::from_logical_expr(self.base_schema, expr)? {
+                match QdrantFieldRef::from_logical_expr(
+                    self.base_schema,
+                    self.payload_schema,
+                    expr,
+                )? {
                     QdrantFieldRef::Vector(name) => {
                         Some(QdrantFilterExpr::Predicate(QdrantPredicate::HasVector(name)))
                     }
@@ -96,7 +102,7 @@ impl<'a> QdrantExprNormalizer<'a> {
             }
             Expr::Between(Between { expr, negated, low, high }) => {
                 let QdrantFieldRef::Payload(field) =
-                    QdrantFieldRef::from_logical_expr(self.base_schema, expr)?
+                    QdrantFieldRef::from_logical_expr(self.base_schema, self.payload_schema, expr)?
                 else {
                     return None;
                 };
@@ -140,8 +146,16 @@ impl<'a> QdrantExprNormalizer<'a> {
                 ));
             }
             return self.filter_expr_from_refs(
-                QdrantFieldRef::from_physical_expr(self.base_schema, binary.left()),
-                QdrantFieldRef::from_physical_expr(self.base_schema, binary.right()),
+                QdrantFieldRef::from_physical_expr(
+                    self.base_schema,
+                    self.payload_schema,
+                    binary.left(),
+                ),
+                QdrantFieldRef::from_physical_expr(
+                    self.base_schema,
+                    self.payload_schema,
+                    binary.right(),
+                ),
                 *binary.op(),
                 Self::physical_scalar_literal(binary.left()),
                 Self::physical_scalar_literal(binary.right()),
@@ -149,7 +163,11 @@ impl<'a> QdrantExprNormalizer<'a> {
         }
         if let Some(in_list) = expr.as_any().downcast_ref::<InListExpr>() {
             return self.in_list_expr_from_refs(
-                QdrantFieldRef::from_physical_expr(self.base_schema, in_list.expr()),
+                QdrantFieldRef::from_physical_expr(
+                    self.base_schema,
+                    self.payload_schema,
+                    in_list.expr(),
+                ),
                 in_list
                     .list()
                     .iter()
@@ -159,7 +177,11 @@ impl<'a> QdrantExprNormalizer<'a> {
             );
         }
         if let Some(expr) = expr.as_any().downcast_ref::<IsNullExpr>() {
-            return match QdrantFieldRef::from_physical_expr(self.base_schema, expr.arg())? {
+            return match QdrantFieldRef::from_physical_expr(
+                self.base_schema,
+                self.payload_schema,
+                expr.arg(),
+            )? {
                 QdrantFieldRef::Vector(name) => Some(QdrantFilterExpr::not(
                     QdrantFilterExpr::Predicate(QdrantPredicate::HasVector(name)),
                 )),
@@ -168,7 +190,11 @@ impl<'a> QdrantExprNormalizer<'a> {
             };
         }
         if let Some(expr) = expr.as_any().downcast_ref::<IsNotNullExpr>() {
-            return match QdrantFieldRef::from_physical_expr(self.base_schema, expr.arg())? {
+            return match QdrantFieldRef::from_physical_expr(
+                self.base_schema,
+                self.payload_schema,
+                expr.arg(),
+            )? {
                 QdrantFieldRef::Vector(name) => {
                     Some(QdrantFilterExpr::Predicate(QdrantPredicate::HasVector(name)))
                 }
@@ -293,19 +319,27 @@ impl<'a> QdrantExprNormalizer<'a> {
 }
 
 impl QdrantFieldRef {
-    fn from_logical_expr(base_schema: &SchemaRef, expr: &Expr) -> Option<Self> {
-        if let Some(path) = QdrantPayloadPath::from_logical_expr(expr) {
+    fn from_logical_expr(
+        base_schema: &SchemaRef,
+        payload_schema: &QdrantPayloadSchema,
+        expr: &Expr,
+    ) -> Option<Self> {
+        if let Some(path) = payload_schema.path_for_logical_expr(expr) {
             return Some(Self::Payload(path));
         }
         match expr {
             Expr::Column(column) => Self::from_column_name(base_schema, &column.name),
-            Expr::Alias(alias) => Self::from_logical_expr(base_schema, &alias.expr),
+            Expr::Alias(alias) => Self::from_logical_expr(base_schema, payload_schema, &alias.expr),
             _ => None,
         }
     }
 
-    fn from_physical_expr(base_schema: &SchemaRef, expr: &Arc<dyn PhysicalExpr>) -> Option<Self> {
-        if let Some(path) = QdrantPayloadPath::from_physical_expr(expr) {
+    fn from_physical_expr(
+        base_schema: &SchemaRef,
+        payload_schema: &QdrantPayloadSchema,
+        expr: &Arc<dyn PhysicalExpr>,
+    ) -> Option<Self> {
+        if let Some(path) = payload_schema.path_for_physical_expr(expr) {
             return Some(Self::Payload(path));
         }
         let column = expr.as_any().downcast_ref::<PhysicalColumn>()?;

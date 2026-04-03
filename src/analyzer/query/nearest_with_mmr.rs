@@ -10,10 +10,10 @@ use crate::expr_fn::{NEAREST_WITH_MMR_SCORE_FUNCTION_NAME, NearestWithMmrCall};
 
 #[derive(Debug, Clone)]
 pub(crate) struct NearestWithMmrQuery {
-    using: String,
-    diversity: f32,
+    using:            String,
+    diversity:        f32,
     candidates_limit: u32,
-    vector: Vec<f32>,
+    vector:           Vec<f32>,
 }
 
 impl TryFrom<NearestWithMmrCall> for NearestWithMmrQuery {
@@ -92,8 +92,8 @@ impl NearestWithMmrQuery {
                             data: self.vector.clone(),
                         })),
                     }),
-                    mmr: Some(Mmr {
-                        diversity: Some(self.diversity),
+                    mmr:     Some(Mmr {
+                        diversity:        Some(self.diversity),
                         candidates_limit: Some(self.candidates_limit),
                     }),
                 })),

@@ -16,17 +16,11 @@ use crate::qdrant::filter::QdrantFilters;
 
 #[async_trait::async_trait]
 impl datafusion::catalog::TableProvider for QdrantTableProvider {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
+    fn as_any(&self) -> &dyn Any { self }
 
-    fn schema(&self) -> SchemaRef {
-        Arc::clone(&self.schema)
-    }
+    fn schema(&self) -> SchemaRef { Arc::clone(&self.schema) }
 
-    fn table_type(&self) -> TableType {
-        TableType::Base
-    }
+    fn table_type(&self) -> TableType { TableType::Base }
 
     fn supports_filters_pushdown(
         &self,

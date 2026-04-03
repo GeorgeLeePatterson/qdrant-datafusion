@@ -30,7 +30,7 @@ pub(crate) enum QdrantOrdering {
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct QdrantPayloadOrdering {
-    pub(crate) field: String,
+    pub(crate) field:      String,
     pub(crate) descending: bool,
 }
 
@@ -48,20 +48,20 @@ pub(crate) enum QdrantContinuation {
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct QdrantOrderedContinuation {
-    pub(crate) ordering: QdrantPayloadOrdering,
-    pub(crate) start_from: Option<QdrantOrderValue>,
+    pub(crate) ordering:     QdrantPayloadOrdering,
+    pub(crate) start_from:   Option<QdrantOrderValue>,
     pub(crate) boundary_ids: Vec<PointId>,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct QdrantScanSpec {
-    pub(crate) schema: SchemaRef,
+    pub(crate) schema:     SchemaRef,
     pub(crate) projection: Option<Vec<usize>>,
-    pub(crate) vectors: QdrantVectorSelector,
-    pub(crate) payload: QdrantPayloadSelector,
-    pub(crate) filters: QdrantFilters,
-    pub(crate) ordering: QdrantOrdering,
-    pub(crate) limit: Option<usize>,
+    pub(crate) vectors:    QdrantVectorSelector,
+    pub(crate) payload:    QdrantPayloadSelector,
+    pub(crate) filters:    QdrantFilters,
+    pub(crate) ordering:   QdrantOrdering,
+    pub(crate) limit:      Option<usize>,
 }
 
 impl QdrantScanSpec {
@@ -110,8 +110,8 @@ impl QdrantScanSpec {
             QdrantOrdering::ById => QdrantContinuation::Offset(None),
             QdrantOrdering::ByPayload(ordering) => {
                 QdrantContinuation::Ordered(QdrantOrderedContinuation {
-                    ordering: ordering.clone(),
-                    start_from: None,
+                    ordering:     ordering.clone(),
+                    start_from:   None,
                     boundary_ids: vec![],
                 })
             }

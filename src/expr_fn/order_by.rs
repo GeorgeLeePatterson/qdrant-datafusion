@@ -11,7 +11,7 @@ const ALIASES: &[&str] = &["order_by_score"];
 
 #[derive(Debug, Clone)]
 pub(crate) struct OrderByCall {
-    pub(crate) path: Expr,
+    pub(crate) path:      Expr,
     pub(crate) direction: Option<Expr>,
 }
 

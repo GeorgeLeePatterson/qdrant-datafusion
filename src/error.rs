@@ -15,7 +15,5 @@ pub enum Error {
 }
 
 impl From<qdrant_client::QdrantError> for Error {
-    fn from(err: qdrant_client::QdrantError) -> Self {
-        Error::Qdrant(Box::new(err))
-    }
+    fn from(err: qdrant_client::QdrantError) -> Self { Error::Qdrant(Box::new(err)) }
 }

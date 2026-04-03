@@ -24,9 +24,7 @@ pub(crate) struct SemanticError {
 }
 
 impl SemanticError {
-    fn new(message: impl Into<String>) -> Self {
-        Self { message: message.into() }
-    }
+    fn new(message: impl Into<String>) -> Self { Self { message: message.into() } }
 }
 
 #[derive(Debug, Clone)]
@@ -40,9 +38,7 @@ pub(crate) enum State {
 }
 
 impl State {
-    pub(super) fn local() -> Self {
-        Self::Local(LocalState)
-    }
+    pub(super) fn local() -> Self { Self::Local(LocalState) }
 
     pub(super) fn fatal(message: impl Into<String>) -> Self {
         Self::Fatal(FatalState { error: SemanticError::new(message) })
@@ -138,7 +134,5 @@ impl FiltersState {
         QdrantFilters::try_new(&source.schema, &source.payload_schema, &self.exprs)
     }
 
-    pub(super) fn combined_expr(&self) -> Option<Expr> {
-        conjunction(self.exprs.clone())
-    }
+    pub(super) fn combined_expr(&self) -> Option<Expr> { conjunction(self.exprs.clone()) }
 }

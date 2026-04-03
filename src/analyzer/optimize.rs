@@ -26,17 +26,15 @@ pub(crate) struct CoordinatedCombiners;
 
 #[derive(Debug, Clone)]
 struct CoordinatedCandidate {
-    surface: SurfaceCall,
-    source: Source,
-    prefetch: Vec<QueryPrefetchBranch>,
+    surface:          SurfaceCall,
+    source:           Source,
+    prefetch:         Vec<QueryPrefetchBranch>,
     projection_chain: Vec<LogicalPlan>,
-    sort_plan: LogicalPlan,
+    sort_plan:        LogicalPlan,
 }
 
 impl OptimizerRule for CoordinatedCombiners {
-    fn name(&self) -> &'static str {
-        "qdrant_coordinated_combiners"
-    }
+    fn name(&self) -> &'static str { "qdrant_coordinated_combiners" }
 
     fn rewrite(
         &self,
@@ -92,8 +90,8 @@ fn try_rewrite_sort_through_projection(plan: &LogicalPlan) -> Result<Option<Logi
         let rewritten_expr = rewrite_sort_expr_through_projection(&sort_expr.expr, projection)?;
         rewritten |= rewritten_expr.transformed;
         rewritten_sort_exprs.push(datafusion::logical_expr::SortExpr {
-            expr: rewritten_expr.data,
-            asc: sort_expr.asc,
+            expr:        rewritten_expr.data,
+            asc:         sort_expr.asc,
             nulls_first: sort_expr.nulls_first,
         });
     }
@@ -101,7 +99,7 @@ fn try_rewrite_sort_through_projection(plan: &LogicalPlan) -> Result<Option<Logi
         return Ok(None);
     }
     let rewritten_sort = LogicalPlan::Sort(datafusion::logical_expr::logical_plan::Sort {
-        expr: rewritten_sort_exprs,
+        expr:  rewritten_sort_exprs,
         input: Arc::new(projection.input.as_ref().clone()),
         fetch: sort.fetch,
     });
@@ -133,7 +131,7 @@ fn try_rewrite_combiner(plan: &LogicalPlan) -> Result<Option<LogicalPlan>> {
     let CoordinatedCandidate { surface, source, prefetch, projection_chain, sort_plan } = candidate;
     let mut op = Op::from_surface(surface, &source)?.with_prefetch(prefetch)?;
     for projection_plan in projection_chain {
-        let Some(projected) = op.project(&projection_plan)? else {
+        let Some(projected) = op.project(&source, &projection_plan)? else {
             return Ok(None);
         };
         op = projected;
@@ -186,11 +184,11 @@ fn coordinated_candidate(plan: &LogicalPlan) -> Result<Option<CoordinatedCandida
 
 #[derive(Default)]
 struct CoordinationSearch<'a> {
-    effective_sort: Option<LogicalPlan>,
+    effective_sort:        Option<LogicalPlan>,
     preserved_projections: Vec<LogicalPlan>,
-    combiner_projection: Option<LogicalPlan>,
-    surface: Option<SurfaceCall>,
-    branch_input: Option<&'a LogicalPlan>,
+    combiner_projection:   Option<LogicalPlan>,
+    surface:               Option<SurfaceCall>,
+    branch_input:          Option<&'a LogicalPlan>,
 }
 
 fn descend_to_combiner<'a>(

@@ -61,7 +61,7 @@ impl PayloadAccessKind {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct PayloadAccessUdf {
-    kind: PayloadAccessKind,
+    kind:      PayloadAccessKind,
     signature: Signature,
 }
 
@@ -72,17 +72,11 @@ impl PayloadAccessUdf {
 }
 
 impl ScalarUDFImpl for PayloadAccessUdf {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
+    fn as_any(&self) -> &dyn Any { self }
 
-    fn name(&self) -> &str {
-        self.kind.function_name()
-    }
+    fn name(&self) -> &str { self.kind.function_name() }
 
-    fn signature(&self) -> &Signature {
-        &self.signature
-    }
+    fn signature(&self) -> &Signature { &self.signature }
 
     fn return_type(&self, _arg_types: &[DataType]) -> Result<DataType> {
         Ok(self.kind.return_type())

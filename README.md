@@ -29,12 +29,12 @@ canonical carrier; missing values are not imputed during scan.
 - schema/projection-driven vector selection
 - SQL `LIMIT` pushdown to the scan stream
 - exact physical sort pushdown for `ORDER BY id ASC`
-- exact payload-key sort pushdown for the admitted single-key payload-path subset, including direct `payload:<path>` and equivalent `payload(payload:<path>, 'Type')` forms, on indexed integer, float, and datetime payload fields
+- exact payload-key sort pushdown for the admitted single-key payload-path subset, including direct `payload:<path>`, equivalent `payload(payload:<path>, 'Type')` forms, and order-preserving casts over the authoritative payload scalar type on indexed integer, float, and datetime payload fields
 - exact boolean filter pushdown over the admitted leaf subset:
   - `AND`, `OR`, and `NOT`
   - `id =`, `id !=`, `id IN (...)`, `id NOT IN (...)`
   - vector-column `IS NULL` / `IS NOT NULL`
-- indexed scalar payload-field comparisons, `IN`, `NOT IN`, `BETWEEN`, and `NOT BETWEEN` over the admitted `payload:<path>` and equivalent public `payload(...)` forms
+- indexed scalar payload-field comparisons, `IN`, `NOT IN`, `BETWEEN`, and `NOT BETWEEN` over the admitted `payload:<path>`, equivalent public `payload(...)` forms, and exact casts whose target type matches the authoritative payload scalar type
   - integer match predicates require lookup-capable integer indexes
   - integer range predicates require range-capable integer indexes
 - exact `COUNT(*)` pushdown over a single `Qdrant` source through the crate's session/planner helper
@@ -74,6 +74,7 @@ canonical carrier; missing values are not imputed during scan.
   - empty scalar values remain ordinary non-null SQL values, for example `payload:<path> = ''`
 - direct scan-path projection of known payload fields now becomes typed logical output
 - public typed payload helper `payload(accessor, 'Type')` is available when SQL planning needs an explicit payload scalar type
+- exact `CAST(payload:<path> AS <canonical type>)` forms now preserve the same payload-path semantics for scan filter pushdown and qdrant query-surface payload projections when authoritative payload metadata exists, while payload-key sort pushdown also admits broader order-preserving casts such as numeric-to-numeric or temporal-to-temporal forms
 
 ## Not Yet Admitted
 

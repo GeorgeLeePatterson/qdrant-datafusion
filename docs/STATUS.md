@@ -22,13 +22,13 @@ Current branch reality:
 9. `ORDER BY id ASC` is admitted as an exact physical sort pushdown case.
 10. The single-node payload-key ordered-scroll runtime contract is now validated for integer, float, and datetime payload indexes.
 11. Ordered continuation lowering is implemented internally through `order_by`, `start_from`, and boundary-ID exclusion.
-12. The first payload-key SQL sort subset is now admitted as `ORDER BY payload:<path>` for indexed integer, float, and datetime payload fields.
+12. The first payload-key SQL sort subset is now admitted as `ORDER BY payload:<path>` for indexed integer, float, and datetime payload fields, including exact casts whose target type matches the authoritative payload scalar type.
 13. Payload-key sort pushdown is currently admitted as `Exact` on the validated runtime contract because `DataFusion` cannot execute a fallback physical sort for the `:` operator.
 14. Predicate algebra over the admitted leaf subset is now exact:
     - `AND`, `OR`, and `NOT`
     - `id =`, `id !=`, `id IN (...)`, `id NOT IN (...)`
     - vector-column `IS NULL` / `IS NOT NULL`
-    - indexed scalar `payload:<path>` comparisons, `IN`, `NOT IN`, `BETWEEN`, and `NOT BETWEEN`
+    - indexed scalar `payload:<path>` comparisons, `IN`, `NOT IN`, `BETWEEN`, and `NOT BETWEEN`, including exact casts whose target type matches the authoritative payload scalar type
       - integer match predicates require lookup-capable integer indexes
       - integer range predicates require range-capable integer indexes
 15. Physical filter pushdown now absorbs the admitted predicate algebra so `FilterExec` does not remain above `QdrantScanExec`.
@@ -116,7 +116,7 @@ Current branch reality:
     - `QdrantSessionContext` now remains only as the prepared-session wrapper that installs the
       analyzer, planner, and marker-UDF hooks
 38. Shared `Qdrant` semantics now live in `src/qdrant.rs` and are reused across analyzer, filter pushdown, and sort pushdown instead of duplicating payload-path recognition.
-    - canonical payload access recognition now admits raw `payload:<path>`, public `payload(payload:<path>, 'Type')`, and the internal executable payload-access UDFs
+    - canonical payload access recognition now admits raw `payload:<path>`, public `payload(payload:<path>, 'Type')`, exact casts to the authoritative payload scalar type for filter semantics, DataFusion-style order-preserving casts for ordering semantics, and the internal executable payload-access UDFs
 39. Scan-path payload projection is now schema-aware and executable.
     - direct `payload:<path>` projections over known payload fields rewrite to typed local payload accessors early enough for honest logical schema propagation
     - plain scan queries can now project typed payload scalars while preserving remote filter/sort pushdown
@@ -124,6 +124,9 @@ Current branch reality:
     - `payload(accessor, 'Type')` gives `DataFusion` a planning-time payload scalar type
     - it currently unlocks arithmetic and similar contexts where raw `payload:<path>` would otherwise still be typed as `Utf8`
     - raw unhinted arithmetic like `payload:rank + 1` is still intentionally deferred until an earlier SQL-planning normalization seam exists
+41. Qdrant query-surface payload projections now reuse the same canonical payload resolver as scan filter/sort pushdown.
+    - raw `payload:<path>`, public `payload(...)`, and exact casts to the authoritative payload scalar type now all resolve to the same payload-output path on qdrant query projections
+    - exact cast query projections now preserve remote payload fetch and materialize typed output columns when authoritative payload metadata exists
 
 ## Current Code Ownership
 

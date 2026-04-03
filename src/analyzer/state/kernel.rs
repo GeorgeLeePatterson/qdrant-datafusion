@@ -11,7 +11,7 @@ use crate::analyzer::surface::SurfaceCall;
 
 #[derive(Debug, Clone)]
 pub(crate) struct KernelState {
-    spec: KernelSpec,
+    spec:          KernelSpec,
     output_schema: Option<DFSchemaRef>,
 }
 
@@ -28,17 +28,13 @@ pub(crate) struct KernelState {
     reason = "kernel transitions accept owned plans to match the shared state transition surface"
 )]
 impl KernelState {
-    pub(crate) fn new(spec: KernelSpec) -> Self {
-        Self { spec, output_schema: None }
-    }
+    pub(crate) fn new(spec: KernelSpec) -> Self { Self { spec, output_schema: None } }
 
     pub(crate) fn with_output_schema(spec: KernelSpec, output_schema: DFSchemaRef) -> Self {
         Self { spec, output_schema: Some(output_schema) }
     }
 
-    pub(crate) fn spec(&self) -> &KernelSpec {
-        &self.spec
-    }
+    pub(crate) fn spec(&self) -> &KernelSpec { &self.spec }
 
     pub(super) fn projection(
         mut self,

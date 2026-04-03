@@ -47,7 +47,7 @@ impl TryFrom<&str> for RecommendQueryStrategy {
 
 #[derive(Debug, Clone)]
 pub(crate) struct RecommendQuery {
-    using: Option<String>,
+    using:    Option<String>,
     strategy: Option<RecommendQueryStrategy>,
     positive: Vec<VectorQueryInput>,
     negative: Vec<VectorQueryInput>,

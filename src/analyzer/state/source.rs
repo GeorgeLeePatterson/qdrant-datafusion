@@ -12,13 +12,13 @@ use crate::analyzer::op::{FacetOp, Op, OutputNames};
 use crate::analyzer::source::Source;
 use crate::analyzer::surface::SurfaceCall;
 use crate::expr_fn::payload_access_expr;
+use crate::qdrant::QdrantPayloadAccess;
 use crate::qdrant::filter::QdrantFilters;
-use crate::qdrant::{QdrantPayloadAccess, QdrantPayloadPath};
 use crate::table::QdrantTableProvider;
 
 #[derive(Debug, Clone)]
 pub(crate) struct SourceState {
-    pub(crate) source: Source,
+    pub(crate) source:  Source,
     pub(crate) filters: FiltersState,
 }
 
@@ -46,7 +46,8 @@ impl AggregateSurface {
         {
             return Ok(Self::Local);
         }
-        let Some(field) = QdrantPayloadPath::from_logical_expr(&aggregate.group_expr[0]) else {
+        let Some(field) = source.payload_schema.path_for_logical_expr(&aggregate.group_expr[0])
+        else {
             return Ok(Self::Local);
         };
         let Some(field_type) = source.payload_schema.field_for_path(field.key()) else {
@@ -80,7 +81,7 @@ impl SourceState {
         let schema = provider.schema();
         let provider = provider.as_any().downcast_ref::<QdrantTableProvider>()?;
         Some(Self {
-            source: Source {
+            source:  Source {
                 client: Arc::clone(provider.client()),
                 collection: provider.collection().to_owned(),
                 schema,
@@ -183,10 +184,12 @@ impl SourceState {
                 KernelState::new(KernelSpec::Count(CountKernel::new(self.source, exact_filters)))
                     .absorb(plan, transformed)
             }
-            AggregateSurface::Facet(op) => {
-                ProcessingState { source: self.source, filters: self.filters, op: Op::Facet(op) }
-                    .absorb(plan, transformed)
+            AggregateSurface::Facet(op) => ProcessingState {
+                source:  self.source,
+                filters: self.filters,
+                op:      Op::Facet(op),
             }
+            .absorb(plan, transformed),
         }
     }
 
@@ -213,9 +216,9 @@ impl SourceState {
 
     fn open(&self, surface: SurfaceCall) -> Result<ProcessingState> {
         Ok(ProcessingState {
-            source: self.source.clone(),
+            source:  self.source.clone(),
             filters: self.filters.clone(),
-            op: Op::from_surface(surface, &self.source)?,
+            op:      Op::from_surface(surface, &self.source)?,
         })
     }
 }

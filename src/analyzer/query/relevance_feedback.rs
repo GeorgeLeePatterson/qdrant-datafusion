@@ -10,8 +10,8 @@ use crate::expr_fn::{RELEVANCE_FEEDBACK_SCORE_FUNCTION_NAME, RelevanceFeedbackCa
 
 #[derive(Debug, Clone)]
 pub(crate) struct RelevanceFeedbackQuery {
-    using: Option<String>,
-    target: super::VectorQueryInput,
+    using:    Option<String>,
+    target:   super::VectorQueryInput,
     feedback: Vec<(super::VectorQueryInput, f32)>,
     strategy: Option<FeedbackStrategy>,
 }
@@ -84,7 +84,7 @@ impl RelevanceFeedbackQuery {
     pub(super) fn descriptor(&self, _prefetch_count: usize) -> QueryDescriptor {
         QueryDescriptor::new(
             Query::new_relevance_feedback(RelevanceFeedbackInput {
-                target: Some(self.target.clone().into_proto()),
+                target:   Some(self.target.clone().into_proto()),
                 feedback: self
                     .feedback
                     .iter()

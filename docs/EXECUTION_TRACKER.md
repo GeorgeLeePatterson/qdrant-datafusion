@@ -67,7 +67,7 @@ Use it to resume work without replaying the full repository history.
     - unit plan-inspection coverage now checks both logical and physical sort expression shapes
 16. `Q-016`: The first explicit payload-key SQL `ORDER BY` subset is now admitted.
     - single sort key only
-    - canonical payload-path forms only: direct `payload:<path>` plus equivalent public `payload(payload:<path>, 'Type')` shapes
+    - canonical payload-path forms only: direct `payload:<path>`, equivalent public `payload(payload:<path>, 'Type')` shapes, and exact casts to the authoritative payload scalar type
     - indexed integer / float / datetime payload fields only
     - current pushdown is `Exact` because `DataFusion` cannot execute fallback `payload:<path>` physical sorts
     - end-to-end SQL coverage now exercises the admitted path against live `Qdrant`
@@ -216,27 +216,34 @@ Use it to resume work without replaying the full repository history.
       payload ordering capability
     - `src/table/scan_spec.rs` now owns only scan-local selectors, ordering, and continuation
       state
-    - exact scan filter and payload-key sort pushdown now reuse the same canonical payload-access
-      recognition
+    - exact scan filter pushdown and payload-key sort pushdown now reuse the same canonical payload-access
+      recognition, with operation-specific cast handling: exact casts for filter semantics and
+      order-preserving casts for ordering semantics
 37. `Q-040`: Typed payload access is now a first-class admitted bridge instead of a planner-layer
     dead end.
     - direct scan-path `payload:<path>` projections over known payload fields now rewrite to typed
       local payload accessors early enough for honest logical schema propagation
     - the public `payload(accessor, 'Type')` helper now supplies a planning-time payload scalar
       type when SQL would otherwise still see raw `payload:<path>` as `Utf8`
-    - exact scan filter and payload-key sort pushdown both admit equivalent public `payload(...)`
-      forms when they lower to the same canonical payload path
+    - exact scan filter pushdown admits equivalent public `payload(...)` forms and exact casts
+      when they lower to the same canonical payload path
+    - payload-key sort pushdown now also admits order-preserving casts that preserve the same
+      effective ordering over the authoritative payload scalar type
+38. `Q-042`: Query-surface payload projections now reuse the same canonical payload resolver as
+    scan filter/sort pushdown.
+    - query projection admission now resolves payload outputs through authoritative payload schema
+      metadata when available instead of only recognizing raw path syntax
+    - exact `CAST(payload:<path> AS <canonical type>)` query projections now preserve remote
+      payload fetch and typed output materialization on qdrant query kernels
+    - planner and e2e coverage now prove the exact-cast query projection path
 ## Next
 
-1. Complete the correctness audit across analyzer, optimizer, scan pushdown, and shared `Qdrant` semantics.
-   - classify remaining blockers, rejecters, and current-shape restrictions into hard invariants versus widening opportunities
-   - prefer shared invariant-based recognizers over duplicated per-call-site expression-shape checks
-2. `Q-041`: Land a deliberate `INSERT INTO` contract.
+1. `Q-041`: Land a deliberate `INSERT INTO` contract.
    - start with append-only writes through a write-side Arrow/Qdrant serializer and `DataSinkExec`
    - keep the contract explicit rather than approximating unsupported write shapes
-3. The detailed planning inventory for the next expansion round now lives in `docs/QDRANT_COMPATIBILITY_MATRIX.md`.
-4. `Q-017`: Validate distributed-ordering behavior on the target `Qdrant` deployment modes before claiming broader exact payload-key sort pushdown.
-5. `M-003`: Extend broader aggregate-like and retrieval growth on
+2. The detailed planning inventory for the next expansion round now lives in `docs/QDRANT_COMPATIBILITY_MATRIX.md`.
+3. `Q-017`: Validate distributed-ordering behavior on the target `Qdrant` deployment modes before claiming broader exact payload-key sort pushdown.
+4. `M-003`: Extend broader aggregate-like and retrieval growth on
    the shared operator / kernel structure.
    - aggregate-like: explicit output contracts beyond exact `COUNT(*)` and the current scalar
      facet slice

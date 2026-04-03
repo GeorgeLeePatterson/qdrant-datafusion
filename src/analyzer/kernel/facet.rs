@@ -10,10 +10,10 @@ use crate::qdrant::filter::QdrantFilters;
 
 #[derive(Debug, Clone)]
 pub(crate) struct FacetKernel {
-    source: Source,
+    source:  Source,
     filters: QdrantFilters,
-    op: FacetOp,
-    limit: u64,
+    op:      FacetOp,
+    limit:   u64,
 }
 
 impl FacetKernel {
@@ -29,23 +29,13 @@ impl FacetKernel {
         Ok(Some(self))
     }
 
-    pub(crate) fn client(&self) -> Arc<Qdrant> {
-        Arc::clone(self.source.client())
-    }
+    pub(crate) fn client(&self) -> Arc<Qdrant> { Arc::clone(self.source.client()) }
 
-    pub(crate) fn collection(&self) -> &str {
-        self.source.collection()
-    }
+    pub(crate) fn collection(&self) -> &str { self.source.collection() }
 
-    pub(crate) fn filters(&self) -> &QdrantFilters {
-        &self.filters
-    }
+    pub(crate) fn filters(&self) -> &QdrantFilters { &self.filters }
 
-    pub(crate) fn op(&self) -> &FacetOp {
-        &self.op
-    }
+    pub(crate) fn op(&self) -> &FacetOp { &self.op }
 
-    pub(crate) fn limit(&self) -> u64 {
-        self.limit
-    }
+    pub(crate) fn limit(&self) -> u64 { self.limit }
 }

@@ -32,9 +32,9 @@ pub(crate) fn full_row_join_keys(join: &datafusion::logical_expr::logical_plan::
 
 #[derive(Clone)]
 pub(crate) struct Source {
-    pub(super) client: Arc<Qdrant>,
-    pub(super) collection: String,
-    pub(super) schema: SchemaRef,
+    pub(super) client:         Arc<Qdrant>,
+    pub(super) collection:     String,
+    pub(super) schema:         SchemaRef,
     pub(super) payload_schema: Arc<QdrantPayloadSchema>,
 }
 
@@ -50,13 +50,9 @@ impl std::fmt::Debug for Source {
 }
 
 impl Source {
-    pub(super) fn client(&self) -> &Arc<Qdrant> {
-        &self.client
-    }
+    pub(super) fn client(&self) -> &Arc<Qdrant> { &self.client }
 
-    pub(super) fn collection(&self) -> &str {
-        &self.collection
-    }
+    pub(super) fn collection(&self) -> &str { &self.collection }
 
     pub(super) fn merge_compatible_with(&self, other: &Self) -> bool {
         self.collection == other.collection
@@ -94,8 +90,8 @@ impl Source {
 
 #[derive(Debug, Clone)]
 pub(crate) struct MergeableUnion {
-    pub(super) source: Source,
-    pub(super) branches: Vec<Option<Expr>>,
+    pub(super) source:     Source,
+    pub(super) branches:   Vec<Option<Expr>>,
     pub(super) branch_ids: Vec<Option<Vec<PointId>>>,
 }
 
@@ -192,10 +188,10 @@ impl MergeableUnion {
 
 #[derive(Debug, Clone)]
 pub(crate) struct MergeableSetJoin {
-    pub(super) source: Source,
-    pub(super) left_filter: Option<Expr>,
+    pub(super) source:       Source,
+    pub(super) left_filter:  Option<Expr>,
     pub(super) right_filter: Option<Expr>,
-    pub(super) join_type: JoinType,
+    pub(super) join_type:    JoinType,
 }
 
 impl MergeableSetJoin {
@@ -222,10 +218,10 @@ impl MergeableSetJoin {
             return Ok(None);
         }
         Ok(Some(Self {
-            source: left.source,
-            left_filter: left.filter,
+            source:       left.source,
+            left_filter:  left.filter,
             right_filter: right.filter,
-            join_type: join.join_type,
+            join_type:    join.join_type,
         }))
     }
 }
@@ -263,7 +259,7 @@ impl MergeableSetJoin {
 pub(crate) struct MergeableBranch {
     pub(super) source: Source,
     pub(super) filter: Option<Expr>,
-    pub(super) ids: Option<Vec<PointId>>,
+    pub(super) ids:    Option<Vec<PointId>>,
 }
 
 impl MergeableBranch {

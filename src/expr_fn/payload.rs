@@ -32,14 +32,14 @@ pub(crate) fn qdrant_payload_udf() -> ScalarUDF {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct PayloadUdf {
-    aliases: Vec<String>,
+    aliases:   Vec<String>,
     signature: Signature,
 }
 
 impl Default for PayloadUdf {
     fn default() -> Self {
         Self {
-            aliases: PAYLOAD_ALIASES.iter().map(|alias| (*alias).to_owned()).collect(),
+            aliases:   PAYLOAD_ALIASES.iter().map(|alias| (*alias).to_owned()).collect(),
             signature: Signature::any(2, Volatility::Immutable)
                 .with_parameter_names(vec!["accessor", "data_type"])
                 .expect("payload signature should accept two named parameters"),
@@ -48,21 +48,13 @@ impl Default for PayloadUdf {
 }
 
 impl ScalarUDFImpl for PayloadUdf {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
+    fn as_any(&self) -> &dyn Any { self }
 
-    fn name(&self) -> &str {
-        PAYLOAD_FUNCTION_NAME
-    }
+    fn name(&self) -> &str { PAYLOAD_FUNCTION_NAME }
 
-    fn aliases(&self) -> &[String] {
-        &self.aliases
-    }
+    fn aliases(&self) -> &[String] { &self.aliases }
 
-    fn signature(&self) -> &Signature {
-        &self.signature
-    }
+    fn signature(&self) -> &Signature { &self.signature }
 
     fn return_type(&self, _arg_types: &[DataType]) -> Result<DataType> {
         plan_err!("{PAYLOAD_FUNCTION_NAME} determines its output type from its arguments")
@@ -143,7 +135,8 @@ fn parse_payload_data_type(raw: &str) -> Result<DataType> {
         "bool" | "boolean" => Ok(DataType::Boolean),
         "datetime" | "timestamp" => Ok(DataType::Timestamp(TimeUnit::Millisecond, None)),
         _ => plan_err!(
-            "{PAYLOAD_FUNCTION_NAME} data type '{raw}' is not a supported Arrow or qdrant payload type"
+            "{PAYLOAD_FUNCTION_NAME} data type '{raw}' is not a supported Arrow or qdrant payload \
+             type"
         ),
     }
 }

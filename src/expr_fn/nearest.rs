@@ -189,7 +189,7 @@ fn dense_call(expr: &Expr) -> Result<Option<NearestCall>> {
     }
     Ok(Some(NearestCall::Dense {
         vector_field: column_name(&args[0], NEAREST_SCORE_FUNCTION_NAME)?,
-        vector: args[1..].iter().map(query_component).collect::<Result<Vec<_>>>()?,
+        vector:       args[1..].iter().map(query_component).collect::<Result<Vec<_>>>()?,
     }))
 }
 
@@ -207,8 +207,16 @@ fn sparse_call(expr: &Expr) -> Result<Option<NearestCall>> {
     }
     Ok(Some(NearestCall::Sparse {
         vector_field: column_name(&args[0], NEAREST_SPARSE_SCORE_FUNCTION_NAME)?,
-        indices: u32_list_literal(&args[1], NEAREST_SPARSE_SCORE_FUNCTION_NAME, "sparse indices")?,
-        values: f32_list_literal(&args[2], NEAREST_SPARSE_SCORE_FUNCTION_NAME, "sparse values")?,
+        indices:      u32_list_literal(
+            &args[1],
+            NEAREST_SPARSE_SCORE_FUNCTION_NAME,
+            "sparse indices",
+        )?,
+        values:       f32_list_literal(
+            &args[2],
+            NEAREST_SPARSE_SCORE_FUNCTION_NAME,
+            "sparse values",
+        )?,
     }))
 }
 
@@ -225,7 +233,7 @@ fn multi_call(expr: &Expr) -> Result<Option<NearestCall>> {
     }
     Ok(Some(NearestCall::MultiDense {
         vector_field: column_name(&args[0], NEAREST_MULTI_SCORE_FUNCTION_NAME)?,
-        vectors: nested_f32_list_literal(
+        vectors:      nested_f32_list_literal(
             &args[1],
             NEAREST_MULTI_SCORE_FUNCTION_NAME,
             "multivector query",
@@ -245,7 +253,7 @@ fn id_call(expr: &Expr) -> Result<Option<NearestCall>> {
     }
     Ok(Some(NearestCall::Id {
         vector_field: column_name(&args[0], NEAREST_ID_SCORE_FUNCTION_NAME)?,
-        point_id: point_id_literal(&args[1], NEAREST_ID_SCORE_FUNCTION_NAME, "point id")?,
+        point_id:     point_id_literal(&args[1], NEAREST_ID_SCORE_FUNCTION_NAME, "point id")?,
     }))
 }
 
@@ -263,8 +271,12 @@ fn document_call(expr: &Expr) -> Result<Option<NearestCall>> {
     }
     Ok(Some(NearestCall::Document {
         vector_field: column_name(&args[0], NEAREST_DOCUMENT_SCORE_FUNCTION_NAME)?,
-        text: string_literal(&args[1], NEAREST_DOCUMENT_SCORE_FUNCTION_NAME, "document text")?,
-        model: optional_model(&args[2..], NEAREST_DOCUMENT_SCORE_FUNCTION_NAME)?,
+        text:         string_literal(
+            &args[1],
+            NEAREST_DOCUMENT_SCORE_FUNCTION_NAME,
+            "document text",
+        )?,
+        model:        optional_model(&args[2..], NEAREST_DOCUMENT_SCORE_FUNCTION_NAME)?,
     }))
 }
 
@@ -282,8 +294,8 @@ fn image_call(expr: &Expr) -> Result<Option<NearestCall>> {
     }
     Ok(Some(NearestCall::Image {
         vector_field: column_name(&args[0], NEAREST_IMAGE_SCORE_FUNCTION_NAME)?,
-        image: image_literal(&args[1], NEAREST_IMAGE_SCORE_FUNCTION_NAME, "image input")?,
-        model: optional_model(&args[2..], NEAREST_IMAGE_SCORE_FUNCTION_NAME)?,
+        image:        image_literal(&args[1], NEAREST_IMAGE_SCORE_FUNCTION_NAME, "image input")?,
+        model:        optional_model(&args[2..], NEAREST_IMAGE_SCORE_FUNCTION_NAME)?,
     }))
 }
 
@@ -301,8 +313,8 @@ fn object_call(expr: &Expr) -> Result<Option<NearestCall>> {
     }
     Ok(Some(NearestCall::Object {
         vector_field: column_name(&args[0], NEAREST_OBJECT_SCORE_FUNCTION_NAME)?,
-        object: object_literal(&args[1], NEAREST_OBJECT_SCORE_FUNCTION_NAME, "object input")?,
-        model: optional_model(&args[2..], NEAREST_OBJECT_SCORE_FUNCTION_NAME)?,
+        object:       object_literal(&args[1], NEAREST_OBJECT_SCORE_FUNCTION_NAME, "object input")?,
+        model:        optional_model(&args[2..], NEAREST_OBJECT_SCORE_FUNCTION_NAME)?,
     }))
 }
 

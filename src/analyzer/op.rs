@@ -21,23 +21,23 @@ use crate::qdrant::filter::QdrantFilters;
 
 #[derive(Debug, Clone)]
 pub(crate) struct QueryOp {
-    query: QueryKind,
+    query:               QueryKind,
     query_score_outputs: OutputNames,
-    payload_outputs: PayloadOutputs,
-    score_threshold: Option<f32>,
-    sorted: bool,
-    prefetch: Vec<QueryPrefetchBranch>,
+    payload_outputs:     PayloadOutputs,
+    score_threshold:     Option<f32>,
+    sorted:              bool,
+    prefetch:            Vec<QueryPrefetchBranch>,
 }
 
 impl QueryOp {
     fn from_surface(surface: QuerySurfaceCall) -> Self {
         Self {
-            query: QueryKind::from_surface(surface),
+            query:               QueryKind::from_surface(surface),
             query_score_outputs: OutputNames::default(),
-            payload_outputs: PayloadOutputs::default(),
-            score_threshold: None,
-            sorted: false,
-            prefetch: vec![],
+            payload_outputs:     PayloadOutputs::default(),
+            score_threshold:     None,
+            sorted:              false,
+            prefetch:            vec![],
         }
     }
 
@@ -45,19 +45,19 @@ impl QueryOp {
         self.query.validate_on_source(source)
     }
 
-    pub(super) fn project(mut self, plan: &LogicalPlan) -> Result<Option<Self>> {
+    pub(super) fn project(mut self, source: &Source, plan: &LogicalPlan) -> Result<Option<Self>> {
         let LogicalPlan::Projection(projection) = plan else {
             return Ok(None);
         };
         for expr in &projection.expr {
-            if !self.projection_expr_supported(expr)? {
+            if !self.projection_expr_supported(source, expr)? {
                 return Ok(None);
             }
         }
         self.query_score_outputs =
             OutputNames::from_projection(plan, |expr| self.is_query_score_expr(expr))?;
         self.payload_outputs =
-            PayloadOutputs::from_projection(plan, |expr| self.payload_output_path(expr));
+            PayloadOutputs::from_projection(plan, |expr| self.payload_output_path(source, expr));
         Ok(Some(self))
     }
 
@@ -132,7 +132,8 @@ impl QueryOp {
         if distinct_on.on_expr.len() != 1 {
             return Ok(None);
         }
-        let Some(group_field) = QdrantPayloadPath::from_logical_expr(&distinct_on.on_expr[0])
+        let Some(group_field) =
+            source.payload_schema.path_for_logical_expr(&distinct_on.on_expr[0])
         else {
             return Ok(None);
         };
@@ -146,11 +147,12 @@ impl QueryOp {
         if !distinct_on
             .select_expr
             .iter()
-            .all(|expr| self.projection_expr_supported(expr).unwrap_or(false))
+            .all(|expr| self.projection_expr_supported(&source, expr).unwrap_or(false))
         {
             return Ok(None);
         }
         let Some(group_descending) = self.query_groups_sort_supported(
+            &source,
             distinct_on.sort_expr.as_deref().unwrap_or(&[]),
             &group_field,
         )?
@@ -165,7 +167,7 @@ impl QueryOp {
         self.payload_outputs = PayloadOutputs::from_exprs_and_schema(
             &distinct_on.select_expr,
             &distinct_on.schema,
-            |expr| self.payload_output_path(expr),
+            |expr| self.payload_output_path(&source, expr),
         );
         let exact_filters = filters.exact(&source)?;
         Ok(Some(KernelState::new(KernelSpec::QueryGroups(QueryGroupsKernel::new(
@@ -179,18 +181,18 @@ impl QueryOp {
         )))))
     }
 
-    fn projection_expr_supported(&self, expr: &Expr) -> Result<bool> {
+    fn projection_expr_supported(&self, source: &Source, expr: &Expr) -> Result<bool> {
         let expr = expr.clone().unalias_nested().data;
         Ok(matches!(expr, Expr::Column(_))
             || self.is_query_score_expr(&expr)?
-            || self.payload_output_path(&expr).is_some())
+            || self.payload_output_path(source, &expr).is_some())
     }
 
-    fn payload_output_path(&self, expr: &Expr) -> Option<String> {
+    fn payload_output_path(&self, source: &Source, expr: &Expr) -> Option<String> {
         if let Some(path) = self.payload_outputs.path_for_expr(expr) {
             return Some(path);
         }
-        QdrantPayloadPath::from_logical_expr(expr).map(|path| path.key().to_owned())
+        source.payload_schema.path_for_logical_expr(expr).map(|path| path.key().to_owned())
     }
 
     fn is_query_score_expr(&self, expr: &Expr) -> Result<bool> {
@@ -242,21 +244,15 @@ impl QueryOp {
         self
     }
 
-    pub(crate) fn prefetch_count(&self) -> usize {
-        self.prefetch.len()
-    }
+    pub(crate) fn prefetch_count(&self) -> usize { self.prefetch.len() }
 
-    pub(crate) fn score_output_names(&self) -> BTreeSet<String> {
-        self.query_score_outputs.names()
-    }
+    pub(crate) fn score_output_names(&self) -> BTreeSet<String> { self.query_score_outputs.names() }
 
     pub(crate) fn payload_output_paths(&self) -> BTreeMap<String, String> {
         self.payload_outputs.paths()
     }
 
-    pub(crate) fn score_threshold(&self) -> Option<f32> {
-        self.score_threshold
-    }
+    pub(crate) fn score_threshold(&self) -> Option<f32> { self.score_threshold }
 
     fn query_score_threshold_expr(&self, expr: &Expr) -> Result<Option<f32>> {
         let expr = expr.clone().unalias_nested().data;
@@ -280,13 +276,15 @@ impl QueryOp {
 
     fn query_groups_sort_supported(
         &self,
+        source: &Source,
         sort_exprs: &[SortExpr],
         group_field: &QdrantPayloadPath,
     ) -> Result<Option<bool>> {
         if sort_exprs.len() != 2 {
             return Ok(None);
         }
-        let Some(group_sort_field) = QdrantPayloadPath::from_logical_expr(&sort_exprs[0].expr)
+        let Some(group_sort_field) =
+            source.payload_schema.path_for_logical_ordering_expr(&sort_exprs[0].expr)
         else {
             return Ok(None);
         };
@@ -317,9 +315,9 @@ impl Op {
         }
     }
 
-    pub(super) fn project(self, plan: &LogicalPlan) -> Result<Option<Self>> {
+    pub(super) fn project(self, source: &Source, plan: &LogicalPlan) -> Result<Option<Self>> {
         match self {
-            Self::Query(op) => op.project(plan).map(|op| op.map(Self::Query)),
+            Self::Query(op) => op.project(source, plan).map(|op| op.map(Self::Query)),
             Self::Facet(op) => op.project(plan).map(|op| op.map(Self::Facet)),
         }
     }
@@ -377,10 +375,10 @@ impl Op {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct FacetOp {
-    pub(super) field: QdrantPayloadPath,
-    pub(super) key_outputs: OutputNames,
+    pub(super) field:         QdrantPayloadPath,
+    pub(super) key_outputs:   OutputNames,
     pub(super) count_outputs: OutputNames,
-    pub(super) sorted: bool,
+    pub(super) sorted:        bool,
 }
 
 impl FacetOp {
@@ -426,9 +424,7 @@ impl FacetOp {
         )))))
     }
 
-    pub(crate) fn field(&self) -> &QdrantPayloadPath {
-        &self.field
-    }
+    pub(crate) fn field(&self) -> &QdrantPayloadPath { &self.field }
 
     pub(crate) fn is_key_output_name(&self, name: &str) -> bool {
         self.key_outputs.contains_name(name)
@@ -442,9 +438,7 @@ impl FacetOp {
         self.is_key_expr(expr) || self.is_count_expr(expr)
     }
 
-    fn is_key_expr(&self, expr: &Expr) -> bool {
-        self.key_outputs.matches_column(expr)
-    }
+    fn is_key_expr(&self, expr: &Expr) -> bool { self.key_outputs.matches_column(expr) }
 
     fn is_count_expr(&self, expr: &Expr) -> bool {
         self.count_outputs.matches_column(expr)
@@ -456,17 +450,11 @@ impl FacetOp {
 pub(crate) struct OutputNames(BTreeSet<String>);
 
 impl OutputNames {
-    pub(super) fn single(name: String) -> Self {
-        Self(BTreeSet::from([name]))
-    }
+    pub(super) fn single(name: String) -> Self { Self(BTreeSet::from([name])) }
 
-    fn contains_name(&self, name: &str) -> bool {
-        self.0.contains(name)
-    }
+    fn contains_name(&self, name: &str) -> bool { self.0.contains(name) }
 
-    pub(crate) fn names(&self) -> BTreeSet<String> {
-        self.0.clone()
-    }
+    pub(crate) fn names(&self) -> BTreeSet<String> { self.0.clone() }
 
     fn matches_column(&self, expr: &Expr) -> bool {
         matches!(expr.clone().unalias_nested().data, Expr::Column(column) if self.contains_name(&column.name))
@@ -508,9 +496,7 @@ impl PayloadOutputs {
         }
     }
 
-    pub(crate) fn paths(&self) -> BTreeMap<String, String> {
-        self.0.clone()
-    }
+    pub(crate) fn paths(&self) -> BTreeMap<String, String> { self.0.clone() }
 
     fn from_projection(plan: &LogicalPlan, matches: impl FnMut(&Expr) -> Option<String>) -> Self {
         let LogicalPlan::Projection(projection) = plan else {

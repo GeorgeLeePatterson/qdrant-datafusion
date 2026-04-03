@@ -55,9 +55,7 @@ impl std::fmt::Debug for QdrantQueryPlanner {
 }
 
 impl Default for QdrantQueryPlanner {
-    fn default() -> Self {
-        Self { planners: vec![Arc::new(QdrantExtensionPlanner)] }
-    }
+    fn default() -> Self { Self { planners: vec![Arc::new(QdrantExtensionPlanner)] } }
 }
 
 #[async_trait]
@@ -79,17 +77,11 @@ pub struct QdrantSessionContext {
 }
 
 impl QdrantSessionContext {
-    pub fn new(ctx: SessionContext) -> Self {
-        Self { inner: prepare_session_context(ctx) }
-    }
+    pub fn new(ctx: SessionContext) -> Self { Self { inner: prepare_session_context(ctx) } }
 
-    pub fn session_context(&self) -> &SessionContext {
-        &self.inner
-    }
+    pub fn session_context(&self) -> &SessionContext { &self.inner }
 
-    pub fn into_session_context(self) -> SessionContext {
-        self.inner
-    }
+    pub fn into_session_context(self) -> SessionContext { self.inner }
 
     /// Returns a SQL dataframe using the prepared `Qdrant` analyzer and planner hooks.
     ///
@@ -102,7 +94,5 @@ impl QdrantSessionContext {
 }
 
 impl From<SessionContext> for QdrantSessionContext {
-    fn from(ctx: SessionContext) -> Self {
-        Self::new(ctx)
-    }
+    fn from(ctx: SessionContext) -> Self { Self::new(ctx) }
 }

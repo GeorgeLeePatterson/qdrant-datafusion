@@ -269,14 +269,14 @@ mod tests {
                 2,
                 NamedVectors::default()
                     .add_vector("embedding", vec![0.4, 0.0])
-                    .add_vector("aux", vec![1.0, 0.0]),
+                    .add_vector("aux", vec![0.0, 0.4]),
                 qdrant_client::Payload::new(),
             ),
             PointStruct::new(
                 3,
                 NamedVectors::default()
                     .add_vector("embedding", vec![0.0, 1.0])
-                    .add_vector("aux", vec![0.4, 0.0]),
+                    .add_vector("aux", vec![0.0, 0.2]),
                 qdrant_client::Payload::new(),
             ),
         ];
@@ -350,6 +350,25 @@ mod tests {
         Ok((rows, display))
     }
 
+    async fn collect_i64_rows(
+        ctx: &QdrantSessionContext,
+        sql: &str,
+        column: &str,
+    ) -> Result<(Vec<i64>, String)> {
+        let dataframe = ctx.sql(sql).await?;
+        let plan = dataframe.clone().create_physical_plan().await?;
+        let display =
+            datafusion::physical_plan::displayable(plan.as_ref()).indent(true).to_string();
+        let batches = dataframe.collect().await.map_err(|err| {
+            datafusion::error::DataFusionError::Execution(format!(
+                "failed to collect SQL `{sql}` with physical plan:\n{display}\nerror: {err}"
+            ))
+        })?;
+        let rows =
+            batches.iter().flat_map(|batch| batch_i64_values(batch, column)).collect::<Vec<_>>();
+        Ok((rows, display))
+    }
+
     fn batch_u64_ids(batch: &RecordBatch, column: &str) -> Vec<u64> {
         batch
             .column(batch.schema().index_of(column).expect("id column"))
@@ -372,6 +391,27 @@ mod tests {
             .collect()
     }
 
+    fn batch_stringified_scalar_values(batch: &RecordBatch, column: &str) -> Vec<String> {
+        let column = batch.column(batch.schema().index_of(column).expect("scalar column"));
+        match column.data_type() {
+            DataType::Int64 => column
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .expect("int64 array")
+                .iter()
+                .map(|value| value.expect("non-null int64 value").to_string())
+                .collect(),
+            DataType::Utf8 => column
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .expect("string array")
+                .iter()
+                .map(|value| value.expect("non-null string value").to_owned())
+                .collect(),
+            other => panic!("unexpected scalar column type: {other:?}"),
+        }
+    }
+
     fn batch_bool_values(batch: &RecordBatch, column: &str) -> Vec<bool> {
         batch
             .column(batch.schema().index_of(column).expect("bool column"))
@@ -381,6 +421,24 @@ mod tests {
             .iter()
             .map(|value| value.expect("non-null bool value"))
             .collect()
+    }
+
+    fn assert_typed_payload_projection_batch(batch: &RecordBatch) {
+        let ids = batch_u64_ids(batch, "id");
+        let ranks = batch_i64_values(batch, "rank");
+        let active = batch_bool_values(batch, "active");
+        let tags = batch_string_values(batch, "tag");
+        let next_ranks = batch_i64_values(batch, "next_rank");
+        let hinted_ranks = batch_i64_values(batch, "hinted_rank");
+        let hinted_next_ranks = batch_i64_values(batch, "hinted_next_rank");
+
+        assert_eq!(ids, vec![1, 2]);
+        assert_eq!(ranks, vec![10, 20]);
+        assert_eq!(active, vec![true, false]);
+        assert_eq!(tags, vec!["red".to_owned(), "blue".to_owned()]);
+        assert_eq!(next_ranks, vec![11, 21]);
+        assert_eq!(hinted_ranks, vec![10, 20]);
+        assert_eq!(hinted_next_ranks, vec![11, 21]);
     }
 
     fn batch_string_values(batch: &RecordBatch, column: &str) -> Vec<String> {
@@ -613,10 +671,13 @@ mod tests {
         let schema = batch.schema();
 
         assert_eq!(batch.num_rows(), 3);
-        assert_eq!(
-            field_names(schema.as_ref()),
-            vec!["id", "payload", "text_embedding", "multi_embedding", "keywords"],
-        );
+        assert_eq!(field_names(schema.as_ref()), vec![
+            "id",
+            "payload",
+            "text_embedding",
+            "multi_embedding",
+            "keywords"
+        ],);
 
         let payload = batch
             .column(schema.index_of("payload").expect("payload index"))
@@ -933,22 +994,7 @@ mod tests {
             .await?;
         let batches = dataframe.collect().await?;
         let batch = batches.into_iter().next().expect("typed payload batch");
-
-        let ids = batch_u64_ids(&batch, "id");
-        let ranks = batch_i64_values(&batch, "rank");
-        let active = batch_bool_values(&batch, "active");
-        let tags = batch_string_values(&batch, "tag");
-        let next_ranks = batch_i64_values(&batch, "next_rank");
-        let hinted_ranks = batch_i64_values(&batch, "hinted_rank");
-        let hinted_next_ranks = batch_i64_values(&batch, "hinted_next_rank");
-
-        assert_eq!(ids, vec![1, 2]);
-        assert_eq!(ranks, vec![10, 20]);
-        assert_eq!(active, vec![true, false]);
-        assert_eq!(tags, vec!["red".to_owned(), "blue".to_owned()]);
-        assert_eq!(next_ranks, vec![11, 21]);
-        assert_eq!(hinted_ranks, vec![10, 20]);
-        assert_eq!(hinted_next_ranks, vec![11, 21]);
+        assert_typed_payload_projection_batch(&batch);
 
         let filtered = ctx
             .sql("SELECT id FROM vectors WHERE payload(payload:rank, 'Integer') >= 15 ORDER BY id")
@@ -957,6 +1003,33 @@ mod tests {
             .await?;
         let filtered_batch = filtered.into_iter().next().expect("filtered typed payload batch");
         assert_eq!(batch_u64_ids(&filtered_batch, "id"), vec![2]);
+
+        let cast_filtered = ctx
+            .sql(
+                "SELECT id FROM vectors WHERE CAST(payload:rank AS BIGINT) >= 15 ORDER BY \
+                 CAST(payload:rank AS BIGINT)",
+            )
+            .await?
+            .collect()
+            .await?;
+        let cast_filtered_batch =
+            cast_filtered.into_iter().next().expect("filtered exact-cast payload batch");
+        assert_eq!(batch_u64_ids(&cast_filtered_batch, "id"), vec![2]);
+
+        let (cast_sorted_ids, cast_sorted_display) = collect_id_rows(
+            &ctx,
+            "SELECT id FROM vectors ORDER BY CAST(payload:rank AS DOUBLE) DESC",
+        )
+        .await?;
+        assert_eq!(cast_sorted_ids, vec![2, 1], "{cast_sorted_display}");
+
+        let (query_sorted_ids, query_sorted_display) = collect_id_rows(
+            &ctx,
+            "SELECT id, qdrant_order_by_score(CAST(payload:rank AS DOUBLE), true) AS score FROM \
+             vectors ORDER BY score DESC LIMIT 2",
+        )
+        .await?;
+        assert_eq!(query_sorted_ids, vec![2, 1], "{query_sorted_display}");
 
         Ok(())
     }
@@ -1115,10 +1188,13 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(ids, vec![1, 2]);
-        assert_eq!(
-            field_names(batch.schema().as_ref()),
-            vec!["id", "payload", "embedding", "aux", "score"],
-        );
+        assert_eq!(field_names(batch.schema().as_ref()), vec![
+            "id",
+            "payload",
+            "embedding",
+            "aux",
+            "score"
+        ],);
         assert_f32_eq(scores[0], 1.0);
         assert_f32_eq(scores[1], 0.4);
         assert!(display.contains("QdrantQueryExec"), "{display}");
@@ -1132,12 +1208,23 @@ mod tests {
         let client = create_qdrant_client(&c)?;
         let collection_name = "test_nearest_query_projects_payload_path";
 
+        let mut vectors_config = VectorsConfigBuilder::default();
+        let _ = vectors_config
+            .add_named_vector_params("vector", VectorParamsBuilder::new(2, Distance::Dot).build());
         let _ = client
             .create_collection(
-                CreateCollectionBuilder::new(collection_name)
-                    .vectors_config(VectorParamsBuilder::new(2, Distance::Dot)),
+                CreateCollectionBuilder::new(collection_name).vectors_config(vectors_config),
             )
             .await?;
+
+        create_payload_index(
+            &client,
+            collection_name,
+            "rank",
+            FieldType::Integer,
+            qdrant_client::qdrant::IntegerIndexParamsBuilder::new(true, true).build(),
+        )
+        .await?;
 
         let mut payload1 = qdrant_client::Payload::new();
         payload1.insert("rank", 30_i64);
@@ -1147,9 +1234,21 @@ mod tests {
         payload3.insert("rank", 10_i64);
 
         let points = vec![
-            PointStruct::new(1, Vector::new_dense(vec![1.0, 0.0]), payload1),
-            PointStruct::new(2, Vector::new_dense(vec![0.4, 0.0]), payload2),
-            PointStruct::new(3, Vector::new_dense(vec![0.0, 1.0]), payload3),
+            PointStruct::new(
+                1,
+                NamedVectors::default().add_vector("vector", vec![1.0, 0.0]),
+                payload1,
+            ),
+            PointStruct::new(
+                2,
+                NamedVectors::default().add_vector("vector", vec![0.4, 0.0]),
+                payload2,
+            ),
+            PointStruct::new(
+                3,
+                NamedVectors::default().add_vector("vector", vec![0.0, 1.0]),
+                payload3,
+            ),
         ];
         drop(client.upsert_points(UpsertPointsBuilder::new(collection_name, points)).await?);
 
@@ -1159,8 +1258,8 @@ mod tests {
 
         let dataframe = ctx
             .sql(
-                "SELECT id, payload:rank AS rank, qdrant_nearest_score(vector, 1.0, 0.0) AS \
-                 score FROM vectors ORDER BY score DESC LIMIT 2",
+                "SELECT id, payload:rank AS rank, qdrant_nearest_score(vector, 1.0, 0.0) AS score \
+                 FROM vectors ORDER BY score DESC LIMIT 2",
             )
             .await?;
         let plan = dataframe.clone().create_physical_plan().await?;
@@ -1185,30 +1284,24 @@ mod tests {
             .iter()
             .map(|value| value.expect("non-null score"))
             .collect::<Vec<_>>();
-        let rank_column = batch.column(batch.schema().index_of("rank").expect("rank column"));
-        let ranks = match rank_column.data_type() {
-            DataType::Int64 => rank_column
-                .as_any()
-                .downcast_ref::<Int64Array>()
-                .expect("rank int64 array")
-                .iter()
-                .map(|value| value.expect("non-null rank").to_string())
-                .collect::<Vec<_>>(),
-            DataType::Utf8 => rank_column
-                .as_any()
-                .downcast_ref::<StringArray>()
-                .expect("rank string array")
-                .iter()
-                .map(|value| value.expect("non-null rank").to_owned())
-                .collect::<Vec<_>>(),
-            other => panic!("unexpected rank column type: {other:?}"),
-        };
+        let ranks = batch_stringified_scalar_values(&batch, "rank");
 
         assert_eq!(ids, vec![1, 2]);
         assert_eq!(ranks, vec!["30".to_owned(), "20".to_owned()]);
         assert_f32_eq(scores[0], 1.0);
         assert_f32_eq(scores[1], 0.4);
         assert!(display.contains("QdrantQueryExec"), "{display}");
+
+        let (cast_ranks, cast_display) = collect_i64_rows(
+            &ctx,
+            "SELECT id, CAST(payload:rank AS BIGINT) AS rank, qdrant_nearest_score(vector, 1.0, \
+             0.0) AS score FROM vectors ORDER BY score DESC LIMIT 2",
+            "rank",
+        )
+        .await?;
+
+        assert_eq!(cast_ranks, vec![30, 20]);
+        assert!(cast_display.contains("QdrantQueryExec"), "{cast_display}");
 
         Ok(())
     }
@@ -1239,14 +1332,13 @@ mod tests {
                                   (SELECT id, qdrant_nearest_score(aux, 0.0, 1.0) AS score FROM \
                                   vectors ORDER BY score DESC LIMIT 5) sparse USING (id) ORDER BY \
                                   score DESC) ranked ORDER BY ranked.score DESC LIMIT 2";
-        let alias_threaded_sql = "SELECT final.id, final.score FROM (SELECT ranked.id AS id, \
-                                  ranked.score AS score FROM (SELECT dense.id AS id, \
-                                  qdrant_formula_score(dense.score + sparse.score) AS score FROM \
-                                  (SELECT id, qdrant_nearest_score(embedding, 1.0, 0.0) AS score \
-                                  FROM vectors ORDER BY score DESC LIMIT 5) dense FULL OUTER JOIN \
-                                  (SELECT id, qdrant_nearest_score(aux, 0.0, 1.0) AS score FROM \
-                                  vectors ORDER BY score DESC LIMIT 5) sparse USING (id)) ranked) \
-                                  final ORDER BY final.score DESC LIMIT 2";
+        let alias_threaded_sql =
+            "SELECT final.id, final.score FROM (SELECT ranked.id AS id, ranked.score AS score \
+             FROM (SELECT dense.id AS id, qdrant_formula_score(dense.score + sparse.score) AS \
+             score FROM (SELECT id, qdrant_nearest_score(embedding, 1.0, 0.0) AS score FROM \
+             vectors ORDER BY score DESC LIMIT 5) dense FULL OUTER JOIN (SELECT id, \
+             qdrant_nearest_score(aux, 0.0, 1.0) AS score FROM vectors ORDER BY score DESC LIMIT \
+             5) sparse USING (id)) ranked) final ORDER BY final.score DESC LIMIT 2";
         let sort_only_sql = "SELECT dense.id AS id FROM (SELECT id, \
                              qdrant_nearest_score(embedding, 1.0, 0.0) AS score FROM vectors \
                              ORDER BY score DESC LIMIT 5) dense FULL OUTER JOIN (SELECT id, \
@@ -1300,14 +1392,13 @@ mod tests {
                                  JOIN (SELECT id, qdrant_nearest_score(aux, 0.0, 1.0) AS score \
                                  FROM vectors ORDER BY score DESC LIMIT 5) sparse USING (id)) \
                                  ranked ORDER BY ranked.score DESC LIMIT 2";
-        let alias_threaded_sql = "SELECT final.id, final.score FROM (SELECT ranked.id AS id, \
-                                  ranked.score AS score FROM (SELECT dense.id AS id, \
-                                  qdrant_fusion_score('RRF', dense.score, sparse.score) AS score \
-                                  FROM (SELECT id, qdrant_nearest_score(embedding, 1.0, 0.0) AS \
-                                  score FROM vectors ORDER BY score DESC LIMIT 5) dense FULL OUTER \
-                                  JOIN (SELECT id, qdrant_nearest_score(aux, 0.0, 1.0) AS score \
-                                  FROM vectors ORDER BY score DESC LIMIT 5) sparse USING (id)) \
-                                  ranked) final ORDER BY final.score DESC LIMIT 2";
+        let alias_threaded_sql =
+            "SELECT final.id, final.score FROM (SELECT ranked.id AS id, ranked.score AS score \
+             FROM (SELECT dense.id AS id, qdrant_fusion_score('RRF', dense.score, sparse.score) \
+             AS score FROM (SELECT id, qdrant_nearest_score(embedding, 1.0, 0.0) AS score FROM \
+             vectors ORDER BY score DESC LIMIT 5) dense FULL OUTER JOIN (SELECT id, \
+             qdrant_nearest_score(aux, 0.0, 1.0) AS score FROM vectors ORDER BY score DESC LIMIT \
+             5) sparse USING (id)) ranked) final ORDER BY final.score DESC LIMIT 2";
 
         let (canonical_rows, canonical_display) = collect_scored_rows(&ctx, canonical_sql).await?;
         let (alias_rows, alias_display) = collect_scored_rows(&ctx, alias_wrapped_sql).await?;
@@ -2116,10 +2207,9 @@ mod tests {
             scroll_ordered_page(&client, float_collection, "score", Direction::Asc, None, &[], 3)
                 .await?;
         assert!(float_page.next_page_offset.is_none());
-        assert_eq!(
-            float_page.result.iter().map(float_order_value).collect::<Vec<_>>(),
-            vec![1.5, 1.5, 2.25],
-        );
+        assert_eq!(float_page.result.iter().map(float_order_value).collect::<Vec<_>>(), vec![
+            1.5, 1.5, 2.25
+        ],);
         let float_pages = collect_ordered_pages(
             &client,
             float_collection,
@@ -2178,10 +2268,10 @@ mod tests {
         )
         .await?;
         assert!(datetime_page.next_page_offset.is_none());
-        assert_eq!(
-            datetime_page.result.iter().map(int_order_value).collect::<Vec<_>>(),
-            vec![1_704_067_200_000_000, 1_704_067_200_000_000],
-        );
+        assert_eq!(datetime_page.result.iter().map(int_order_value).collect::<Vec<_>>(), vec![
+            1_704_067_200_000_000,
+            1_704_067_200_000_000
+        ],);
 
         let datetime_pages = collect_ordered_pages(
             &client,
@@ -2195,15 +2285,12 @@ mod tests {
         .await?;
         let datetime_values = datetime_pages.iter().map(|(_, value)| *value).collect::<Vec<_>>();
         let datetime_ids = datetime_pages.iter().map(|(id, _)| *id).collect::<Vec<_>>();
-        assert_eq!(
-            datetime_values,
-            vec![
-                1_704_067_200_000_000,
-                1_704_067_200_000_000,
-                1_704_153_600_000_000,
-                1_704_240_000_000_000,
-            ],
-        );
+        assert_eq!(datetime_values, vec![
+            1_704_067_200_000_000,
+            1_704_067_200_000_000,
+            1_704_153_600_000_000,
+            1_704_240_000_000_000,
+        ],);
         assert_eq!(
             datetime_ids.iter().copied().collect::<BTreeSet<_>>(),
             (1_u64..=4).collect::<BTreeSet<_>>(),

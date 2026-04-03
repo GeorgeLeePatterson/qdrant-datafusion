@@ -18,21 +18,14 @@ use datafusion::physical_plan::{
 use super::scroll::QdrantScrollState;
 use super::{QdrantOrdering, QdrantScanExec};
 use crate::arrow::schema::ID_FIELD_NAME;
-use crate::qdrant::QdrantPayloadPath;
 use crate::stream::QdrantQueryStream;
 
 impl ExecutionPlan for QdrantScanExec {
-    fn name(&self) -> &'static str {
-        "QdrantScanExec"
-    }
+    fn name(&self) -> &'static str { "QdrantScanExec" }
 
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
+    fn as_any(&self) -> &dyn Any { self }
 
-    fn properties(&self) -> &Arc<PlanProperties> {
-        &self.properties
-    }
+    fn properties(&self) -> &Arc<PlanProperties> { &self.properties }
 
     fn apply_expressions(
         &self,
@@ -41,9 +34,7 @@ impl ExecutionPlan for QdrantScanExec {
         Ok(TreeNodeRecursion::Continue)
     }
 
-    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
-        vec![]
-    }
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> { vec![] }
 
     fn with_new_children(
         self: Arc<Self>,
@@ -65,9 +56,10 @@ impl ExecutionPlan for QdrantScanExec {
             }
             return Ok(SortOrderPushdownResult::Exact { inner: Arc::new(self.clone()) });
         }
-        let Some(path) = payload_sort_path(&sort.expr) else {
+        let Some(path) = self.payload_schema.path_for_physical_ordering_expr(&sort.expr) else {
             return Ok(SortOrderPushdownResult::Unsupported);
         };
+        let path = path.key().to_owned();
         let Some(ordering) = self.payload_schema.ordering_for(&path, sort.options.descending)
         else {
             return Ok(SortOrderPushdownResult::Unsupported);
@@ -127,10 +119,10 @@ impl ExecutionPlan for QdrantScanExec {
         _context: Arc<TaskContext>,
     ) -> DataFusionResult<SendableRecordBatchStream> {
         let state = Some(QdrantScrollState {
-            client: Arc::clone(&self.client),
-            collection: self.collection.clone(),
-            pushdown: Arc::clone(&self.pushdown),
-            remaining: self.pushdown.limit,
+            client:       Arc::clone(&self.client),
+            collection:   self.collection.clone(),
+            pushdown:     Arc::clone(&self.pushdown),
+            remaining:    self.pushdown.limit,
             continuation: self.pushdown.initial_continuation(),
         });
         let inner = Box::pin(futures_util::stream::try_unfold(state, |state| async move {
@@ -142,10 +134,6 @@ impl ExecutionPlan for QdrantScanExec {
         let stream = QdrantQueryStream::new(Arc::clone(&self.pushdown.schema), inner);
         Ok(Box::pin(stream))
     }
-}
-
-fn payload_sort_path(expr: &Arc<dyn PhysicalExpr>) -> Option<String> {
-    QdrantPayloadPath::from_physical_expr(expr).map(|path| path.key().to_owned())
 }
 
 impl DisplayAs for QdrantScanExec {

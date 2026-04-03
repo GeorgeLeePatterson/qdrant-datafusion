@@ -7,11 +7,11 @@ use datafusion::arrow::datatypes::{DataType, TimeUnit};
 use datafusion::common::{Column, ScalarValue};
 use datafusion::logical_expr::expr::BinaryExpr;
 use datafusion::logical_expr::{Expr, Operator};
-use datafusion::physical_expr::PhysicalExpr;
-use datafusion::physical_expr::ScalarFunctionExpr;
 use datafusion::physical_expr::expressions::{
-    BinaryExpr as PhysicalBinaryExpr, Column as PhysicalColumn, Literal as PhysicalLiteral,
+    BinaryExpr as PhysicalBinaryExpr, CastExpr as PhysicalCastExpr, Column as PhysicalColumn,
+    Literal as PhysicalLiteral, TryCastExpr as PhysicalTryCastExpr,
 };
+use datafusion::physical_expr::{PhysicalExpr, ScalarFunctionExpr};
 use qdrant_client::qdrant::{PayloadSchemaInfo, PayloadSchemaType, payload_index_params};
 
 use self::filter::QdrantFilterValue;
@@ -71,6 +71,16 @@ impl QdrantPayloadField {
         )
     }
 
+    pub(crate) fn supports_exact_payload_cast(self, data_type: &DataType) -> bool {
+        self.projection_data_type().as_ref().is_some_and(|expected| expected == data_type)
+    }
+
+    pub(crate) fn supports_order_preserving_payload_cast(self, data_type: &DataType) -> bool {
+        self.projection_data_type()
+            .as_ref()
+            .is_some_and(|expected| is_order_preserving_cast_family(expected, data_type))
+    }
+
     pub(crate) fn into_filter_value(self, literal: &ScalarValue) -> Option<QdrantFilterValue> {
         match self {
             QdrantPayloadField::Keyword | QdrantPayloadField::Uuid => {
@@ -97,7 +107,7 @@ pub(crate) struct QdrantPayloadPath {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct QdrantPayloadAccess {
     payload: Column,
-    path: QdrantPayloadPath,
+    path:    QdrantPayloadPath,
 }
 
 impl QdrantPayloadAccess {
@@ -148,13 +158,9 @@ impl QdrantPayloadAccess {
         }
     }
 
-    pub(crate) fn payload_expr(&self) -> Expr {
-        Expr::Column(self.payload.clone())
-    }
+    pub(crate) fn payload_expr(&self) -> Expr { Expr::Column(self.payload.clone()) }
 
-    pub(crate) fn path(&self) -> &QdrantPayloadPath {
-        &self.path
-    }
+    pub(crate) fn path(&self) -> &QdrantPayloadPath { &self.path }
 
     pub(crate) fn into_parts(self) -> (Expr, String) {
         (Expr::Column(self.payload), self.path.path)
@@ -162,13 +168,9 @@ impl QdrantPayloadAccess {
 }
 
 impl QdrantPayloadPath {
-    pub(crate) fn new(path: String) -> Option<Self> {
-        (!path.is_empty()).then_some(Self { path })
-    }
+    pub(crate) fn new(path: String) -> Option<Self> { (!path.is_empty()).then_some(Self { path }) }
 
-    pub(crate) fn key(&self) -> &str {
-        &self.path
-    }
+    pub(crate) fn key(&self) -> &str { &self.path }
 
     pub(crate) fn from_logical_expr(expr: &Expr) -> Option<Self> {
         QdrantPayloadAccess::from_logical_expr(expr).map(|access| access.path)
@@ -202,6 +204,122 @@ impl QdrantPayloadPath {
 impl QdrantPayloadSchema {
     pub(crate) fn field(&self, field: &str) -> Option<QdrantPayloadField> {
         self.fields.get(field).copied()
+    }
+
+    pub(crate) fn path_for_logical_expr(&self, expr: &Expr) -> Option<QdrantPayloadPath> {
+        self.path_for_logical_expr_with_policy(
+            expr,
+            QdrantPayloadField::supports_exact_payload_cast,
+        )
+    }
+
+    pub(crate) fn path_for_logical_ordering_expr(&self, expr: &Expr) -> Option<QdrantPayloadPath> {
+        self.path_for_logical_expr_with_policy(
+            expr,
+            QdrantPayloadField::supports_order_preserving_payload_cast,
+        )
+    }
+
+    pub(crate) fn path_for_physical_expr(
+        &self,
+        expr: &Arc<dyn PhysicalExpr>,
+    ) -> Option<QdrantPayloadPath> {
+        self.path_for_physical_expr_with_policy(
+            expr,
+            QdrantPayloadField::supports_exact_payload_cast,
+        )
+    }
+
+    pub(crate) fn path_for_physical_ordering_expr(
+        &self,
+        expr: &Arc<dyn PhysicalExpr>,
+    ) -> Option<QdrantPayloadPath> {
+        self.path_for_physical_expr_with_policy(
+            expr,
+            QdrantPayloadField::supports_order_preserving_payload_cast,
+        )
+    }
+
+    fn path_for_logical_expr_with_policy<F>(
+        &self,
+        expr: &Expr,
+        accept_cast: F,
+    ) -> Option<QdrantPayloadPath>
+    where
+        F: Copy + Fn(QdrantPayloadField, &DataType) -> bool,
+    {
+        match expr {
+            Expr::Alias(alias) => self.path_for_logical_expr_with_policy(&alias.expr, accept_cast),
+            Expr::Cast(cast) => self.path_for_logical_cast_with_policy(
+                &cast.expr,
+                cast.field.data_type(),
+                accept_cast,
+            ),
+            Expr::TryCast(cast) => self.path_for_logical_cast_with_policy(
+                &cast.expr,
+                cast.field.data_type(),
+                accept_cast,
+            ),
+            _ => QdrantPayloadPath::from_logical_expr(expr),
+        }
+    }
+
+    fn path_for_physical_expr_with_policy<F>(
+        &self,
+        expr: &Arc<dyn PhysicalExpr>,
+        accept_cast: F,
+    ) -> Option<QdrantPayloadPath>
+    where
+        F: Copy + Fn(QdrantPayloadField, &DataType) -> bool,
+    {
+        if let Some(path) = QdrantPayloadPath::from_physical_expr(expr) {
+            return Some(path);
+        }
+        if let Some(cast) = expr.as_any().downcast_ref::<PhysicalCastExpr>() {
+            return self.path_for_physical_cast_with_policy(
+                cast.expr(),
+                cast.cast_type(),
+                accept_cast,
+            );
+        }
+        if let Some(cast) = expr.as_any().downcast_ref::<PhysicalTryCastExpr>() {
+            return self.path_for_physical_cast_with_policy(
+                cast.expr(),
+                cast.cast_type(),
+                accept_cast,
+            );
+        }
+        None
+    }
+
+    fn path_for_logical_cast_with_policy<F>(
+        &self,
+        expr: &Expr,
+        data_type: &DataType,
+        accept_cast: F,
+    ) -> Option<QdrantPayloadPath>
+    where
+        F: Copy + Fn(QdrantPayloadField, &DataType) -> bool,
+    {
+        let path = self.path_for_logical_expr_with_policy(expr, accept_cast)?;
+        self.field_for_path(path.key())
+            .filter(|field| accept_cast(*field, data_type))
+            .map(|_| path)
+    }
+
+    fn path_for_physical_cast_with_policy<F>(
+        &self,
+        expr: &Arc<dyn PhysicalExpr>,
+        data_type: &DataType,
+        accept_cast: F,
+    ) -> Option<QdrantPayloadPath>
+    where
+        F: Copy + Fn(QdrantPayloadField, &DataType) -> bool,
+    {
+        let path = self.path_for_physical_expr_with_policy(expr, accept_cast)?;
+        self.field_for_path(path.key())
+            .filter(|field| accept_cast(*field, data_type))
+            .map(|_| path)
     }
 
     pub(crate) fn field_for_path(&self, path: &str) -> Option<QdrantPayloadField> {
@@ -243,7 +361,7 @@ impl From<HashMap<String, PayloadSchemaInfo>> for QdrantPayloadSchema {
                         Some(payload_index_params::IndexParams::IntegerIndexParams(params)) => {
                             QdrantPayloadField::Integer {
                                 lookup: params.lookup.unwrap_or(true),
-                                range: params.range.unwrap_or(true),
+                                range:  params.range.unwrap_or(true),
                             }
                         }
                         _ => return None,
@@ -301,6 +419,12 @@ fn physical_path_literal(expr: &Arc<dyn PhysicalExpr>) -> Option<QdrantPayloadPa
     QdrantPayloadPath::new(string_scalar(literal.value())?)
 }
 
+fn is_order_preserving_cast_family(source_type: &DataType, target_type: &DataType) -> bool {
+    ((source_type.is_numeric() || *source_type == DataType::Boolean) && target_type.is_numeric())
+        || (source_type.is_temporal() && target_type.is_temporal())
+        || source_type == target_type
+}
+
 #[cfg(test)]
 mod tests {
     use qdrant_client::qdrant::{
@@ -342,109 +466,154 @@ mod tests {
     }
 
     #[test]
+    fn payload_schema_recognizes_exact_payload_casts_only() {
+        use datafusion::arrow::datatypes::DataType;
+        use datafusion::common::Column;
+        use datafusion::logical_expr::{BinaryExpr, Cast, Expr, Operator};
+        use datafusion::prelude::lit;
+
+        let schema =
+            QdrantPayloadSchema::from(HashMap::from([("rank".to_owned(), PayloadSchemaInfo {
+                data_type: PayloadSchemaType::Integer as i32,
+                params:    None,
+                points:    None,
+            })]));
+        let raw = Expr::BinaryExpr(BinaryExpr::new(
+            Box::new(Expr::Column(Column::new_unqualified(PAYLOAD_FIELD_NAME))),
+            Operator::Colon,
+            Box::new(lit("rank")),
+        ));
+        let exact = Expr::Cast(Cast::new(Box::new(raw.clone()), DataType::Int64));
+        let narrowing = Expr::Cast(Cast::new(Box::new(raw), DataType::Int32));
+
+        assert_eq!(schema.path_for_logical_expr(&exact).expect("exact cast path").key(), "rank");
+        assert!(schema.path_for_logical_expr(&narrowing).is_none());
+    }
+
+    #[test]
+    fn payload_schema_recognizes_order_preserving_payload_casts_for_ordering() {
+        use datafusion::arrow::datatypes::DataType;
+        use datafusion::common::Column;
+        use datafusion::logical_expr::{BinaryExpr, Cast, Expr, Operator};
+        use datafusion::prelude::lit;
+
+        let schema =
+            QdrantPayloadSchema::from(HashMap::from([("rank".to_owned(), PayloadSchemaInfo {
+                data_type: PayloadSchemaType::Integer as i32,
+                params:    None,
+                points:    None,
+            })]));
+        let raw = Expr::BinaryExpr(BinaryExpr::new(
+            Box::new(Expr::Column(Column::new_unqualified(PAYLOAD_FIELD_NAME))),
+            Operator::Colon,
+            Box::new(lit("rank")),
+        ));
+        let exact = Expr::Cast(Cast::new(Box::new(raw.clone()), DataType::Int64));
+        let narrowing = Expr::Cast(Cast::new(Box::new(raw.clone()), DataType::Int32));
+        let widening = Expr::Cast(Cast::new(Box::new(raw.clone()), DataType::Float64));
+        let stringy = Expr::Cast(Cast::new(Box::new(raw), DataType::Utf8));
+
+        assert_eq!(
+            schema.path_for_logical_ordering_expr(&exact).expect("exact ordering cast path").key(),
+            "rank"
+        );
+        assert_eq!(
+            schema
+                .path_for_logical_ordering_expr(&narrowing)
+                .expect("narrowing ordering cast path")
+                .key(),
+            "rank"
+        );
+        assert_eq!(
+            schema
+                .path_for_logical_ordering_expr(&widening)
+                .expect("widening ordering cast path")
+                .key(),
+            "rank"
+        );
+        assert!(schema.path_for_logical_ordering_expr(&stringy).is_none());
+    }
+
+    #[test]
     #[expect(clippy::too_many_lines)]
     fn payload_schema_keeps_filterable_and_orderable_scalar_indexes() {
         let schema = QdrantPayloadSchema::from(HashMap::from([
-            (
-                "rank".to_owned(),
-                PayloadSchemaInfo {
-                    data_type: PayloadSchemaType::Integer as i32,
-                    params: Some(qdrant_client::qdrant::PayloadIndexParams {
-                        index_params: Some(payload_index_params::IndexParams::IntegerIndexParams(
-                            IntegerIndexParams { range: Some(true), ..Default::default() },
-                        )),
-                    }),
-                    points: None,
-                },
-            ),
-            (
-                "match_only".to_owned(),
-                PayloadSchemaInfo {
-                    data_type: PayloadSchemaType::Integer as i32,
-                    params: Some(qdrant_client::qdrant::PayloadIndexParams {
-                        index_params: Some(payload_index_params::IndexParams::IntegerIndexParams(
-                            IntegerIndexParams {
-                                lookup: Some(true),
-                                range: Some(false),
-                                ..Default::default()
-                            },
-                        )),
-                    }),
-                    points: None,
-                },
-            ),
-            (
-                "range_only".to_owned(),
-                PayloadSchemaInfo {
-                    data_type: PayloadSchemaType::Integer as i32,
-                    params: Some(qdrant_client::qdrant::PayloadIndexParams {
-                        index_params: Some(payload_index_params::IndexParams::IntegerIndexParams(
-                            IntegerIndexParams {
-                                lookup: Some(false),
-                                range: Some(true),
-                                ..Default::default()
-                            },
-                        )),
-                    }),
-                    points: None,
-                },
-            ),
-            (
-                "regular_int".to_owned(),
-                PayloadSchemaInfo {
-                    data_type: PayloadSchemaType::Integer as i32,
-                    params: None,
-                    points: None,
-                },
-            ),
-            (
-                "score".to_owned(),
-                PayloadSchemaInfo {
-                    data_type: PayloadSchemaType::Float as i32,
-                    params: Some(qdrant_client::qdrant::PayloadIndexParams {
-                        index_params: Some(payload_index_params::IndexParams::FloatIndexParams(
-                            FloatIndexParams::default(),
-                        )),
-                    }),
-                    points: None,
-                },
-            ),
-            (
-                "active".to_owned(),
-                PayloadSchemaInfo {
-                    data_type: PayloadSchemaType::Bool as i32,
-                    params: Some(qdrant_client::qdrant::PayloadIndexParams {
-                        index_params: Some(payload_index_params::IndexParams::BoolIndexParams(
-                            BoolIndexParams::default(),
-                        )),
-                    }),
-                    points: None,
-                },
-            ),
-            (
-                "tag".to_owned(),
-                PayloadSchemaInfo {
-                    data_type: PayloadSchemaType::Keyword as i32,
-                    params: Some(qdrant_client::qdrant::PayloadIndexParams {
-                        index_params: Some(payload_index_params::IndexParams::KeywordIndexParams(
-                            KeywordIndexParams::default(),
-                        )),
-                    }),
-                    points: None,
-                },
-            ),
-            (
-                "doc_id".to_owned(),
-                PayloadSchemaInfo {
-                    data_type: PayloadSchemaType::Uuid as i32,
-                    params: Some(qdrant_client::qdrant::PayloadIndexParams {
-                        index_params: Some(payload_index_params::IndexParams::UuidIndexParams(
-                            UuidIndexParams::default(),
-                        )),
-                    }),
-                    points: None,
-                },
-            ),
+            ("rank".to_owned(), PayloadSchemaInfo {
+                data_type: PayloadSchemaType::Integer as i32,
+                params:    Some(qdrant_client::qdrant::PayloadIndexParams {
+                    index_params: Some(payload_index_params::IndexParams::IntegerIndexParams(
+                        IntegerIndexParams { range: Some(true), ..Default::default() },
+                    )),
+                }),
+                points:    None,
+            }),
+            ("match_only".to_owned(), PayloadSchemaInfo {
+                data_type: PayloadSchemaType::Integer as i32,
+                params:    Some(qdrant_client::qdrant::PayloadIndexParams {
+                    index_params: Some(payload_index_params::IndexParams::IntegerIndexParams(
+                        IntegerIndexParams {
+                            lookup: Some(true),
+                            range: Some(false),
+                            ..Default::default()
+                        },
+                    )),
+                }),
+                points:    None,
+            }),
+            ("range_only".to_owned(), PayloadSchemaInfo {
+                data_type: PayloadSchemaType::Integer as i32,
+                params:    Some(qdrant_client::qdrant::PayloadIndexParams {
+                    index_params: Some(payload_index_params::IndexParams::IntegerIndexParams(
+                        IntegerIndexParams {
+                            lookup: Some(false),
+                            range: Some(true),
+                            ..Default::default()
+                        },
+                    )),
+                }),
+                points:    None,
+            }),
+            ("regular_int".to_owned(), PayloadSchemaInfo {
+                data_type: PayloadSchemaType::Integer as i32,
+                params:    None,
+                points:    None,
+            }),
+            ("score".to_owned(), PayloadSchemaInfo {
+                data_type: PayloadSchemaType::Float as i32,
+                params:    Some(qdrant_client::qdrant::PayloadIndexParams {
+                    index_params: Some(payload_index_params::IndexParams::FloatIndexParams(
+                        FloatIndexParams::default(),
+                    )),
+                }),
+                points:    None,
+            }),
+            ("active".to_owned(), PayloadSchemaInfo {
+                data_type: PayloadSchemaType::Bool as i32,
+                params:    Some(qdrant_client::qdrant::PayloadIndexParams {
+                    index_params: Some(payload_index_params::IndexParams::BoolIndexParams(
+                        BoolIndexParams::default(),
+                    )),
+                }),
+                points:    None,
+            }),
+            ("tag".to_owned(), PayloadSchemaInfo {
+                data_type: PayloadSchemaType::Keyword as i32,
+                params:    Some(qdrant_client::qdrant::PayloadIndexParams {
+                    index_params: Some(payload_index_params::IndexParams::KeywordIndexParams(
+                        KeywordIndexParams::default(),
+                    )),
+                }),
+                points:    None,
+            }),
+            ("doc_id".to_owned(), PayloadSchemaInfo {
+                data_type: PayloadSchemaType::Uuid as i32,
+                params:    Some(qdrant_client::qdrant::PayloadIndexParams {
+                    index_params: Some(payload_index_params::IndexParams::UuidIndexParams(
+                        UuidIndexParams::default(),
+                    )),
+                }),
+                points:    None,
+            }),
         ]));
 
         assert_eq!(

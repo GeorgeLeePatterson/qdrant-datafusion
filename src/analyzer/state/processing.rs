@@ -7,9 +7,9 @@ use crate::analyzer::source::Source;
 
 #[derive(Debug, Clone)]
 pub(crate) struct ProcessingState {
-    pub(super) source: Source,
+    pub(super) source:  Source,
     pub(super) filters: FiltersState,
-    pub(super) op: Op,
+    pub(super) op:      Op,
 }
 
 #[expect(
@@ -27,7 +27,7 @@ impl ProcessingState {
         plan: LogicalPlan,
         transformed: bool,
     ) -> Result<super::super::Analysis> {
-        let Some(op) = self.op.project(&plan)? else {
+        let Some(op) = self.op.project(&self.source, &plan)? else {
             return Ok(super::super::fatal(
                 plan,
                 transformed,

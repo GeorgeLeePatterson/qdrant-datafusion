@@ -11,7 +11,7 @@ const ALIASES: &[&str] = &["context_score"];
 #[derive(Debug, Clone)]
 pub(crate) struct ContextCall {
     pub(crate) vector_field: String,
-    pub(crate) context: Expr,
+    pub(crate) context:      Expr,
 }
 
 impl ContextCall {
@@ -26,7 +26,7 @@ impl ContextCall {
         }
         Ok(Some(Self {
             vector_field: column_name(&args[0], CONTEXT_SCORE_FUNCTION_NAME)?,
-            context: args[1].clone(),
+            context:      args[1].clone(),
         }))
     }
 }
