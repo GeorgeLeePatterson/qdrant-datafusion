@@ -12,7 +12,7 @@ use super::super::query::{
     QueryPrefetchBranch, QueryRequestPlan,
 };
 use super::super::source::Source;
-use crate::pushdown::filter::QdrantFilters;
+use crate::qdrant::filter::QdrantFilters;
 
 #[derive(Debug, Clone)]
 pub(crate) struct QueryKernel {

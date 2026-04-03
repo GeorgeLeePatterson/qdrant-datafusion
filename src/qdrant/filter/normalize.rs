@@ -14,13 +14,11 @@ use datafusion::physical_expr::utils::{
     split_conjunction as split_physical_conjunction, split_disjunction,
 };
 
-use super::value::{point_id_scalar, string_scalar};
+use super::value::point_id_scalar;
 use super::{
     QdrantFieldRef, QdrantFilterExpr, QdrantPayloadPath, QdrantPayloadSchema, QdrantPredicate,
 };
-use crate::arrow::schema::{
-    ID_FIELD_NAME, PAYLOAD_FIELD_NAME, QdrantFieldBinding, UNNAMED_VECTOR_FIELD_NAME,
-};
+use crate::arrow::schema::{ID_FIELD_NAME, QdrantFieldBinding, UNNAMED_VECTOR_FIELD_NAME};
 
 pub(super) fn exact_expr(
     base_schema: &SchemaRef,
@@ -102,7 +100,7 @@ impl<'a> QdrantExprNormalizer<'a> {
                 else {
                     return None;
                 };
-                let field_type = self.payload_schema.field(field.key())?;
+                let field_type = self.payload_schema.field_for_path(field.key())?;
                 let low = field_type.into_filter_value(Self::logical_scalar_literal(low)?)?;
                 let high = field_type.into_filter_value(Self::logical_scalar_literal(high)?)?;
                 let range = field_type.into_range_predicate(
@@ -213,7 +211,7 @@ impl<'a> QdrantExprNormalizer<'a> {
                 values.into_iter().map(point_id_scalar).collect::<Option<Vec<_>>>()?,
             ),
             QdrantFieldRef::Payload(field) => {
-                let field_type = self.payload_schema.field(field.key())?;
+                let field_type = self.payload_schema.field_for_path(field.key())?;
                 if !field_type.supports_equality() {
                     return None;
                 }
@@ -248,7 +246,7 @@ impl<'a> QdrantExprNormalizer<'a> {
                 }
             }
             QdrantFieldRef::Payload(field) => {
-                let field_type = self.payload_schema.field(field.key())?;
+                let field_type = self.payload_schema.field_for_path(field.key())?;
                 let value = field_type.into_filter_value(literal)?;
                 match op {
                     Operator::Eq if field_type.supports_equality() => {
@@ -296,37 +294,22 @@ impl<'a> QdrantExprNormalizer<'a> {
 
 impl QdrantFieldRef {
     fn from_logical_expr(base_schema: &SchemaRef, expr: &Expr) -> Option<Self> {
+        if let Some(path) = QdrantPayloadPath::from_logical_expr(expr) {
+            return Some(Self::Payload(path));
+        }
         match expr {
             Expr::Column(column) => Self::from_column_name(base_schema, &column.name),
-            Expr::BinaryExpr(BinaryExpr { left, op: Operator::Colon, .. }) => {
-                let Expr::Column(column) = left.as_ref() else {
-                    return None;
-                };
-                if column.name != PAYLOAD_FIELD_NAME {
-                    return None;
-                }
-                Some(Self::Payload(QdrantPayloadPath::from_logical_expr(expr)?))
-            }
             Expr::Alias(alias) => Self::from_logical_expr(base_schema, &alias.expr),
             _ => None,
         }
     }
 
     fn from_physical_expr(base_schema: &SchemaRef, expr: &Arc<dyn PhysicalExpr>) -> Option<Self> {
-        if let Some(column) = expr.as_any().downcast_ref::<PhysicalColumn>() {
-            return Self::from_column_name(base_schema, column.name());
+        if let Some(path) = QdrantPayloadPath::from_physical_expr(expr) {
+            return Some(Self::Payload(path));
         }
-        let binary = expr.as_any().downcast_ref::<PhysicalBinaryExpr>()?;
-        if *binary.op() != Operator::Colon {
-            return None;
-        }
-        let column = binary.left().as_any().downcast_ref::<PhysicalColumn>()?;
-        if column.name() != PAYLOAD_FIELD_NAME {
-            return None;
-        }
-        Some(Self::Payload(QdrantPayloadPath::new(string_scalar(
-            QdrantExprNormalizer::physical_scalar_literal(binary.right())?,
-        )?)?))
+        let column = expr.as_any().downcast_ref::<PhysicalColumn>()?;
+        Self::from_column_name(base_schema, column.name())
     }
 
     fn from_column_name(base_schema: &SchemaRef, name: &str) -> Option<Self> {

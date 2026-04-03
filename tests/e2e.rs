@@ -197,6 +197,7 @@ mod tests {
         Array, BooleanArray, FixedSizeListArray, Float32Array, Int64Array, StringArray, StructArray,
     };
     use datafusion::arrow::datatypes::DataType;
+    use datafusion::arrow::record_batch::RecordBatch;
     use datafusion::prelude::*;
     use ndarrow::{
         csr_matrix_batch_iter, fixed_size_list_as_array2, fixed_size_list_as_array2_masked,
@@ -347,6 +348,50 @@ mod tests {
             })
             .collect::<Vec<_>>();
         Ok((rows, display))
+    }
+
+    fn batch_u64_ids(batch: &RecordBatch, column: &str) -> Vec<u64> {
+        batch
+            .column(batch.schema().index_of(column).expect("id column"))
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("id string array")
+            .iter()
+            .map(|value| value.expect("non-null id").parse::<u64>().expect("numeric id"))
+            .collect()
+    }
+
+    fn batch_i64_values(batch: &RecordBatch, column: &str) -> Vec<i64> {
+        batch
+            .column(batch.schema().index_of(column).expect("int64 column"))
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .expect("int64 array")
+            .iter()
+            .map(|value| value.expect("non-null int64 value"))
+            .collect()
+    }
+
+    fn batch_bool_values(batch: &RecordBatch, column: &str) -> Vec<bool> {
+        batch
+            .column(batch.schema().index_of(column).expect("bool column"))
+            .as_any()
+            .downcast_ref::<BooleanArray>()
+            .expect("bool array")
+            .iter()
+            .map(|value| value.expect("non-null bool value"))
+            .collect()
+    }
+
+    fn batch_string_values(batch: &RecordBatch, column: &str) -> Vec<String> {
+        batch
+            .column(batch.schema().index_of(column).expect("string column"))
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("string array")
+            .iter()
+            .map(|value| value.expect("non-null string value").to_owned())
+            .collect()
     }
 
     async fn create_scalar_collection(client: &Qdrant, collection_name: &str) -> Result<()> {
@@ -881,58 +926,37 @@ mod tests {
         let dataframe = ctx
             .sql(
                 "SELECT id, payload:rank AS rank, payload:active AS active, payload:tag AS tag, \
-                 CAST(payload:rank AS BIGINT) + 1 AS next_rank FROM vectors ORDER BY id",
+                 CAST(payload:rank AS BIGINT) + 1 AS next_rank, payload(payload:rank, 'Int64') AS \
+                 hinted_rank, payload(payload:rank, 'Integer') + 1 AS hinted_next_rank FROM \
+                 vectors ORDER BY id",
             )
             .await?;
         let batches = dataframe.collect().await?;
         let batch = batches.into_iter().next().expect("typed payload batch");
 
-        let ids = batch
-            .column(batch.schema().index_of("id").expect("id column"))
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .expect("id string array")
-            .iter()
-            .map(|value| value.expect("non-null id").parse::<u64>().expect("numeric id"))
-            .collect::<Vec<_>>();
-        let ranks = batch
-            .column(batch.schema().index_of("rank").expect("rank column"))
-            .as_any()
-            .downcast_ref::<Int64Array>()
-            .expect("rank int64 array")
-            .iter()
-            .map(|value| value.expect("non-null rank"))
-            .collect::<Vec<_>>();
-        let active = batch
-            .column(batch.schema().index_of("active").expect("active column"))
-            .as_any()
-            .downcast_ref::<BooleanArray>()
-            .expect("active bool array")
-            .iter()
-            .map(|value| value.expect("non-null active"))
-            .collect::<Vec<_>>();
-        let tags = batch
-            .column(batch.schema().index_of("tag").expect("tag column"))
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .expect("tag string array")
-            .iter()
-            .map(|value| value.expect("non-null tag").to_owned())
-            .collect::<Vec<_>>();
-        let next_ranks = batch
-            .column(batch.schema().index_of("next_rank").expect("next_rank column"))
-            .as_any()
-            .downcast_ref::<Int64Array>()
-            .expect("next_rank int64 array")
-            .iter()
-            .map(|value| value.expect("non-null next_rank"))
-            .collect::<Vec<_>>();
+        let ids = batch_u64_ids(&batch, "id");
+        let ranks = batch_i64_values(&batch, "rank");
+        let active = batch_bool_values(&batch, "active");
+        let tags = batch_string_values(&batch, "tag");
+        let next_ranks = batch_i64_values(&batch, "next_rank");
+        let hinted_ranks = batch_i64_values(&batch, "hinted_rank");
+        let hinted_next_ranks = batch_i64_values(&batch, "hinted_next_rank");
 
         assert_eq!(ids, vec![1, 2]);
         assert_eq!(ranks, vec![10, 20]);
         assert_eq!(active, vec![true, false]);
         assert_eq!(tags, vec!["red".to_owned(), "blue".to_owned()]);
         assert_eq!(next_ranks, vec![11, 21]);
+        assert_eq!(hinted_ranks, vec![10, 20]);
+        assert_eq!(hinted_next_ranks, vec![11, 21]);
+
+        let filtered = ctx
+            .sql("SELECT id FROM vectors WHERE payload(payload:rank, 'Integer') >= 15 ORDER BY id")
+            .await?
+            .collect()
+            .await?;
+        let filtered_batch = filtered.into_iter().next().expect("filtered typed payload batch");
+        assert_eq!(batch_u64_ids(&filtered_batch, "id"), vec![2]);
 
         Ok(())
     }

@@ -299,7 +299,7 @@ mod tests {
 
     use super::*;
     use crate::arrow::schema::{ID_FIELD_NAME, PAYLOAD_FIELD_NAME, UNNAMED_VECTOR_FIELD_NAME};
-    use crate::pushdown::QdrantPayloadSchema;
+    use crate::qdrant::QdrantPayloadSchema;
 
     fn schema(fields: Vec<Field>) -> SchemaRef {
         Arc::new(Schema::new(fields))

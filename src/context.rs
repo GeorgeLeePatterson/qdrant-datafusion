@@ -13,7 +13,7 @@ use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_planner::{DefaultPhysicalPlanner, ExtensionPlanner, PhysicalPlanner};
 use datafusion::prelude::{DataFrame, SQLOptions, SessionContext};
 
-use crate::analyzer::{CoordinatedCombiners, PrototypePushdown};
+use crate::analyzer::{CoordinatedCombiners, Pushdown};
 use crate::context::planner::QdrantExtensionPlanner;
 use crate::expr_fn::register_functions;
 
@@ -23,9 +23,9 @@ pub fn prepare_session_context(ctx: SessionContext) -> SessionContext {
     let type_coercion = TypeCoercion::default();
     let pos =
         analyzer_rules.iter().position(|rule| rule.name() == type_coercion.name()).unwrap_or(0);
-    let prototype_rule: Arc<dyn AnalyzerRule + Send + Sync> = Arc::new(PrototypePushdown);
-    if !analyzer_rules.iter().any(|existing| existing.name() == prototype_rule.name()) {
-        analyzer_rules.insert(pos, prototype_rule);
+    let rule: Arc<dyn AnalyzerRule + Send + Sync> = Arc::new(Pushdown);
+    if !analyzer_rules.iter().any(|existing| existing.name() == rule.name()) {
+        analyzer_rules.insert(pos, rule);
     }
     let mut optimizer_rules = state.optimizer().rules.clone();
     let coordinated_rule: Arc<dyn OptimizerRule + Send + Sync> = Arc::new(CoordinatedCombiners);

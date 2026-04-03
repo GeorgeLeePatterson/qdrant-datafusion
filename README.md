@@ -29,12 +29,12 @@ canonical carrier; missing values are not imputed during scan.
 - schema/projection-driven vector selection
 - SQL `LIMIT` pushdown to the scan stream
 - exact physical sort pushdown for `ORDER BY id ASC`
-- exact payload-key sort pushdown for the admitted `ORDER BY payload:<path>` subset on indexed integer, float, and datetime payload fields
+- exact payload-key sort pushdown for the admitted single-key payload-path subset, including direct `payload:<path>` and equivalent `payload(payload:<path>, 'Type')` forms, on indexed integer, float, and datetime payload fields
 - exact boolean filter pushdown over the admitted leaf subset:
   - `AND`, `OR`, and `NOT`
   - `id =`, `id !=`, `id IN (...)`, `id NOT IN (...)`
   - vector-column `IS NULL` / `IS NOT NULL`
-- indexed scalar `payload:<path>` comparisons, `IN`, `NOT IN`, `BETWEEN`, and `NOT BETWEEN`
+- indexed scalar payload-field comparisons, `IN`, `NOT IN`, `BETWEEN`, and `NOT BETWEEN` over the admitted `payload:<path>` and equivalent public `payload(...)` forms
   - integer match predicates require lookup-capable integer indexes
   - integer range predicates require range-capable integer indexes
 - exact `COUNT(*)` pushdown over a single `Qdrant` source through the crate's session/planner helper
@@ -72,6 +72,8 @@ canonical carrier; missing values are not imputed during scan.
   - `IS NULL` means missing or explicit null
   - `IS NOT NULL` means present and non-null
   - empty scalar values remain ordinary non-null SQL values, for example `payload:<path> = ''`
+- direct scan-path projection of known payload fields now becomes typed logical output
+- public typed payload helper `payload(accessor, 'Type')` is available when SQL planning needs an explicit payload scalar type
 
 ## Not Yet Admitted
 
@@ -79,9 +81,8 @@ canonical carrier; missing values are not imputed during scan.
 - payload empty-container/cardinality semantics, text, geo, nested, and count-oriented payload predicates
 - broader payload-key SQL `ORDER BY` pushdown beyond the admitted `payload:<path>` subset
 - broader aggregate/grouped SQL beyond the admitted scalar-facet subset
-- projection-time `payload:<path>` execution outside an admitted `Qdrant` kernel in the prepared
-  session/planner path
-- broader `Qdrant`-specific UDF, UDAF, or UDTF surface beyond the current nearest marker UDF
+- fully implicit arithmetic and similar typed SQL over raw `payload:<path>` when `DataFusion` must infer the payload scalar type during SQL planning; use `payload(payload:<path>, 'Type')` or an explicit `CAST(...)` today
+- broader `Qdrant`-specific UDF, UDAF, or UDTF surface beyond the current nearest marker UDF and typed `payload(...)` helper
 - SQL-native search / recommend / discover / fusion semantics
 - broader planner rewrites beyond the narrow exact `COUNT(*)` / facet slices
 
@@ -189,13 +190,22 @@ WHERE id IN ('1', '2', '3');
 SELECT id
 FROM docs
 WHERE payload:rank >= 10
+ORDER BY payload:rank;
+
+SELECT payload:rank AS rank
+FROM docs
+ORDER BY payload(payload:rank, 'Integer');
+
+SELECT id, payload(payload:rank, 'Integer') + 1 AS next_rank
+FROM docs
+WHERE payload(payload:rank, 'Integer') >= 10
+ORDER BY payload(payload:rank, 'Integer');
 
 SELECT id, qdrant_nearest_score(embedding, 1.0, 0.0) AS score
 FROM docs
 WHERE qdrant_nearest_score(embedding, 1.0, 0.0) >= 0.3
 ORDER BY score DESC
 LIMIT 10;
-ORDER BY payload:rank;
 
 SELECT id
 FROM docs

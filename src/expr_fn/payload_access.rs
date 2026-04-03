@@ -5,8 +5,9 @@ use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use datafusion::arrow::array::{Array, LargeStringArray, StringArray};
 use datafusion::arrow::datatypes::{DataType, Field, FieldRef, TimeUnit};
 use datafusion::common::{Result, ScalarValue, exec_err};
+use datafusion::logical_expr::expr::Cast;
 use datafusion::logical_expr::{
-    ColumnarValue, ScalarFunctionArgs, ScalarUDF, ScalarUDFImpl, Signature, Volatility,
+    ColumnarValue, Expr, ScalarFunctionArgs, ScalarUDF, ScalarUDFImpl, Signature, Volatility,
 };
 use datafusion::prelude::lit;
 
@@ -15,6 +16,17 @@ pub(crate) const PAYLOAD_INT_ACCESS_FUNCTION_NAME: &str = "__qdrant_payload_int_
 pub(crate) const PAYLOAD_FLOAT_ACCESS_FUNCTION_NAME: &str = "__qdrant_payload_float_access";
 pub(crate) const PAYLOAD_BOOL_ACCESS_FUNCTION_NAME: &str = "__qdrant_payload_bool_access";
 pub(crate) const PAYLOAD_DATETIME_ACCESS_FUNCTION_NAME: &str = "__qdrant_payload_datetime_access";
+
+pub(crate) fn is_payload_access_function_name(name: &str) -> bool {
+    matches!(
+        name,
+        PAYLOAD_TEXT_ACCESS_FUNCTION_NAME
+            | PAYLOAD_INT_ACCESS_FUNCTION_NAME
+            | PAYLOAD_FLOAT_ACCESS_FUNCTION_NAME
+            | PAYLOAD_BOOL_ACCESS_FUNCTION_NAME
+            | PAYLOAD_DATETIME_ACCESS_FUNCTION_NAME
+    )
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum PayloadAccessKind {
@@ -102,38 +114,23 @@ impl ScalarUDFImpl for PayloadAccessUdf {
     }
 }
 
-pub(crate) fn qdrant_payload_text_access(
-    payload: datafusion::logical_expr::Expr,
-    path: impl Into<String>,
-) -> datafusion::logical_expr::Expr {
+pub(crate) fn qdrant_payload_text_access(payload: Expr, path: impl Into<String>) -> Expr {
     qdrant_payload_text_access_udf().call(vec![payload, lit(path.into())])
 }
 
-pub(crate) fn qdrant_payload_int_access(
-    payload: datafusion::logical_expr::Expr,
-    path: impl Into<String>,
-) -> datafusion::logical_expr::Expr {
+pub(crate) fn qdrant_payload_int_access(payload: Expr, path: impl Into<String>) -> Expr {
     qdrant_payload_int_access_udf().call(vec![payload, lit(path.into())])
 }
 
-pub(crate) fn qdrant_payload_float_access(
-    payload: datafusion::logical_expr::Expr,
-    path: impl Into<String>,
-) -> datafusion::logical_expr::Expr {
+pub(crate) fn qdrant_payload_float_access(payload: Expr, path: impl Into<String>) -> Expr {
     qdrant_payload_float_access_udf().call(vec![payload, lit(path.into())])
 }
 
-pub(crate) fn qdrant_payload_bool_access(
-    payload: datafusion::logical_expr::Expr,
-    path: impl Into<String>,
-) -> datafusion::logical_expr::Expr {
+pub(crate) fn qdrant_payload_bool_access(payload: Expr, path: impl Into<String>) -> Expr {
     qdrant_payload_bool_access_udf().call(vec![payload, lit(path.into())])
 }
 
-pub(crate) fn qdrant_payload_datetime_access(
-    payload: datafusion::logical_expr::Expr,
-    path: impl Into<String>,
-) -> datafusion::logical_expr::Expr {
+pub(crate) fn qdrant_payload_datetime_access(payload: Expr, path: impl Into<String>) -> Expr {
     qdrant_payload_datetime_access_udf().call(vec![payload, lit(path.into())])
 }
 
@@ -165,6 +162,46 @@ pub(crate) fn qdrant_payload_datetime_access_udf() -> ScalarUDF {
     static UDF: OnceLock<ScalarUDF> = OnceLock::new();
     UDF.get_or_init(|| ScalarUDF::new_from_impl(PayloadAccessUdf::new(PayloadAccessKind::Datetime)))
         .clone()
+}
+
+pub(crate) fn payload_access_expr(
+    payload: Expr,
+    path: impl Into<String>,
+    data_type: &DataType,
+) -> Option<Expr> {
+    let path = path.into();
+    match data_type {
+        DataType::Utf8 => Some(qdrant_payload_text_access(payload, path)),
+        DataType::LargeUtf8 => Some(Expr::Cast(Cast::new(
+            Box::new(qdrant_payload_text_access(payload, path)),
+            DataType::LargeUtf8,
+        ))),
+        DataType::Boolean => Some(qdrant_payload_bool_access(payload, path)),
+        DataType::Int64 => Some(qdrant_payload_int_access(payload, path)),
+        DataType::Int8
+        | DataType::Int16
+        | DataType::Int32
+        | DataType::UInt8
+        | DataType::UInt16
+        | DataType::UInt32
+        | DataType::UInt64 => Some(Expr::Cast(Cast::new(
+            Box::new(qdrant_payload_int_access(payload, path)),
+            data_type.clone(),
+        ))),
+        DataType::Float64 => Some(qdrant_payload_float_access(payload, path)),
+        DataType::Float32 => Some(Expr::Cast(Cast::new(
+            Box::new(qdrant_payload_float_access(payload, path)),
+            DataType::Float32,
+        ))),
+        DataType::Timestamp(TimeUnit::Millisecond, None) => {
+            Some(qdrant_payload_datetime_access(payload, path))
+        }
+        DataType::Timestamp(_, _) => Some(Expr::Cast(Cast::new(
+            Box::new(qdrant_payload_datetime_access(payload, path)),
+            data_type.clone(),
+        ))),
+        _ => None,
+    }
 }
 
 fn array_string_value(

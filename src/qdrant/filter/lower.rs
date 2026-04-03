@@ -1,7 +1,7 @@
 use qdrant_client::qdrant::{Condition, DatetimeRange, Filter, Range};
 
 use super::{QdrantFilterExpr, QdrantFilterValue, QdrantPayloadPath, QdrantPredicate};
-use crate::pushdown::QdrantPayloadField;
+use crate::qdrant::QdrantPayloadField;
 
 impl QdrantPredicate {
     pub(super) fn from_disjunction(exprs: &[QdrantFilterExpr]) -> Option<Self> {

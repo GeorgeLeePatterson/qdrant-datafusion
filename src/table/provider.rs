@@ -12,7 +12,7 @@ use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::Expr;
 
 use super::{QdrantScanExec, QdrantScanSpec, QdrantTableProvider};
-use crate::pushdown::filter::QdrantFilters;
+use crate::qdrant::filter::QdrantFilters;
 
 #[async_trait::async_trait]
 impl datafusion::catalog::TableProvider for QdrantTableProvider {

@@ -1,11 +1,17 @@
 pub(crate) mod filter;
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use datafusion::arrow::datatypes::{DataType, TimeUnit};
-use datafusion::common::ScalarValue;
+use datafusion::common::{Column, ScalarValue};
 use datafusion::logical_expr::expr::BinaryExpr;
 use datafusion::logical_expr::{Expr, Operator};
+use datafusion::physical_expr::PhysicalExpr;
+use datafusion::physical_expr::ScalarFunctionExpr;
+use datafusion::physical_expr::expressions::{
+    BinaryExpr as PhysicalBinaryExpr, Column as PhysicalColumn, Literal as PhysicalLiteral,
+};
 use qdrant_client::qdrant::{PayloadSchemaInfo, PayloadSchemaType, payload_index_params};
 
 use self::filter::QdrantFilterValue;
@@ -13,6 +19,8 @@ use self::filter::value::{
     boolean_scalar, float_scalar, integer_scalar, string_scalar, timestamp_scalar,
 };
 use crate::arrow::schema::PAYLOAD_FIELD_NAME;
+use crate::expr_fn::{is_payload_access_function_name, is_payload_function_name};
+use crate::table::scan_spec::QdrantPayloadOrdering;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct QdrantPayloadSchema {
@@ -86,6 +94,73 @@ pub(crate) struct QdrantPayloadPath {
     path: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct QdrantPayloadAccess {
+    payload: Column,
+    path: QdrantPayloadPath,
+}
+
+impl QdrantPayloadAccess {
+    pub(crate) fn from_logical_expr(expr: &Expr) -> Option<Self> {
+        match expr {
+            Expr::Alias(alias) => Self::from_logical_expr(&alias.expr),
+            Expr::ScalarFunction(function) if is_payload_function_name(function.name()) => {
+                function.args.first().and_then(Self::from_logical_expr)
+            }
+            Expr::ScalarFunction(function) if is_payload_access_function_name(function.name()) => {
+                let [payload, path] = function.args.as_slice() else {
+                    return None;
+                };
+                let Expr::Column(column) = payload.clone().unalias_nested().data else {
+                    return None;
+                };
+                if column.name != PAYLOAD_FIELD_NAME {
+                    return None;
+                }
+                Some(Self { payload: column, path: logical_path_literal(path)? })
+            }
+            Expr::BinaryExpr(BinaryExpr { left, op: Operator::Colon, right }) => {
+                let Expr::Column(column) = left.as_ref() else {
+                    return None;
+                };
+                if column.name != PAYLOAD_FIELD_NAME {
+                    return None;
+                }
+                Some(Self { payload: column.clone(), path: logical_path_literal(right)? })
+            }
+            _ => None,
+        }
+    }
+
+    pub(crate) fn from_raw_logical_expr(expr: &Expr) -> Option<Self> {
+        match expr {
+            Expr::Alias(alias) => Self::from_raw_logical_expr(&alias.expr),
+            Expr::BinaryExpr(BinaryExpr { left, op: Operator::Colon, right }) => {
+                let Expr::Column(column) = left.as_ref() else {
+                    return None;
+                };
+                if column.name != PAYLOAD_FIELD_NAME {
+                    return None;
+                }
+                Some(Self { payload: column.clone(), path: logical_path_literal(right)? })
+            }
+            _ => None,
+        }
+    }
+
+    pub(crate) fn payload_expr(&self) -> Expr {
+        Expr::Column(self.payload.clone())
+    }
+
+    pub(crate) fn path(&self) -> &QdrantPayloadPath {
+        &self.path
+    }
+
+    pub(crate) fn into_parts(self) -> (Expr, String) {
+        (Expr::Column(self.payload), self.path.path)
+    }
+}
+
 impl QdrantPayloadPath {
     pub(crate) fn new(path: String) -> Option<Self> {
         (!path.is_empty()).then_some(Self { path })
@@ -96,25 +171,31 @@ impl QdrantPayloadPath {
     }
 
     pub(crate) fn from_logical_expr(expr: &Expr) -> Option<Self> {
-        match expr {
-            Expr::BinaryExpr(BinaryExpr { left, op: Operator::Colon, right }) => {
-                let Expr::Column(column) = left.as_ref() else {
-                    return None;
-                };
-                if column.name != PAYLOAD_FIELD_NAME {
-                    return None;
-                }
-                match right.as_ref() {
-                    Expr::Literal(
-                        ScalarValue::Utf8(Some(path)) | ScalarValue::LargeUtf8(Some(path)),
-                        _,
-                    ) => Self::new(path.clone()),
-                    _ => None,
-                }
+        QdrantPayloadAccess::from_logical_expr(expr).map(|access| access.path)
+    }
+
+    pub(crate) fn from_physical_expr(expr: &Arc<dyn PhysicalExpr>) -> Option<Self> {
+        if let Some(binary) = expr.as_any().downcast_ref::<PhysicalBinaryExpr>()
+            && *binary.op() == Operator::Colon
+        {
+            let column = binary.left().as_any().downcast_ref::<PhysicalColumn>()?;
+            if column.name() != PAYLOAD_FIELD_NAME {
+                return None;
             }
-            Expr::Alias(alias) => Self::from_logical_expr(&alias.expr),
-            _ => None,
+            return physical_path_literal(binary.right());
         }
+        let function = expr.as_any().downcast_ref::<ScalarFunctionExpr>()?;
+        if !is_payload_access_function_name(function.name()) {
+            return None;
+        }
+        let [payload, path] = function.args() else {
+            return None;
+        };
+        let column = payload.as_any().downcast_ref::<PhysicalColumn>()?;
+        if column.name() != PAYLOAD_FIELD_NAME {
+            return None;
+        }
+        physical_path_literal(path)
     }
 }
 
@@ -125,6 +206,21 @@ impl QdrantPayloadSchema {
 
     pub(crate) fn field_for_path(&self, path: &str) -> Option<QdrantPayloadField> {
         self.field(path).or_else(|| path.split('.').next().and_then(|prefix| self.field(prefix)))
+    }
+
+    pub(crate) fn ordering_for(
+        &self,
+        field: &str,
+        descending: bool,
+    ) -> Option<QdrantPayloadOrdering> {
+        match self.field_for_path(field) {
+            Some(
+                QdrantPayloadField::Integer { range: true, .. }
+                | QdrantPayloadField::Float
+                | QdrantPayloadField::Datetime,
+            ) => Some(QdrantPayloadOrdering { field: field.to_owned(), descending }),
+            _ => None,
+        }
     }
 }
 
@@ -191,6 +287,20 @@ impl From<HashMap<String, PayloadSchemaInfo>> for QdrantPayloadSchema {
     }
 }
 
+fn logical_path_literal(expr: &Expr) -> Option<QdrantPayloadPath> {
+    match expr.clone().unalias_nested().data {
+        Expr::Literal(ScalarValue::Utf8(Some(path)) | ScalarValue::LargeUtf8(Some(path)), _) => {
+            QdrantPayloadPath::new(path)
+        }
+        _ => None,
+    }
+}
+
+fn physical_path_literal(expr: &Arc<dyn PhysicalExpr>) -> Option<QdrantPayloadPath> {
+    let literal = expr.as_any().downcast_ref::<PhysicalLiteral>()?;
+    QdrantPayloadPath::new(string_scalar(literal.value())?)
+}
+
 #[cfg(test)]
 mod tests {
     use qdrant_client::qdrant::{
@@ -198,7 +308,38 @@ mod tests {
     };
 
     use super::*;
-    use crate::table::pushdown::QdrantPayloadOrdering;
+
+    #[test]
+    fn payload_access_recognizes_raw_public_and_internal_forms() {
+        use datafusion::common::Column;
+        use datafusion::logical_expr::{BinaryExpr, Expr, Operator};
+        use datafusion::prelude::lit;
+
+        let payload = Expr::Column(Column::new_unqualified(PAYLOAD_FIELD_NAME));
+        let raw = Expr::BinaryExpr(BinaryExpr::new(
+            Box::new(payload.clone()),
+            Operator::Colon,
+            Box::new(lit("rank")),
+        ));
+        let public = crate::expr_fn::qdrant_payload(raw.clone(), "Integer");
+        let internal =
+            crate::expr_fn::payload_access_expr(payload.clone(), "rank", &DataType::Int64)
+                .expect("internal payload access");
+
+        assert_eq!(QdrantPayloadPath::from_logical_expr(&raw).expect("raw path").key(), "rank");
+        assert_eq!(
+            QdrantPayloadPath::from_logical_expr(&public).expect("public path").key(),
+            "rank"
+        );
+        assert_eq!(
+            QdrantPayloadPath::from_logical_expr(&internal).expect("internal path").key(),
+            "rank"
+        );
+        assert_eq!(
+            QdrantPayloadAccess::from_logical_expr(&public).expect("public access").payload_expr(),
+            payload
+        );
+    }
 
     #[test]
     #[expect(clippy::too_many_lines)]

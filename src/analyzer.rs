@@ -25,14 +25,10 @@ pub(crate) use self::state::State;
 use self::state::{CompositeState, SourceState};
 use self::surface::SurfaceCall;
 
-// ============================================================================
-// Analyzer
-// ============================================================================
-
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct PrototypePushdown;
+pub(crate) struct Pushdown;
 
-impl AnalyzerRule for PrototypePushdown {
+impl AnalyzerRule for Pushdown {
     fn analyze(
         &self,
         plan: LogicalPlan,

@@ -11,12 +11,9 @@ use crate::analyzer::kernel::{CountKernel, KernelSpec};
 use crate::analyzer::op::{FacetOp, Op, OutputNames};
 use crate::analyzer::source::Source;
 use crate::analyzer::surface::SurfaceCall;
-use crate::expr_fn::{
-    qdrant_payload_bool_access, qdrant_payload_datetime_access, qdrant_payload_float_access,
-    qdrant_payload_int_access, qdrant_payload_text_access,
-};
-use crate::pushdown::QdrantPayloadPath;
-use crate::pushdown::filter::QdrantFilters;
+use crate::expr_fn::payload_access_expr;
+use crate::qdrant::filter::QdrantFilters;
+use crate::qdrant::{QdrantPayloadAccess, QdrantPayloadPath};
 use crate::table::QdrantTableProvider;
 
 #[derive(Debug, Clone)]
@@ -52,7 +49,7 @@ impl AggregateSurface {
         let Some(field) = QdrantPayloadPath::from_logical_expr(&aggregate.group_expr[0]) else {
             return Ok(Self::Local);
         };
-        let Some(field_type) = source.payload_schema.field(field.key()) else {
+        let Some(field_type) = source.payload_schema.field_for_path(field.key()) else {
             return Ok(Self::Local);
         };
         if !field_type.supports_facet() {
@@ -248,44 +245,17 @@ fn rewrite_typed_payload_projection(
 }
 
 fn rewrite_typed_payload_projection_expr(expr: &Expr, source: &Source) -> Transformed<Expr> {
-    let Expr::BinaryExpr(binary) = expr.clone().unalias_nested().data else {
+    let Some(access) = QdrantPayloadAccess::from_raw_logical_expr(expr) else {
         return Transformed::no(expr.clone());
     };
-    if binary.op != datafusion::logical_expr::Operator::Colon {
+    let path = access.path().key().to_owned();
+    let payload = access.payload_expr();
+    let data_type = source
+        .payload_field(&path)
+        .and_then(crate::qdrant::QdrantPayloadField::projection_data_type)
+        .unwrap_or(datafusion::arrow::datatypes::DataType::Utf8);
+    let Some(rewritten) = payload_access_expr(payload, path, &data_type) else {
         return Transformed::no(expr.clone());
-    }
-    let Expr::Column(column) = binary.left.as_ref() else {
-        return Transformed::no(expr.clone());
-    };
-    if column.name != crate::arrow::schema::PAYLOAD_FIELD_NAME {
-        return Transformed::no(expr.clone());
-    }
-    let Some(path) = QdrantPayloadPath::from_logical_expr(expr).map(|path| path.key().to_owned())
-    else {
-        return Transformed::no(expr.clone());
-    };
-    let payload = Expr::Column(column.clone());
-    let rewritten = match source.payload_field(&path) {
-        None => qdrant_payload_text_access(payload, path),
-        Some(field) => match field.projection_data_type() {
-            Some(datafusion::arrow::datatypes::DataType::Utf8) => {
-                qdrant_payload_text_access(payload, path)
-            }
-            Some(datafusion::arrow::datatypes::DataType::Int64) => {
-                qdrant_payload_int_access(payload, path)
-            }
-            Some(datafusion::arrow::datatypes::DataType::Float64) => {
-                qdrant_payload_float_access(payload, path)
-            }
-            Some(datafusion::arrow::datatypes::DataType::Boolean) => {
-                qdrant_payload_bool_access(payload, path)
-            }
-            Some(datafusion::arrow::datatypes::DataType::Timestamp(
-                datafusion::arrow::datatypes::TimeUnit::Millisecond,
-                None,
-            )) => qdrant_payload_datetime_access(payload, path),
-            _ => return Transformed::no(expr.clone()),
-        },
     };
     Transformed::yes(rewritten)
 }

@@ -6,7 +6,7 @@ pub mod context;
 pub mod error;
 pub mod expr_fn;
 pub mod prelude;
-mod pushdown;
+mod qdrant;
 pub mod stream;
 pub mod table;
 #[cfg(feature = "test-utils")]

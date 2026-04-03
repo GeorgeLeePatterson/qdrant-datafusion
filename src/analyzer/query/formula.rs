@@ -19,8 +19,8 @@ use crate::expr_fn::{
     GeoDistanceCall, PAYLOAD_DATETIME_FUNCTION_NAME, PAYLOAD_NUM_FUNCTION_NAME,
     PayloadDatetimeCall, PayloadNumCall,
 };
-use crate::pushdown::filter::QdrantFilters;
-use crate::pushdown::{QdrantPayloadField, QdrantPayloadPath};
+use crate::qdrant::filter::QdrantFilters;
+use crate::qdrant::{QdrantPayloadField, QdrantPayloadPath};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FormulaFunction {
@@ -838,7 +838,7 @@ mod tests {
         qdrant_condition, qdrant_datetime_value, qdrant_geo_distance, qdrant_payload_datetime,
         qdrant_payload_num,
     };
-    use crate::pushdown::QdrantPayloadSchema;
+    use crate::qdrant::QdrantPayloadSchema;
 
     fn test_source(payload_schema: QdrantPayloadSchema) -> Source {
         Source {

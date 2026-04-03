@@ -4,7 +4,7 @@ use qdrant_client::qdrant::{Direction, OrderBy, Query, query};
 use super::super::source::Source;
 use super::{QueryDescriptor, bool_literal, string_literal};
 use crate::expr_fn::{ORDER_BY_SCORE_FUNCTION_NAME, OrderByCall};
-use crate::pushdown::QdrantPayloadPath;
+use crate::qdrant::QdrantPayloadPath;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct OrderByQuery {

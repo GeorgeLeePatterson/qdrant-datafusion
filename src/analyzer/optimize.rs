@@ -17,10 +17,9 @@ use crate::arrow::schema::ID_FIELD_NAME;
 use crate::expr_fn::{
     ConditionCall, DatetimeValueCall, DecayCall, FORMULA_SCORE_FUNCTION_NAME,
     FUSION_SCORE_FUNCTION_NAME, FormulaCall, GeoDistanceCall, PayloadDatetimeCall, PayloadNumCall,
-    qdrant_payload_bool_access, qdrant_payload_datetime_access, qdrant_payload_float_access,
-    qdrant_payload_int_access, qdrant_payload_text_access,
+    payload_access_expr,
 };
-use crate::pushdown::QdrantPayloadPath;
+use crate::qdrant::{QdrantPayloadAccess, QdrantPayloadPath};
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct CoordinatedCombiners;
@@ -294,61 +293,12 @@ fn rewrite_direct_payload_projection_expr(
     expr: &Expr,
     data_type: &datafusion::arrow::datatypes::DataType,
 ) -> Transformed<Expr> {
-    let Expr::BinaryExpr(binary) = expr.clone().unalias_nested().data else {
+    let Some(access) = QdrantPayloadAccess::from_raw_logical_expr(expr) else {
         return Transformed::no(expr.clone());
     };
-    if binary.op != datafusion::logical_expr::Operator::Colon {
+    let (payload, path) = access.into_parts();
+    let Some(rewritten) = payload_access_expr(payload, path, data_type) else {
         return Transformed::no(expr.clone());
-    }
-    let Expr::Column(column) = binary.left.as_ref() else {
-        return Transformed::no(expr.clone());
-    };
-    if column.name != crate::arrow::schema::PAYLOAD_FIELD_NAME {
-        return Transformed::no(expr.clone());
-    }
-    let Some(path) = QdrantPayloadPath::from_logical_expr(expr).map(|path| path.key().to_owned())
-    else {
-        return Transformed::no(expr.clone());
-    };
-    let payload = Expr::Column(column.clone());
-    let rewritten = match data_type {
-        datafusion::arrow::datatypes::DataType::Utf8 => qdrant_payload_text_access(payload, path),
-        datafusion::arrow::datatypes::DataType::LargeUtf8 => {
-            Expr::Cast(datafusion::logical_expr::expr::Cast::new(
-                Box::new(qdrant_payload_text_access(payload, path)),
-                datafusion::arrow::datatypes::DataType::LargeUtf8,
-            ))
-        }
-        datafusion::arrow::datatypes::DataType::Boolean => {
-            qdrant_payload_bool_access(payload, path)
-        }
-        datafusion::arrow::datatypes::DataType::Int64 => qdrant_payload_int_access(payload, path),
-        datafusion::arrow::datatypes::DataType::Int8
-        | datafusion::arrow::datatypes::DataType::Int16
-        | datafusion::arrow::datatypes::DataType::Int32
-        | datafusion::arrow::datatypes::DataType::UInt8
-        | datafusion::arrow::datatypes::DataType::UInt16
-        | datafusion::arrow::datatypes::DataType::UInt32
-        | datafusion::arrow::datatypes::DataType::UInt64 => {
-            Expr::Cast(datafusion::logical_expr::expr::Cast::new(
-                Box::new(qdrant_payload_int_access(payload, path)),
-                data_type.clone(),
-            ))
-        }
-        datafusion::arrow::datatypes::DataType::Float64 => {
-            qdrant_payload_float_access(payload, path)
-        }
-        datafusion::arrow::datatypes::DataType::Float32 => {
-            Expr::Cast(datafusion::logical_expr::expr::Cast::new(
-                Box::new(qdrant_payload_float_access(payload, path)),
-                datafusion::arrow::datatypes::DataType::Float32,
-            ))
-        }
-        datafusion::arrow::datatypes::DataType::Timestamp(
-            datafusion::arrow::datatypes::TimeUnit::Millisecond,
-            None,
-        ) => qdrant_payload_datetime_access(payload, path),
-        _ => return Transformed::no(expr.clone()),
     };
     Transformed::yes(rewritten)
 }

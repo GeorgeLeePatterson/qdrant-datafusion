@@ -1,6 +1,6 @@
 # Status Snapshot
 
-Last updated: 2026-03-26
+Last updated: 2026-04-03
 
 ## Summary
 
@@ -18,7 +18,7 @@ Current branch reality:
 5. Missing per-row named vectors become `NULL`, not execution errors.
 6. Deprecated `qdrant-client` response fields are not part of the implementation surface.
 7. `INSERT INTO` is explicitly unsupported.
-8. A provider-owned pushdown model now exists for projection, payload access, filters, ordering, limit, and continuation.
+8. A shared `Qdrant` semantics layer plus provider-owned scan-pushdown model now exists for projection, payload access, filters, ordering, limit, and continuation.
 9. `ORDER BY id ASC` is admitted as an exact physical sort pushdown case.
 10. The single-node payload-key ordered-scroll runtime contract is now validated for integer, float, and datetime payload indexes.
 11. Ordered continuation lowering is implemented internally through `order_by`, `start_from`, and boundary-ID exclusion.
@@ -68,7 +68,8 @@ Current branch reality:
     - kernel placement: `none`, `exact-self`, `exact-child`, `exact-children`
     - current admitted replacements still remain exact single-source atomic `Qdrant` relations only
 27. The planner scaffold now distinguishes exact-self kernels from local shells around extracted child kernels.
-    - the first explicit invalid planner surface is projection-time `payload:<path>` access in the prepared session/planner path when no admitted exact kernel owns that expression
+    - direct scan-path `payload:<path>` projections are no longer treated as an invalid surface; they now rewrite to typed local payload accessors when the source payload schema is authoritative
+    - raw unhinted arithmetic over `payload:<path>` still fails earlier in SQL planning and currently requires `payload(...)` or an explicit `CAST(...)`
 28. The planner scaffold now has a first concrete `mergeable` multi-branch state.
     - same-collection raw `UNION ALL` branches are only classified as `mergeable` when exact filters imply pairwise-disjoint finite point-ID bounds
     - overlapping same-collection branches remain `local-compose`
@@ -114,38 +115,40 @@ Current branch reality:
     - `QdrantOpNode` / `QdrantOp` now own the current public nearest-retrieval marker semantics
     - `QdrantSessionContext` now remains only as the prepared-session wrapper that installs the
       analyzer, planner, and marker-UDF hooks
+38. Shared `Qdrant` semantics now live in `src/qdrant.rs` and are reused across analyzer, filter pushdown, and sort pushdown instead of duplicating payload-path recognition.
+    - canonical payload access recognition now admits raw `payload:<path>`, public `payload(payload:<path>, 'Type')`, and the internal executable payload-access UDFs
+39. Scan-path payload projection is now schema-aware and executable.
+    - direct `payload:<path>` projections over known payload fields rewrite to typed local payload accessors early enough for honest logical schema propagation
+    - plain scan queries can now project typed payload scalars while preserving remote filter/sort pushdown
+40. A public typed payload helper now exists for SQL planning gaps.
+    - `payload(accessor, 'Type')` gives `DataFusion` a planning-time payload scalar type
+    - it currently unlocks arithmetic and similar contexts where raw `payload:<path>` would otherwise still be typed as `Utf8`
+    - raw unhinted arithmetic like `payload:rank + 1` is still intentionally deferred until an earlier SQL-planning normalization seam exists
 
 ## Current Code Ownership
 
-1. `src/table.rs`
-   - `TableProvider`
-   - scan execution plan
-   - provider-owned scan spec lowering
-   - paginated `scroll` orchestration
-   - exact `ORDER BY id ASC` pushdown
-   - exact `ORDER BY payload:<path>` pushdown
-2. `src/pushdown.rs`
-   - shared payload schema, payload path, and filter semantics
-   - payload index metadata normalization for admitted sort and filter pushdown
-3. `src/table/pushdown.rs`
+1. `src/table.rs`, `src/table/provider.rs`, `src/table/exec.rs`, `src/table/scroll.rs`
+   - `TableProvider`, scan execution plan, physical pushdown hooks, and paginated `scroll`
+     orchestration
+2. `src/table/scan_spec.rs`
    - scan-local selectors, scan spec, ordering, and continuation contract
-4. `src/arrow/schema.rs`
-   - collection-config to Arrow schema translation
-5. `src/arrow/deserialize.rs`
-   - `Qdrant` point to Arrow record-batch materialization
-6. `tests/e2e.rs`
-   - integration coverage for the admitted scan baseline, the first exact aggregate-like slices,
-     and the current nearest marker-UDF prototype
-7. `src/expr_fn.rs`, `src/context.rs`, `src/context/planner.rs`, `src/context/plan_node.rs`
-   - marker-UDF registration, prepared-session wrapper, generic public `Qdrant` operator node,
-     generic `Qdrant` kernel node, and extension-planner support
-   - current admitted operator/kernel families cover exact `COUNT(*)`, scalar facet, and nearest
-     retrieval through the `query` family
-8. `src/analyzer.rs`, `src/analyzer/common.rs`, `src/analyzer/op_pushdown.rs`, `src/analyzer/query_pushdown.rs`, `src/analyzer/relation_pushdown.rs`, `src/analyzer/count_pushdown.rs`, `src/analyzer/facet_pushdown.rs`
-   - unified relation-pushdown analyzer scaffold plus operator-marker detection for the current
-     nearest prototype, with explicit subtree source / topology / composition / kernel-placement
-     classification, modular recognizers for exact single-source `Qdrant` counts and the first
-     scalar-facet grouped-count subset, and the first narrow invalid-surface rejection
+3. `src/qdrant.rs`, `src/qdrant/filter/*`
+   - shared `Qdrant` payload schema, payload access/path recognition, payload index metadata
+     normalization, and filter semantics
+4. `src/expr_fn.rs`, `src/expr_fn/payload.rs`, `src/expr_fn/payload_access.rs`, `src/expr_fn/*`
+   - public marker/helper UDF registration, the public typed `payload(...)` helper, internal
+     executable payload accessors, and query-family UDF surfaces
+5. `src/analyzer.rs`, `src/analyzer/*`
+   - unified relation-pushdown analyzer scaffold, operator-marker detection, subtree
+     classification, kernel extraction, and optimizer-side coordinated rewrites
+6. `src/context.rs`, `src/context/planner.rs`, `src/context/exec.rs`
+   - prepared-session wrapper, extension-planner support, and runtime request execution helpers
+7. `src/arrow/schema.rs`, `src/arrow/deserialize.rs`
+   - collection-config to Arrow schema translation plus `Qdrant` point to Arrow record-batch
+     materialization
+8. `tests/e2e.rs`
+   - integration coverage for the admitted scan baseline, typed payload access, aggregate-like
+     slices, and current query-family surfaces
 
 ## Operational Notes
 
@@ -164,7 +167,9 @@ Current branch reality:
    - `next_page_offset` is absent
    - duplicate-boundary pagination requires accumulated boundary-ID exclusion
    - datetime `order_value` currently returns integer microseconds
-8. The admitted SQL bridge for that runtime path is currently `payload:<path>` only, and it is treated as exact on the validated runtime contract because fallback physical execution of `:` is not available.
+8. The admitted payload SQL bridge now includes raw `payload:<path>` plus the public `payload(payload:<path>, 'Type')` helper where SQL planning needs an explicit scalar type.
+   - exact scan filter and payload-key sort pushdown both reuse the same canonical payload-access recognition
+   - raw unhinted arithmetic such as `payload:rank + 1` is still intentionally deferred until an earlier SQL-planning normalization seam exists
 9. The admitted exact filter bridge is now a real predicate algebra over the current admitted leaves, not just conjunctive leaf pushdown.
 10. Distributed-ordering behavior is still intentionally deferred before claiming broader payload-key sort exactness.
 11. The next capability round is now planned semantically rather than endpoint-by-endpoint:

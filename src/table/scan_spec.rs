@@ -6,8 +6,8 @@ use datafusion::logical_expr::Expr;
 use qdrant_client::qdrant::PointId;
 
 use crate::arrow::schema::{PAYLOAD_FIELD_NAME, QdrantFieldBinding, UNNAMED_VECTOR_FIELD_NAME};
-use crate::pushdown::filter::QdrantFilters;
-use crate::pushdown::{QdrantPayloadField, QdrantPayloadSchema};
+use crate::qdrant::QdrantPayloadSchema;
+use crate::qdrant::filter::QdrantFilters;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum QdrantVectorSelector {
@@ -62,23 +62,6 @@ pub(crate) struct QdrantScanSpec {
     pub(crate) filters: QdrantFilters,
     pub(crate) ordering: QdrantOrdering,
     pub(crate) limit: Option<usize>,
-}
-
-impl QdrantPayloadSchema {
-    pub(crate) fn ordering_for(
-        &self,
-        field: &str,
-        descending: bool,
-    ) -> Option<QdrantPayloadOrdering> {
-        match self.field(field) {
-            Some(
-                QdrantPayloadField::Integer { range: true, .. }
-                | QdrantPayloadField::Float
-                | QdrantPayloadField::Datetime,
-            ) => Some(QdrantPayloadOrdering { field: field.to_owned(), descending }),
-            _ => None,
-        }
-    }
 }
 
 impl QdrantScanSpec {

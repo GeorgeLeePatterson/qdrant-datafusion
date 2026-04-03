@@ -6,7 +6,7 @@ use qdrant_client::Qdrant;
 
 use super::super::op::FacetOp;
 use super::super::source::Source;
-use crate::pushdown::filter::QdrantFilters;
+use crate::qdrant::filter::QdrantFilters;
 
 #[derive(Debug, Clone)]
 pub(crate) struct FacetKernel {

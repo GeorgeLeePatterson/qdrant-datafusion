@@ -12,7 +12,7 @@ use qdrant_client::qdrant::point_id::PointIdOptions;
 
 use super::state::State;
 use crate::arrow::schema::QdrantFieldBinding;
-use crate::pushdown::{QdrantPayloadField, QdrantPayloadSchema};
+use crate::qdrant::{QdrantPayloadField, QdrantPayloadSchema};
 use crate::table::QdrantTableProvider;
 
 pub(crate) fn full_row_join_keys(join: &datafusion::logical_expr::logical_plan::Join) -> bool {

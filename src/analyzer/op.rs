@@ -16,8 +16,8 @@ use super::source::Source;
 use super::state::{FiltersState, KernelState};
 use super::surface::QuerySurfaceCall;
 use crate::analyzer::surface::SurfaceCall;
-use crate::pushdown::QdrantPayloadPath;
-use crate::pushdown::filter::QdrantFilters;
+use crate::qdrant::QdrantPayloadPath;
+use crate::qdrant::filter::QdrantFilters;
 
 #[derive(Debug, Clone)]
 pub(crate) struct QueryOp {
@@ -138,8 +138,8 @@ impl QueryOp {
         };
         if !source
             .payload_schema
-            .field(group_field.key())
-            .is_some_and(crate::pushdown::QdrantPayloadField::supports_facet)
+            .field_for_path(group_field.key())
+            .is_some_and(crate::qdrant::QdrantPayloadField::supports_facet)
         {
             return Ok(None);
         }

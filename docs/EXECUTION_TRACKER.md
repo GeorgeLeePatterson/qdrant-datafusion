@@ -1,6 +1,6 @@
 # Execution Tracker
 
-Last updated: 2026-03-26
+Last updated: 2026-04-03
 
 ## Purpose
 
@@ -18,7 +18,7 @@ Use it to resume work without replaying the full repository history.
    - top-level nullable vector columns for heterogeneous named collections
    - current typed `qdrant-client` vector outputs only
 4. `INSERT INTO` is explicitly unsupported instead of panicking.
-5. The broad SQL-native `Qdrant` capability surface is still intentionally incomplete, but the predicate algebra foundation, the first aggregate-like planner slices, and the first public nearest-retrieval prototype are now in place.
+5. The broad SQL-native `Qdrant` capability surface is still intentionally incomplete, but the predicate algebra foundation, the first aggregate-like planner slices, the first public nearest-retrieval prototype, and the typed payload-access bridge are now in place.
 6. The next expansion round is now explicitly staged around the full `Qdrant` relation
    architecture rather than feature-by-feature node growth:
    - first checkpoint: unify current exact count / facet / nearest kernels behind one generic
@@ -41,7 +41,7 @@ Use it to resume work without replaying the full repository history.
 8. `Q-008`: Scan deserialization now targets current typed `qdrant-client` vector outputs only.
 9. `Q-009`: The scan baseline now admits heterogeneous named-vector collections through top-level nullable vector columns.
 10. `Q-010`: Table scans now use paginated `scroll`, selector classification is contract-based, and stale public docs/speculative SQL examples were scrubbed.
-11. `Q-011`: A provider-owned pushdown model now exists for:
+11. `Q-011`: A shared `Qdrant` semantics layer plus provider-owned scan pushdown model now exists for:
     - projection
     - payload access
     - filters
@@ -67,7 +67,7 @@ Use it to resume work without replaying the full repository history.
     - unit plan-inspection coverage now checks both logical and physical sort expression shapes
 16. `Q-016`: The first explicit payload-key SQL `ORDER BY` subset is now admitted.
     - single sort key only
-    - direct `payload:<path>` only
+    - canonical payload-path forms only: direct `payload:<path>` plus equivalent public `payload(payload:<path>, 'Type')` shapes
     - indexed integer / float / datetime payload fields only
     - current pushdown is `Exact` because `DataFusion` cannot execute fallback `payload:<path>` physical sorts
     - end-to-end SQL coverage now exercises the admitted path against live `Qdrant`
@@ -138,8 +138,8 @@ Use it to resume work without replaying the full repository history.
       - `exact-child`
       - `exact-children`
     - local shells around extracted child kernels are now classified separately from atomic exact kernels
-    - the first explicit invalid planner surface is now rejected early:
-      - projection-time `payload:<path>` access in the prepared session/planner path when no admitted exact `Qdrant` kernel owns that expression
+    - direct scan-path `payload:<path>` projections are no longer treated as an invalid surface; they now rewrite to typed local payload accessors when the source payload schema is authoritative
+    - raw unhinted arithmetic over `payload:<path>` still fails earlier in SQL planning and currently requires `payload(...)` or an explicit `CAST(...)`
 25. `Q-028`: The planner scaffold now has a first concrete `mergeable` multi-branch state.
     - the admitted case is intentionally narrow:
       - same raw `Qdrant` collection on every branch
@@ -210,24 +210,46 @@ Use it to resume work without replaying the full repository history.
     - when projected, aliases win; otherwise naming follows normal `DataFusion` expression naming
     - `QdrantSessionContext` now remains only as the prepared-session wrapper that installs the
       analyzer, planner, and marker-UDF hooks
+36. `Q-039`: Shared payload/path semantics now live in one canonical `Qdrant` layer instead of
+    drifting across scan pushdown, analyzer, and execution code.
+    - `src/qdrant.rs` now owns payload schema, canonical payload access/path recognition, and
+      payload ordering capability
+    - `src/table/scan_spec.rs` now owns only scan-local selectors, ordering, and continuation
+      state
+    - exact scan filter and payload-key sort pushdown now reuse the same canonical payload-access
+      recognition
+37. `Q-040`: Typed payload access is now a first-class admitted bridge instead of a planner-layer
+    dead end.
+    - direct scan-path `payload:<path>` projections over known payload fields now rewrite to typed
+      local payload accessors early enough for honest logical schema propagation
+    - the public `payload(accessor, 'Type')` helper now supplies a planning-time payload scalar
+      type when SQL would otherwise still see raw `payload:<path>` as `Utf8`
+    - exact scan filter and payload-key sort pushdown both admit equivalent public `payload(...)`
+      forms when they lower to the same canonical payload path
 ## Next
 
-1. The detailed planning inventory for the next expansion round now lives in `docs/QDRANT_COMPATIBILITY_MATRIX.md`.
-2. `Q-017`: Validate distributed-ordering behavior on the target `Qdrant` deployment modes before claiming broader exact payload-key sort pushdown.
-3. `M-003`: Extend broader aggregate-like and retrieval growth on
+1. Complete the correctness audit across analyzer, optimizer, scan pushdown, and shared `Qdrant` semantics.
+   - classify remaining blockers, rejecters, and current-shape restrictions into hard invariants versus widening opportunities
+   - prefer shared invariant-based recognizers over duplicated per-call-site expression-shape checks
+2. `Q-041`: Land a deliberate `INSERT INTO` contract.
+   - start with append-only writes through a write-side Arrow/Qdrant serializer and `DataSinkExec`
+   - keep the contract explicit rather than approximating unsupported write shapes
+3. The detailed planning inventory for the next expansion round now lives in `docs/QDRANT_COMPATIBILITY_MATRIX.md`.
+4. `Q-017`: Validate distributed-ordering behavior on the target `Qdrant` deployment modes before claiming broader exact payload-key sort pushdown.
+5. `M-003`: Extend broader aggregate-like and retrieval growth on
    the shared operator / kernel structure.
    - aggregate-like: explicit output contracts beyond exact `COUNT(*)` and the current scalar
      facet slice
    - retrieval: sample, then broader `query`-family relations such as recommend / discover /
      context now that the nearest prototype is fully absorbed
-4. `Q-020`: Extend the predicate algebra only where the SQL semantics are explicit.
+6. `Q-020`: Extend the predicate algebra only where the SQL semantics are explicit.
    - payload empty-container/cardinality semantics
    - text, geo, nested, and count-oriented predicates
-5. Continue mapping the pushdown model onto `DataFusion`’s own idioms where broader traversal is required.
+7. Continue mapping the pushdown model onto `DataFusion`’s own idioms where broader traversal is required.
    - `TreeNode` visitors / rewriters instead of ad hoc recursion
    - `LogicalPlan` expression and subquery helpers before project-local traversal
    - exact admission of broader filter families and aggregate-like shapes instead of ad hoc expression splitting
-6. Extend the planner scaffold beyond the current explicit classifier set toward richer island composition and kernel extraction.
+8. Extend the planner scaffold beyond the current explicit classifier set toward richer island composition and kernel extraction.
    - source-set ownership over larger plan regions
    - widen `mergeable` only with explicit algebraic proofs such as disjointness or duplicate-elimination semantics, not collection identity alone
    - broaden `invalid` detection carefully as more remote-only surfaces are introduced
@@ -246,6 +268,7 @@ When the next implementation round starts:
 3. keep writes unsupported until a deliberate write contract exists
 4. use `DataFusion` primary-source idioms before inventing project-local traversal or rewrite patterns
 5. admit only explicit pushdown subsets; reject unsupported cases cleanly instead of approximating them
+   - when widening behavior, prefer one shared invariant-based recognizer over duplicated local shape checks
 6. track unresolved distributed `Qdrant` ordering edge cases explicitly; the single-node ordered continuation contract is now known
 7. update this tracker in the same change set as any non-trivial landing
 8. stop for planning again before widening the SQL surface in a way that could affect other vector-store integrations

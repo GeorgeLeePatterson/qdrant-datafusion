@@ -16,7 +16,7 @@ use self::local::LocalState;
 use self::processing::ProcessingState;
 pub(crate) use self::source::SourceState;
 use super::source::Source;
-use crate::pushdown::filter::QdrantFilters;
+use crate::qdrant::filter::QdrantFilters;
 
 #[derive(Debug, Clone)]
 pub(crate) struct SemanticError {
