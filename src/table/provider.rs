@@ -3,14 +3,16 @@ use std::sync::Arc;
 
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::catalog::Session;
-use datafusion::common::exec_err;
+use datafusion::common::{SchemaExt, not_impl_err};
 use datafusion::datasource::TableType;
+use datafusion::datasource::sink::DataSinkExec;
 use datafusion::error::Result as DataFusionResult;
 use datafusion::logical_expr::TableProviderFilterPushDown;
 use datafusion::logical_expr::dml::InsertOp;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::Expr;
 
+use super::insert::QdrantInsertSink;
 use super::{QdrantScanExec, QdrantScanSpec, QdrantTableProvider};
 use crate::qdrant::filter::QdrantFilters;
 
@@ -63,9 +65,18 @@ impl datafusion::catalog::TableProvider for QdrantTableProvider {
     async fn insert_into(
         &self,
         _state: &dyn Session,
-        _input: Arc<dyn ExecutionPlan>,
-        _insert_op: InsertOp,
+        input: Arc<dyn ExecutionPlan>,
+        insert_op: InsertOp,
     ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
-        exec_err!("INSERT INTO is not supported for Qdrant tables")
+        self.schema().logically_equivalent_names_and_types(&input.schema())?;
+        if insert_op != InsertOp::Append {
+            return not_impl_err!("{insert_op} not implemented for Qdrant tables yet");
+        }
+        let sink = QdrantInsertSink::new(
+            Arc::clone(&self.client),
+            self.table.table().to_owned(),
+            Arc::clone(&self.schema),
+        );
+        Ok(Arc::new(DataSinkExec::new(input, Arc::new(sink), None)))
     }
 }

@@ -45,6 +45,14 @@ e2e_test!(
 
 #[cfg(feature = "test-utils")]
 e2e_test!(
+    table_provider_insert_into_appends_rows,
+    tests::test_table_provider_insert_into_appends_rows,
+    TRACING_DIRECTIVES,
+    None
+);
+
+#[cfg(feature = "test-utils")]
+e2e_test!(
     table_provider_filters_by_id_and_vector_presence,
     tests::test_table_provider_filters_by_id_and_vector_presence,
     TRACING_DIRECTIVES,
@@ -194,10 +202,12 @@ mod tests {
 
     use datafusion::arrow::array::types::Float32Type;
     use datafusion::arrow::array::{
-        Array, BooleanArray, FixedSizeListArray, Float32Array, Int64Array, StringArray, StructArray,
+        Array, ArrayRef, BooleanArray, FixedSizeListArray, Float32Array, Int64Array, StringArray,
+        StructArray,
     };
     use datafusion::arrow::datatypes::DataType;
     use datafusion::arrow::record_batch::RecordBatch;
+    use datafusion::catalog::memory::MemTable;
     use datafusion::prelude::*;
     use ndarrow::{
         csr_matrix_batch_iter, fixed_size_list_as_array2, fixed_size_list_as_array2_masked,
@@ -460,6 +470,33 @@ mod tests {
             )
             .await?;
         Ok(())
+    }
+
+    fn dense_insert_vector_array(values: &[f32]) -> ArrayRef {
+        Arc::new(FixedSizeListArray::new(
+            Arc::new(datafusion::arrow::datatypes::Field::new("item", DataType::Float32, false)),
+            1,
+            Arc::new(Float32Array::from(values.to_vec())),
+            None,
+        ))
+    }
+
+    fn dense_insert_batch() -> RecordBatch {
+        let schema = Arc::new(datafusion::arrow::datatypes::Schema::new(vec![
+            datafusion::arrow::datatypes::Field::new("id", DataType::Utf8, false),
+            datafusion::arrow::datatypes::Field::new("payload", DataType::Utf8, true),
+            datafusion::arrow::datatypes::Field::new(
+                "vector",
+                DataType::new_fixed_size_list(DataType::Float32, 1, false),
+                true,
+            ),
+        ]));
+        RecordBatch::try_new(schema, vec![
+            Arc::new(StringArray::from(vec!["1", "2"])),
+            Arc::new(StringArray::from(vec![Some(r#"{"rank":10}"#), Some(r#"{"rank":20}"#)])),
+            dense_insert_vector_array(&[0.1_f32, 0.9_f32]),
+        ])
+        .expect("dense insert batch")
     }
 
     async fn create_payload_index<IndexParams>(
@@ -930,6 +967,62 @@ mod tests {
         assert_eq!(ids, vec![2, 3, 1]);
         assert!(display.contains("QdrantScanExec"), "{display}");
         assert!(!display.contains("SortExec"), "{display}");
+
+        Ok(())
+    }
+
+    pub(super) async fn test_table_provider_insert_into_appends_rows(
+        c: Arc<QdrantContainer>,
+    ) -> Result<()> {
+        let client = create_qdrant_client(&c)?;
+        let collection_name = "test_insert_into_appends_rows";
+        create_scalar_collection(&client, collection_name).await?;
+        create_payload_index(
+            &client,
+            collection_name,
+            "rank",
+            FieldType::Integer,
+            qdrant_client::qdrant::IntegerIndexParamsBuilder::new(true, true).build(),
+        )
+        .await?;
+
+        let table_provider = QdrantTableProvider::try_new(client.clone(), collection_name).await?;
+        let staging =
+            MemTable::try_new(dense_insert_batch().schema(), vec![vec![dense_insert_batch()]])?;
+        let ctx = QdrantSessionContext::from(SessionContext::new());
+        drop(ctx.session_context().register_table("vectors", Arc::new(table_provider))?);
+        drop(ctx.session_context().register_table("staging", Arc::new(staging))?);
+
+        let insert_batches = ctx
+            .sql("INSERT INTO vectors SELECT id, payload, vector FROM staging")
+            .await?
+            .collect()
+            .await?;
+        let insert_batch = insert_batches.into_iter().next().expect("insert result batch");
+        let inserted = insert_batch
+            .column(insert_batch.schema().index_of("count").expect("count column"))
+            .as_any()
+            .downcast_ref::<datafusion::arrow::array::UInt64Array>()
+            .expect("count array");
+        assert_eq!(inserted.value(0), 2);
+
+        let ranks = ctx
+            .sql("SELECT id, payload:rank AS rank FROM vectors ORDER BY id")
+            .await?
+            .collect()
+            .await?;
+        let rank_batch = ranks.into_iter().next().expect("rank batch");
+        assert_eq!(batch_u64_ids(&rank_batch, "id"), vec![1, 2]);
+        assert_eq!(batch_i64_values(&rank_batch, "rank"), vec![10, 20]);
+
+        let (ids, display) = collect_id_rows(
+            &ctx,
+            "SELECT id, qdrant_nearest_score(vector, 1.0) AS score FROM vectors ORDER BY score \
+             DESC LIMIT 2",
+        )
+        .await?;
+        assert_eq!(ids, vec![2, 1], "{display}");
+        assert!(display.contains("QdrantQueryExec"), "{display}");
 
         Ok(())
     }

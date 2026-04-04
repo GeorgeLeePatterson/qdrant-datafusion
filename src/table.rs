@@ -1,5 +1,6 @@
 //! `DataFusion` `TableProvider` implementation for `Qdrant` vector database collections.
 mod exec;
+mod insert;
 mod provider;
 pub(crate) mod scan_spec;
 mod scroll;
@@ -218,8 +219,11 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet};
     use std::sync::Arc;
 
+    use datafusion::arrow::array::{ArrayRef, FixedSizeListArray, Float32Array, StringArray};
     use datafusion::arrow::compute::SortOptions;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::arrow::record_batch::RecordBatch;
+    use datafusion::catalog::memory::MemTable;
     use datafusion::common::{Column as ExprColumn, ScalarValue};
     use datafusion::datasource::TableProvider;
     use datafusion::logical_expr::{BinaryExpr, Expr, LogicalPlan, Operator};
@@ -241,7 +245,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::arrow::schema::{ID_FIELD_NAME, PAYLOAD_FIELD_NAME};
+    use crate::arrow::schema::{ID_FIELD_NAME, PAYLOAD_FIELD_NAME, UNNAMED_VECTOR_FIELD_NAME};
     use crate::context::QdrantSessionContext;
     use crate::context::exec::{
         QdrantCountExec, QdrantFacetExec, QdrantQueryBatchExec, QdrantQueryExec,
@@ -337,6 +341,33 @@ mod tests {
             })
             .collect::<Vec<_>>();
         scalar_expr(ScalarValue::List(ScalarValue::new_list_nullable(&scalars, &pair_type)))
+    }
+
+    fn dense_insert_vector_array(values: &[f32]) -> ArrayRef {
+        Arc::new(FixedSizeListArray::new(
+            Arc::new(Field::new("item", DataType::Float32, false)),
+            1,
+            Arc::new(Float32Array::from(values.to_vec())),
+            None,
+        ))
+    }
+
+    fn dense_insert_batch() -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(ID_FIELD_NAME, DataType::Utf8, false),
+            Field::new(PAYLOAD_FIELD_NAME, DataType::Utf8, true),
+            Field::new(
+                UNNAMED_VECTOR_FIELD_NAME,
+                DataType::new_fixed_size_list(DataType::Float32, 1, false),
+                true,
+            ),
+        ]));
+        RecordBatch::try_new(schema, vec![
+            Arc::new(StringArray::from(vec!["1", "2"])),
+            Arc::new(StringArray::from(vec![Some(r#"{"rank":10}"#), Some(r#"{"rank":20}"#)])),
+            dense_insert_vector_array(&[0.1_f32, 0.9_f32]),
+        ])
+        .expect("dense insert batch")
     }
 
     fn empty_list_expr(item: &DataType) -> Expr {
@@ -1584,6 +1615,36 @@ mod tests {
             request.with_payload.as_ref().and_then(|selector| selector.selector_options.as_ref()),
             Some(qdrant_client::qdrant::with_payload_selector::SelectorOptions::Enable(true))
         ));
+    }
+
+    #[test]
+    fn physical_plan_builds_qdrant_insert_sink_for_append() {
+        let batch = dense_insert_batch();
+        let provider = QdrantTableProvider::new_for_planner(
+            "vectors".to_owned(),
+            Arc::new(Qdrant::from_url("http://localhost:6334").build().expect("client")),
+            batch.schema(),
+            Arc::new(QdrantPayloadSchema::default()),
+        );
+        let staging = MemTable::try_new(batch.schema(), vec![vec![batch]]).expect("staging table");
+        let ctx = SessionContext::new();
+        drop(ctx.register_table("vectors", Arc::new(provider)).expect("register qdrant table"));
+        drop(ctx.register_table("staging", Arc::new(staging)).expect("register staging table"));
+
+        let dataframe = ctx
+            .sql("INSERT INTO vectors SELECT id, payload, vector FROM staging")
+            .now_or_never()
+            .expect("sql future is ready")
+            .expect("insert dataframe");
+        let plan = dataframe
+            .create_physical_plan()
+            .now_or_never()
+            .expect("plan future is ready")
+            .expect("insert physical plan");
+        let display = displayable(plan.as_ref()).indent(true).to_string();
+
+        assert!(display.contains("DataSinkExec"), "{display}");
+        assert!(display.contains("QdrantInsertSink: collection=vectors"), "{display}");
     }
 
     #[test]

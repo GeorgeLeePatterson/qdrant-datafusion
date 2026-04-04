@@ -2,3 +2,4 @@
 //! values to `Arrow` `RecordBatch`es.
 pub mod deserialize;
 pub mod schema;
+pub(crate) mod serialize;

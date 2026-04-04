@@ -17,86 +17,89 @@ Current branch reality:
 4. Vector columns use canonical carriers with top-level nullable scan fields.
 5. Missing per-row named vectors become `NULL`, not execution errors.
 6. Deprecated `qdrant-client` response fields are not part of the implementation surface.
-7. `INSERT INTO` is explicitly unsupported.
+7. Append-only `INSERT INTO` is now supported on the canonical qdrant table schema through `DataSinkExec`.
 8. A shared `Qdrant` semantics layer plus provider-owned scan-pushdown model now exists for projection, payload access, filters, ordering, limit, and continuation.
-9. `ORDER BY id ASC` is admitted as an exact physical sort pushdown case.
-10. The single-node payload-key ordered-scroll runtime contract is now validated for integer, float, and datetime payload indexes.
-11. Ordered continuation lowering is implemented internally through `order_by`, `start_from`, and boundary-ID exclusion.
-12. The first payload-key SQL sort subset is now admitted as `ORDER BY payload:<path>` for indexed integer, float, and datetime payload fields, including exact casts whose target type matches the authoritative payload scalar type.
-13. Payload-key sort pushdown is currently admitted as `Exact` on the validated runtime contract because `DataFusion` cannot execute a fallback physical sort for the `:` operator.
-14. Predicate algebra over the admitted leaf subset is now exact:
+9. Write-side Arrow/Qdrant serialization now exists for the canonical provider schema.
+   - append-only `INSERT INTO` lowers through a `QdrantInsertSink` / `DataSinkExec` path
+   - the current admitted write contract is explicit: upstream input must be logically equivalent to the qdrant table schema
+10. `ORDER BY id ASC` is admitted as an exact physical sort pushdown case.
+11. The single-node payload-key ordered-scroll runtime contract is now validated for integer, float, and datetime payload indexes.
+12. Ordered continuation lowering is implemented internally through `order_by`, `start_from`, and boundary-ID exclusion.
+13. The first payload-key SQL sort subset is now admitted as `ORDER BY payload:<path>` for indexed integer, float, and datetime payload fields, including exact casts whose target type matches the authoritative payload scalar type.
+14. Payload-key sort pushdown is currently admitted as `Exact` on the validated runtime contract because `DataFusion` cannot execute a fallback physical sort for the `:` operator.
+15. Predicate algebra over the admitted leaf subset is now exact:
     - `AND`, `OR`, and `NOT`
     - `id =`, `id !=`, `id IN (...)`, `id NOT IN (...)`
     - vector-column `IS NULL` / `IS NOT NULL`
     - indexed scalar `payload:<path>` comparisons, `IN`, `NOT IN`, `BETWEEN`, and `NOT BETWEEN`, including exact casts whose target type matches the authoritative payload scalar type
       - integer match predicates require lookup-capable integer indexes
       - integer range predicates require range-capable integer indexes
-15. Physical filter pushdown now absorbs the admitted predicate algebra so `FilterExec` does not remain above `QdrantScanExec`.
-16. Payload filter literals are coerced by indexed payload field type because `DataFusion`’s physical `payload:<path>` expressions surface generic scalar literals such as `Utf8("10")`.
-17. Exact `COUNT(*)` pushdown is now admitted as the first aggregate-like planner slice.
+16. Physical filter pushdown now absorbs the admitted predicate algebra so `FilterExec` does not remain above `QdrantScanExec`.
+17. Payload filter literals are coerced by indexed payload field type because `DataFusion`’s physical `payload:<path>` expressions surface generic scalar literals such as `Utf8("10")`.
+18. Exact `COUNT(*)` pushdown is now admitted as the first aggregate-like planner slice.
     - it lowers into `Qdrant`’s native `count` API
     - it currently requires the `Qdrant` session/planner helper
     - it reuses the existing provider-owned predicate algebra for admitted exact filters
-18. Exact top-facet grouped counts are now admitted as the second aggregate-like planner slice.
+19. Exact top-facet grouped counts are now admitted as the second aggregate-like planner slice.
     - it lowers into `Qdrant`’s native `facet` API
     - it currently requires the `Qdrant` session/planner helper
     - it is currently limited to one admitted scalar `payload:<path>` field with `ORDER BY count DESC LIMIT N`
     - it reuses the existing provider-owned predicate algebra for admitted exact filters
-19. The root `README.md`, repo notes, and tracker docs describe only the admitted baseline.
-20. Detailed capability-expansion planning now has an explicit semantic inventory in `docs/QDRANT_COMPATIBILITY_MATRIX.md`.
-21. Payload-null runtime semantics are now validated; payload-empty SQL semantics are still intentionally deferred.
-22. On March 25, 2026, live `Qdrant 1.17.0` tests through `qdrant-client 1.17.0` validated the runtime contract:
+20. The root `README.md`, repo notes, and tracker docs describe only the admitted baseline.
+21. Detailed capability-expansion planning now has an explicit semantic inventory in `docs/QDRANT_COMPATIBILITY_MATRIX.md`.
+22. Payload-null runtime semantics are now validated; payload-empty SQL semantics are still intentionally deferred.
+23. On March 25, 2026, live `Qdrant 1.17.0` tests through `qdrant-client 1.17.0` validated the runtime contract:
     - explicit payload `NULL` written via point upsert is preserved
     - explicit payload `NULL` written via `set_payload` is preserved
     - `is_null` matches explicit null only
     - `is_empty` matches missing, explicit null, and `[]`
     - `is_empty` does not match empty strings or empty objects on the current runtime line
     - `values_count >= 0` matches present fields, including explicit null and empty arrays
-23. SQL null semantics for `payload:<path>` are now admitted exactly:
+24. SQL null semantics for `payload:<path>` are now admitted exactly:
     - `IS NULL` means missing or explicit null
     - `IS NOT NULL` means present and non-null
     - the current lowering excludes empty arrays from SQL null by composing `is_null`, `is_empty`, and `values_count`
-24. Payload-empty SQL semantics are now narrowed to the standard SQL subset that the current bridge can state honestly.
+25. Payload-empty SQL semantics are now narrowed to the standard SQL subset that the current bridge can state honestly.
     - empty strings remain ordinary non-null values and are expressed through normal equality, for example `payload:<path> = ''`
     - current tests now prove that empty strings stay distinct from `payload:<path> IS NULL`
     - empty-container/cardinality semantics are still intentionally deferred
-25. Planner-layer subtree replacement now uses a unified relation-pushdown analyzer scaffold for the admitted `Qdrant` relation replacements instead of separate analyzer-rule ownership by convention.
-26. The planner scaffold now derives broader subtree classes explicitly before relation recognition.
+26. Planner-layer subtree replacement now uses a unified relation-pushdown analyzer scaffold for the admitted `Qdrant` relation replacements instead of separate analyzer-rule ownership by convention.
+27. The planner scaffold now derives broader subtree classes explicitly before relation recognition.
     - source class: `none`, `single-source Qdrant`, `multi-source Qdrant`, `mixed`
     - topology class: `leaf`, `unary chain`, `unary relation change`, `multi-branch`
     - composition class: `atomic`, `mergeable`, `batchable`, `coordinated`, `local-compose`, `invalid`
     - kernel placement: `none`, `exact-self`, `exact-child`, `exact-children`
     - current admitted replacements still remain exact single-source atomic `Qdrant` relations only
-27. The planner scaffold now distinguishes exact-self kernels from local shells around extracted child kernels.
+28. The planner scaffold now distinguishes exact-self kernels from local shells around extracted child kernels.
     - direct scan-path `payload:<path>` projections are no longer treated as an invalid surface; they now rewrite to typed local payload accessors when the source payload schema is authoritative
     - raw unhinted arithmetic over `payload:<path>` still fails earlier in SQL planning and currently requires `payload(...)` or an explicit `CAST(...)`
-28. The planner scaffold now has a first concrete `mergeable` multi-branch state.
+29. The planner scaffold now has a first concrete `mergeable` multi-branch state.
     - same-collection raw `UNION ALL` branches are only classified as `mergeable` when exact filters imply pairwise-disjoint finite point-ID bounds
     - overlapping same-collection branches remain `local-compose`
-29. That first `mergeable` case is now executable.
+30. That first `mergeable` case is now executable.
     - a provably disjoint same-collection raw `UNION ALL` rewrites to a single filtered scan
     - this is the first multi-branch `Qdrant` kernel extraction beyond classifier-only planner state
-30. Raw same-collection `UNION DISTINCT` over exact filters is now the second executable `mergeable` case.
+31. Raw same-collection `UNION DISTINCT` over exact filters is now the second executable `mergeable` case.
     - overlap between branches is admitted because duplicate elimination is already part of the SQL semantics
     - the analyzer rewrites that subtree to a single filtered scan too
-31. Raw same-collection `INTERSECT DISTINCT` and `EXCEPT DISTINCT` over exact filters are now executable `mergeable` cases too.
+32. Raw same-collection `INTERSECT DISTINCT` and `EXCEPT DISTINCT` over exact filters are now executable `mergeable` cases too.
     - DataFusion lowers these through `LeftSemi` / `LeftAnti` joins over raw full-row branches
     - the analyzer sees through only the planner-generated alias and redundant left-side `DISTINCT` wrappers for that exact set-operator shape
     - `INTERSECT DISTINCT` lowers to conjunction over the admitted exact branch filters
     - `EXCEPT DISTINCT` lowers to left-minus-right filter algebra over the admitted exact branch filters
-32. Redundant `DISTINCT` over raw full-row `Qdrant` scans is now dropped.
+33. Redundant `DISTINCT` over raw full-row `Qdrant` scans is now dropped.
     - this is admitted only for raw scan/filter chains where the full row identity still includes unique `id`
     - projected `DISTINCT` remains a separate semantic case
-33. Mergeable child-kernel extraction is now explicitly validated as compositional.
+34. Mergeable child-kernel extraction is now explicitly validated as compositional.
     - a nested same-collection set-algebra region can collapse to one scan-local kernel first
     - exact `COUNT(*)` and exact scalar-facet grouped counts can still replace the larger parent
       subtree after that child rewrite in the same bottom-up analyzer pass
-34. The admitted facet slice is now broader without overstating typed payload SQL semantics.
+35. The admitted facet slice is now broader without overstating typed payload SQL semantics.
     - top-facet grouped counts now admit keyword, bool, and lookup-capable integer payload indexes
     - facet keys still surface as `Utf8`, matching the current textual `payload:<path>` SQL bridge
     - integer payload metadata now distinguishes `lookup` from `range`, so integer `=` / `IN` pushdown no longer overstates range-only integer indexes
     - live collection introspection on the current runtime line now preserves integer lookup/range metadata well enough to admit integer facet pushdown on the same exact contract
-35. The first public retrieval prototype is now a DataFusion-native nearest marker surface over
+36. The first public retrieval prototype is now a DataFusion-native nearest marker surface over
     the prepared session context.
     - current public marker is `qdrant_nearest_score(...)`
     - current admitted scope is:
@@ -108,23 +111,23 @@ Current branch reality:
       - optional score-threshold predicates
     - score output is only present when projected
     - when projected, aliases win; otherwise naming follows normal `DataFusion` expression naming
-36. Current exact `Qdrant` leaf relations now converge on one generic extracted kernel family.
+37. Current exact `Qdrant` leaf relations now converge on one generic extracted kernel family.
     - exact count, scalar facet, and nearest retrieval all share one `QdrantKernelNode` /
       `QdrantKernelSpec` structure
-37. Current public marker semantics now also converge on one generic operator family.
+38. Current public marker semantics now also converge on one generic operator family.
     - `QdrantOpNode` / `QdrantOp` now own the current public nearest-retrieval marker semantics
     - `QdrantSessionContext` now remains only as the prepared-session wrapper that installs the
       analyzer, planner, and marker-UDF hooks
-38. Shared `Qdrant` semantics now live in `src/qdrant.rs` and are reused across analyzer, filter pushdown, and sort pushdown instead of duplicating payload-path recognition.
+39. Shared `Qdrant` semantics now live in `src/qdrant.rs` and are reused across analyzer, filter pushdown, and sort pushdown instead of duplicating payload-path recognition.
     - canonical payload access recognition now admits raw `payload:<path>`, public `payload(payload:<path>, 'Type')`, exact casts to the authoritative payload scalar type for filter semantics, DataFusion-style order-preserving casts for ordering semantics, and the internal executable payload-access UDFs
-39. Scan-path payload projection is now schema-aware and executable.
+40. Scan-path payload projection is now schema-aware and executable.
     - direct `payload:<path>` projections over known payload fields rewrite to typed local payload accessors early enough for honest logical schema propagation
     - plain scan queries can now project typed payload scalars while preserving remote filter/sort pushdown
-40. A public typed payload helper now exists for SQL planning gaps.
+41. A public typed payload helper now exists for SQL planning gaps.
     - `payload(accessor, 'Type')` gives `DataFusion` a planning-time payload scalar type
     - it currently unlocks arithmetic and similar contexts where raw `payload:<path>` would otherwise still be typed as `Utf8`
     - raw unhinted arithmetic like `payload:rank + 1` is still intentionally deferred until an earlier SQL-planning normalization seam exists
-41. Qdrant query-surface payload projections now reuse the same canonical payload resolver as scan filter/sort pushdown.
+42. Qdrant query-surface payload projections now reuse the same canonical payload resolver as scan filter/sort pushdown.
     - raw `payload:<path>`, public `payload(...)`, and exact casts to the authoritative payload scalar type now all resolve to the same payload-output path on qdrant query projections
     - exact cast query projections now preserve remote payload fetch and materialize typed output columns when authoritative payload metadata exists
 
@@ -146,12 +149,14 @@ Current branch reality:
      classification, kernel extraction, and optimizer-side coordinated rewrites
 6. `src/context.rs`, `src/context/planner.rs`, `src/context/exec.rs`
    - prepared-session wrapper, extension-planner support, and runtime request execution helpers
-7. `src/arrow/schema.rs`, `src/arrow/deserialize.rs`
+7. `src/arrow/schema.rs`, `src/arrow/deserialize.rs`, `src/arrow/serialize.rs`
    - collection-config to Arrow schema translation plus `Qdrant` point to Arrow record-batch
-     materialization
-8. `tests/e2e.rs`
+     materialization and record-batch to `Qdrant` point serialization
+8. `src/table/insert.rs`
+   - append-only `INSERT INTO` sink implementation over the canonical provider schema
+9. `tests/e2e.rs`
    - integration coverage for the admitted scan baseline, typed payload access, aggregate-like
-     slices, and current query-family surfaces
+     slices, current query-family surfaces, and append-only inserts
 
 ## Operational Notes
 

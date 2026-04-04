@@ -17,7 +17,7 @@ Use it to resume work without replaying the full repository history.
    - canonical dense / multivector / sparse carriers
    - top-level nullable vector columns for heterogeneous named collections
    - current typed `qdrant-client` vector outputs only
-4. `INSERT INTO` is explicitly unsupported instead of panicking.
+4. Append-only `INSERT INTO` is now supported through `DataSinkExec` and a write-side Arrow/Qdrant serializer.
 5. The broad SQL-native `Qdrant` capability surface is still intentionally incomplete, but the predicate algebra foundation, the first aggregate-like planner slices, the first public nearest-retrieval prototype, and the typed payload-access bridge are now in place.
 6. The next expansion round is now explicitly staged around the full `Qdrant` relation
    architecture rather than feature-by-feature node growth:
@@ -236,27 +236,30 @@ Use it to resume work without replaying the full repository history.
     - exact `CAST(payload:<path> AS <canonical type>)` query projections now preserve remote
       payload fetch and typed output materialization on qdrant query kernels
     - planner and e2e coverage now prove the exact-cast query projection path
+39. `Q-041`: Append-only `INSERT INTO` now lands on a deliberate write contract.
+    - `QdrantTableProvider::insert_into` now follows the standard `DataFusion` `DataSinkExec` pattern
+    - write-side Arrow/Qdrant serialization now converts canonical provider rows into `PointStruct` values
+    - the current admitted contract is explicit: append-only only, with upstream schemas logically equivalent to the qdrant table schema
+    - planner coverage now proves the physical plan lowers to `QdrantInsertSink` and unit coverage proves dense / named / sparse write serialization
+
 ## Next
 
-1. `Q-041`: Land a deliberate `INSERT INTO` contract.
-   - start with append-only writes through a write-side Arrow/Qdrant serializer and `DataSinkExec`
-   - keep the contract explicit rather than approximating unsupported write shapes
-2. The detailed planning inventory for the next expansion round now lives in `docs/QDRANT_COMPATIBILITY_MATRIX.md`.
-3. `Q-017`: Validate distributed-ordering behavior on the target `Qdrant` deployment modes before claiming broader exact payload-key sort pushdown.
-4. `M-003`: Extend broader aggregate-like and retrieval growth on
+1. The detailed planning inventory for the next expansion round now lives in `docs/QDRANT_COMPATIBILITY_MATRIX.md`.
+2. `Q-017`: Validate distributed-ordering behavior on the target `Qdrant` deployment modes before claiming broader exact payload-key sort pushdown.
+3. `M-003`: Extend broader aggregate-like and retrieval growth on
    the shared operator / kernel structure.
    - aggregate-like: explicit output contracts beyond exact `COUNT(*)` and the current scalar
      facet slice
    - retrieval: sample, then broader `query`-family relations such as recommend / discover /
      context now that the nearest prototype is fully absorbed
-6. `Q-020`: Extend the predicate algebra only where the SQL semantics are explicit.
+4. `Q-020`: Extend the predicate algebra only where the SQL semantics are explicit.
    - payload empty-container/cardinality semantics
    - text, geo, nested, and count-oriented predicates
-7. Continue mapping the pushdown model onto `DataFusion`’s own idioms where broader traversal is required.
+5. Continue mapping the pushdown model onto `DataFusion`’s own idioms where broader traversal is required.
    - `TreeNode` visitors / rewriters instead of ad hoc recursion
    - `LogicalPlan` expression and subquery helpers before project-local traversal
    - exact admission of broader filter families and aggregate-like shapes instead of ad hoc expression splitting
-8. Extend the planner scaffold beyond the current explicit classifier set toward richer island composition and kernel extraction.
+6. Extend the planner scaffold beyond the current explicit classifier set toward richer island composition and kernel extraction.
    - source-set ownership over larger plan regions
    - widen `mergeable` only with explicit algebraic proofs such as disjointness or duplicate-elimination semantics, not collection identity alone
    - broaden `invalid` detection carefully as more remote-only surfaces are introduced
@@ -272,7 +275,7 @@ When the next implementation round starts:
    - top-level nullable vector columns
    - paginated `scroll`
    - current typed `qdrant-client` APIs only
-3. keep writes unsupported until a deliberate write contract exists
+3. keep the write contract explicit: append-only only unless broader semantics are deliberately specified
 4. use `DataFusion` primary-source idioms before inventing project-local traversal or rewrite patterns
 5. admit only explicit pushdown subsets; reject unsupported cases cleanly instead of approximating them
    - when widening behavior, prefer one shared invariant-based recognizer over duplicated local shape checks

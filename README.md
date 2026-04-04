@@ -4,9 +4,10 @@
 
 The current crate scope is intentionally narrow: correct, paginated collection scans over the
 canonical Arrow carriers used by `ndarrow` and `nabled::arrow`, the exact pushdown-first SQL
-bridge for ordering and filtering, and the first narrow planner slices for exact `COUNT(*)` and
-top-facet grouped-count pushdown. It is not yet the broad SQL surface for `Qdrant` search,
-recommend, discover, fusion, or broader planner rewrites.
+bridge for ordering and filtering, append-only `INSERT INTO` over canonical qdrant row schemas, and
+the first narrow planner slices for exact `COUNT(*)` and top-facet grouped-count pushdown. It is
+not yet the broad SQL surface for `Qdrant` search, recommend, discover, fusion, or broader
+planner rewrites.
 
 ## Current Scan Contract
 
@@ -26,6 +27,8 @@ canonical carrier; missing values are not imputed during scan.
 
 - collection config introspection into the scan schema
 - true table scans via paginated `Qdrant::scroll`
+- append-only `INSERT INTO` through `DataSinkExec` when the upstream schema is logically equivalent to the qdrant table schema
+  - current admitted write row contract is the provider schema: `id`, optional `payload` JSON text, and the declared qdrant vector columns
 - schema/projection-driven vector selection
 - SQL `LIMIT` pushdown to the scan stream
 - exact physical sort pushdown for `ORDER BY id ASC`
@@ -78,7 +81,7 @@ canonical carrier; missing values are not imputed during scan.
 
 ## Not Yet Admitted
 
-- write support or `INSERT INTO`
+- broader write semantics beyond append-only `INSERT INTO` on the canonical provider schema
 - payload empty-container/cardinality semantics, text, geo, nested, and count-oriented payload predicates
 - broader payload-key SQL `ORDER BY` pushdown beyond the admitted `payload:<path>` subset
 - broader aggregate/grouped SQL beyond the admitted scalar-facet subset
@@ -175,6 +178,10 @@ let batches = ctx
 ## Example SQL
 
 ```sql
+INSERT INTO docs
+SELECT id, payload, vector
+FROM staging_docs;
+
 SELECT id, payload
 FROM docs
 LIMIT 10;
