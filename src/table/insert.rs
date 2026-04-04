@@ -59,7 +59,7 @@ impl DataSink for QdrantInsertSink {
             if batch.num_rows() == 0 {
                 continue;
             }
-            let points = record_batch_to_points(&batch)?;
+            let points = record_batch_to_points(&batch, &self.schema)?;
             written += u64::try_from(points.len()).expect("point count fits u64");
             drop(
                 self.client

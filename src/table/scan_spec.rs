@@ -5,7 +5,10 @@ use datafusion::error::Result as DataFusionResult;
 use datafusion::logical_expr::Expr;
 use qdrant_client::qdrant::PointId;
 
-use crate::arrow::schema::{PAYLOAD_FIELD_NAME, QdrantFieldBinding, UNNAMED_VECTOR_FIELD_NAME};
+use crate::arrow::schema::{
+    PAYLOAD_FIELD_NAME, QdrantFieldBinding, UNNAMED_VECTOR_FIELD_NAME,
+    schema_uses_unnamed_vector_contract,
+};
 use crate::qdrant::QdrantPayloadSchema;
 use crate::qdrant::filter::QdrantFilters;
 
@@ -84,7 +87,10 @@ impl QdrantScanSpec {
             .collect::<Vec<_>>();
         let vectors = if vector_names.is_empty() {
             QdrantVectorSelector::None
-        } else if vector_names.len() == 1 && vector_names[0] == UNNAMED_VECTOR_FIELD_NAME {
+        } else if vector_names.len() == 1
+            && vector_names[0] == UNNAMED_VECTOR_FIELD_NAME
+            && schema_uses_unnamed_vector_contract(base_schema.as_ref())
+        {
             QdrantVectorSelector::All
         } else {
             QdrantVectorSelector::Named(vector_names)

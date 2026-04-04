@@ -12,9 +12,13 @@ use qdrant_client::qdrant::{NamedVectors, PointId, PointStruct, Vector, Vectors}
 
 use super::schema::{
     ID_FIELD_NAME, PAYLOAD_FIELD_NAME, QdrantFieldBinding, UNNAMED_VECTOR_FIELD_NAME,
+    schema_uses_unnamed_vector_contract,
 };
 
-pub(crate) fn record_batch_to_points(batch: &RecordBatch) -> DataFusionResult<Vec<PointStruct>> {
+pub(crate) fn record_batch_to_points(
+    batch: &RecordBatch,
+    target_schema: &datafusion::arrow::datatypes::SchemaRef,
+) -> DataFusionResult<Vec<PointStruct>> {
     let schema = batch.schema();
     let id_index = schema.index_of(ID_FIELD_NAME).map_err(|_| {
         DataFusionError::Execution(format!(
@@ -37,7 +41,9 @@ pub(crate) fn record_batch_to_points(batch: &RecordBatch) -> DataFusionResult<Ve
         return exec_err!("write batch schema does not contain any qdrant vector columns");
     }
 
-    let unnamed_only = vector_fields.len() == 1 && vector_fields[0].1 == UNNAMED_VECTOR_FIELD_NAME;
+    let unnamed_only = vector_fields.len() == 1
+        && vector_fields[0].1 == UNNAMED_VECTOR_FIELD_NAME
+        && schema_uses_unnamed_vector_contract(target_schema.as_ref());
     let mut points = Vec::with_capacity(batch.num_rows());
     for row in 0..batch.num_rows() {
         let id = point_id_at(batch.column(id_index), row)?;
@@ -622,7 +628,7 @@ mod tests {
         ])
         .expect("batch");
 
-        let points = record_batch_to_points(&batch).expect("points");
+        let points = record_batch_to_points(&batch, &schema).expect("points");
         assert_eq!(points.len(), 2);
         assert_eq!(
             points[0].id.as_ref().and_then(|id| id.point_id_options.as_ref()),
@@ -652,7 +658,7 @@ mod tests {
         ])
         .expect("batch");
 
-        let points = record_batch_to_points(&batch).expect("points");
+        let points = record_batch_to_points(&batch, &schema).expect("points");
         assert_eq!(points.len(), 2);
         let first_vectors = points[0].vectors.as_ref().expect("first vectors");
         let second_vectors = points[1].vectors.as_ref().expect("second vectors");

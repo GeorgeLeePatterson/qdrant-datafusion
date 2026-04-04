@@ -1,5 +1,5 @@
 //! Schema utilities for `Qdrant` `DataFusion` integration.
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use arrow_schema::extension::{
     EXTENSION_TYPE_METADATA_KEY, EXTENSION_TYPE_NAME_KEY, ExtensionType, VariableShapeTensor,
@@ -13,6 +13,9 @@ use crate::error::{Error, Result};
 pub const ID_FIELD_NAME: &str = "id";
 pub const PAYLOAD_FIELD_NAME: &str = "payload";
 pub const UNNAMED_VECTOR_FIELD_NAME: &str = "vector";
+const QDRANT_VECTOR_MODE_METADATA_KEY: &str = "qdrant.vector_mode";
+const QDRANT_VECTOR_MODE_UNNAMED: &str = "unnamed";
+const QDRANT_VECTOR_MODE_NAMED: &str = "named";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QdrantFieldBinding {
@@ -90,6 +93,26 @@ pub fn datatype_to_arrow(_datatype: Datatype) -> DataType {
     // Qdrant currently returns f32 payloads for vector outputs. Keep the contract explicit here
     // until broader datatype support is admitted deliberately.
     DataType::Float32
+}
+
+pub fn schema_uses_unnamed_vector_contract(schema: &Schema) -> bool {
+    match schema.metadata().get(QDRANT_VECTOR_MODE_METADATA_KEY).map(String::as_str) {
+        Some(QDRANT_VECTOR_MODE_UNNAMED) => true,
+        Some(QDRANT_VECTOR_MODE_NAMED) => false,
+        _ => {
+            let vector_names = schema
+                .fields()
+                .iter()
+                .filter(|field| QdrantFieldBinding::from_field(field).is_vector())
+                .map(|field| field.name().clone())
+                .collect::<Vec<_>>();
+            vector_names.len() == 1 && vector_names[0] == UNNAMED_VECTOR_FIELD_NAME
+        }
+    }
+}
+
+pub fn field_uses_unnamed_vector_contract(schema: &Schema, field: &Field) -> bool {
+    field.name() == UNNAMED_VECTOR_FIELD_NAME && schema_uses_unnamed_vector_contract(schema)
 }
 
 fn fixed_size_vector_field(name: &str, vector_datatype: Datatype, len: u64) -> Result<Field> {
@@ -201,9 +224,11 @@ pub fn collection_to_arrow_schema(collection: &str, config: &CollectionConfig) -
     let params =
         config.params.as_ref().ok_or(Error::MissingCollectionInfoParams(collection.into()))?;
 
+    let mut unnamed_vector_contract = false;
     if let Some(config) = params.vectors_config.as_ref().and_then(|config| config.config.as_ref()) {
         match config {
             vectors_config::Config::Params(vector_params) => {
+                unnamed_vector_contract = true;
                 let field = if vector_params.multivector_config.is_some() {
                     variable_shape_tensor_field(
                         UNNAMED_VECTOR_FIELD_NAME,
@@ -238,7 +263,17 @@ pub fn collection_to_arrow_schema(collection: &str, config: &CollectionConfig) -
         }
     }
 
-    Ok(Schema::new(fields))
+    Ok(Schema::new_with_metadata(
+        fields,
+        HashMap::from([(
+            QDRANT_VECTOR_MODE_METADATA_KEY.to_owned(),
+            if unnamed_vector_contract {
+                QDRANT_VECTOR_MODE_UNNAMED.to_owned()
+            } else {
+                QDRANT_VECTOR_MODE_NAMED.to_owned()
+            },
+        )]),
+    ))
 }
 
 #[cfg(test)]

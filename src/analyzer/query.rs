@@ -33,7 +33,10 @@ pub(crate) use self::relevance_feedback::RelevanceFeedbackQuery;
 pub(crate) use self::sample::SampleQuery;
 use super::source::Source;
 use super::surface::QuerySurfaceCall;
-use crate::arrow::schema::{PAYLOAD_FIELD_NAME, QdrantFieldBinding, UNNAMED_VECTOR_FIELD_NAME};
+use crate::arrow::schema::{
+    PAYLOAD_FIELD_NAME, QdrantFieldBinding, UNNAMED_VECTOR_FIELD_NAME,
+    schema_uses_unnamed_vector_contract,
+};
 
 #[derive(Debug, Clone)]
 pub(crate) struct QueryDescriptor {
@@ -43,6 +46,15 @@ pub(crate) struct QueryDescriptor {
 
 impl QueryDescriptor {
     pub(crate) fn new(query: Query, using: Option<String>) -> Self { Self { query, using } }
+
+    fn normalize_for_source(mut self, source: &Source) -> Self {
+        if self.using.as_deref() == Some(UNNAMED_VECTOR_FIELD_NAME)
+            && schema_uses_unnamed_vector_contract(source.schema.as_ref())
+        {
+            self.using = None;
+        }
+        self
+    }
 
     fn into_parts(self) -> (Query, Option<String>) { (self.query, self.using) }
 }
@@ -415,7 +427,10 @@ impl QueryVectorsSelector {
             .collect::<Vec<_>>();
         if vector_names.is_empty() {
             Self::None
-        } else if vector_names.len() == 1 && vector_names[0] == UNNAMED_VECTOR_FIELD_NAME {
+        } else if vector_names.len() == 1
+            && vector_names[0] == UNNAMED_VECTOR_FIELD_NAME
+            && schema_uses_unnamed_vector_contract(schema.as_ref())
+        {
             Self::All
         } else {
             Self::Named(vector_names)
@@ -767,7 +782,7 @@ impl QueryKind {
         source: &Source,
         prefetch: &[QueryPrefetchBranch],
     ) -> Result<QueryDescriptor> {
-        match self {
+        let descriptor = match self {
             Self::Nearest(query) => Ok(query.descriptor(prefetch.len())),
             Self::Recommend(query) => Ok(query.descriptor(prefetch.len())),
             Self::Discover(query) => Ok(query.descriptor(prefetch.len())),
@@ -778,6 +793,7 @@ impl QueryKind {
             Self::Formula(query) => query.descriptor(source, prefetch),
             Self::NearestWithMmr(query) => Ok(query.descriptor(prefetch.len())),
             Self::RelevanceFeedback(query) => Ok(query.descriptor(prefetch.len())),
-        }
+        }?;
+        Ok(descriptor.normalize_for_source(source))
     }
 }

@@ -16,7 +16,7 @@ use datafusion::physical_expr::utils::{
 
 use super::value::point_id_scalar;
 use super::{QdrantFieldRef, QdrantFilterExpr, QdrantPayloadSchema, QdrantPredicate};
-use crate::arrow::schema::{ID_FIELD_NAME, QdrantFieldBinding, UNNAMED_VECTOR_FIELD_NAME};
+use crate::arrow::schema::{ID_FIELD_NAME, QdrantFieldBinding, field_uses_unnamed_vector_contract};
 
 pub(super) fn exact_expr(
     base_schema: &SchemaRef,
@@ -351,7 +351,7 @@ impl QdrantFieldRef {
             return Some(Self::Id);
         }
         let field = base_schema.field_with_name(name).ok()?;
-        if name == UNNAMED_VECTOR_FIELD_NAME {
+        if field_uses_unnamed_vector_contract(base_schema.as_ref(), field) {
             return None;
         }
         if QdrantFieldBinding::from_field(field).is_vector() {

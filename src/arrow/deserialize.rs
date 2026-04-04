@@ -18,6 +18,7 @@ use qdrant_client::qdrant::{
 
 use super::schema::{
     ID_FIELD_NAME, PAYLOAD_FIELD_NAME, QdrantFieldBinding, UNNAMED_VECTOR_FIELD_NAME,
+    field_uses_unnamed_vector_contract,
 };
 
 fn vector_kind(vector: &vector_output::Vector) -> &'static str {
@@ -423,6 +424,11 @@ impl QdrantRecordBatchBuilder {
         score_field_names: Option<&BTreeSet<String>>,
         payload_output_paths: &BTreeMap<String, String>,
     ) -> DataFusionResult<Self> {
+        let unnamed_vector_contract = schema
+            .fields()
+            .iter()
+            .find(|field| field.name() == UNNAMED_VECTOR_FIELD_NAME)
+            .is_some_and(|field| field_uses_unnamed_vector_contract(schema.as_ref(), field));
         let field_appenders = schema
             .fields()
             .iter()
@@ -450,7 +456,8 @@ impl QdrantRecordBatchBuilder {
                         QdrantFieldBinding::DenseFixed { width } => {
                             Ok(FieldAppender::DenseVector(DenseVectorRows::new(
                                 field.name().clone(),
-                                field.name() == UNNAMED_VECTOR_FIELD_NAME,
+                                unnamed_vector_contract
+                                    && field.name() == UNNAMED_VECTOR_FIELD_NAME,
                                 width,
                                 point_count,
                             )))
@@ -464,7 +471,8 @@ impl QdrantRecordBatchBuilder {
                             };
                             Ok(FieldAppender::MultiVector(MultiVectorRows::new(
                                 field.name().clone(),
-                                field.name() == UNNAMED_VECTOR_FIELD_NAME,
+                                unnamed_vector_contract
+                                    && field.name() == UNNAMED_VECTOR_FIELD_NAME,
                                 width,
                                 point_count,
                             )?))
@@ -472,7 +480,8 @@ impl QdrantRecordBatchBuilder {
                         QdrantFieldBinding::Sparse => {
                             Ok(FieldAppender::SparseVector(SparseVectorRows::new(
                                 field.name().clone(),
-                                field.name() == UNNAMED_VECTOR_FIELD_NAME,
+                                unnamed_vector_contract
+                                    && field.name() == UNNAMED_VECTOR_FIELD_NAME,
                                 point_count,
                             )))
                         }
