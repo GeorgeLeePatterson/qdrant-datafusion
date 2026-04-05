@@ -36,7 +36,10 @@ pub fn qdrant_sample_score(method: impl Into<String>) -> Expr {
 pub(crate) fn qdrant_sample_score_udf() -> ScalarUDF {
     static UDF: OnceLock<ScalarUDF> = OnceLock::new();
     UDF.get_or_init(|| {
-        ScalarUDF::new_from_impl(NonExecutableScoreUdf::new(SAMPLE_SCORE_FUNCTION_NAME, ALIASES))
+        ScalarUDF::new_from_impl(NonExecutableScoreUdf::new_nullary_or_variadic(
+            SAMPLE_SCORE_FUNCTION_NAME,
+            ALIASES,
+        ))
     })
     .clone()
 }

@@ -74,7 +74,7 @@ This matrix is derived from:
 | Row production | recommendation | `query(Query::Recommend)`, `recommend` | relation-producing retrieval | `Later` | Depends on retrieval IR and SQL surface decision. |
 | Row production | discovery | `query(Query::Discover)`, `discover` | relation-producing retrieval | `Later` | Same dependency as recommendation. |
 | Row production | context query | `query(Query::Context)` | relation-producing retrieval | `Later` | Same dependency as recommendation / discovery. |
-| Row production | sample | `query(Query::Sample)` | relation-producing retrieval | `Next` | Conceptually simple and useful as the next retrieval relation now that nearest exists. |
+| Row production | sample | `query(Query::Sample)` | relation-producing retrieval | `Current` | Now exposed through `qdrant_sample_score([method])` on the prepared session surface. Exact lowering currently admits random sampling with descending score sort, `LIMIT`, and default method `'random'` when omitted. |
 | Row production | prefetch subqueries | `QueryPointsBuilder::prefetch` | retrieval pipeline / subquery composition | `Later` | Important for hybrid query plans, but should follow core retrieval IR. |
 | Row production | `using` named vector | query/search/recommend builders | retrieval relation parameter | `Current` | The current nearest prototype already admits named-vector selection through the vector column argument to `qdrant_nearest_score(...)`. |
 | Row production | `lookup_from` | query/search/recommend/group builders | cross-collection lookup parameter | `Later` | Useful, but not first-wave. |
@@ -182,22 +182,20 @@ These are strong next-release candidates because they are SQL-natural and reuse 
 The first retrieval relation now exists through the prepared session surface. The next expansion is
 to keep the retrieval family compositional without freezing SQL syntax too early:
 
-1. sample
-2. search params and execution hints where they do not distort denotation
-3. recommendation / discovery / context
-4. keep the score/output contract stable while widening relation kinds
+1. search params and execution hints where they do not distort denotation
+2. recommendation / discovery / context
+3. keep the score/output contract stable while widening relation kinds
 
 ### P3: follow with retrieval modifiers
 
 Now that the first retrieval relation exists:
 
-1. sample
-2. recommend
-3. discover
-4. context
-5. fusion
-6. formula
-7. MMR
+1. recommend
+2. discover
+3. context
+4. fusion
+5. formula
+6. MMR
 
 ### Deferred from the next release
 
@@ -211,7 +209,7 @@ Now that the first retrieval relation exists:
 1. settle whether the next grouped/exploration step is broader facet semantics or a separate aggregate-like relation
 2. settle explicit payload empty semantics
 3. preserve the nearest score/output contract while widening retrieval
-4. implement sample and the next retrieval relations
+4. implement the next retrieval relations
 5. layer retrieval modifiers and secondary retrieval operators on top
 
 That order is the most compositional one currently available.

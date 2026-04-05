@@ -1,6 +1,6 @@
 # Execution Tracker
 
-Last updated: 2026-04-03
+Last updated: 2026-04-05
 
 ## Purpose
 
@@ -246,6 +246,10 @@ Use it to resume work without replaying the full repository history.
     - exact payload-key sort pushdown remains enabled only for stable single-peer collections
     - distributed, transferring, or resharding collection states now fall back to local `DataFusion` sorting instead of claiming exact remote order
     - e2e coverage now validates the single-peer multi-shard ordered-scroll contract on the target runtime
+41. `Q-044`: `sample` is now a validated current retrieval relation on the shared operator / kernel architecture.
+    - `qdrant_sample_score([method])` now has live end-to-end coverage on the prepared session surface
+    - the current admitted method is `random`, and omitting the method now falls back to the same exact contract
+    - docs and tracker state now promote `sample` from `Next` to `Current`
 
 ## Next
 
@@ -254,8 +258,8 @@ Use it to resume work without replaying the full repository history.
    the shared operator / kernel structure.
    - aggregate-like: explicit output contracts beyond exact `COUNT(*)` and the current scalar
      facet slice
-   - retrieval: sample, then broader `query`-family relations such as recommend / discover /
-     context now that the nearest prototype is fully absorbed
+   - retrieval: broader `query`-family relations such as recommend / discover / context now that
+     nearest and sample are both fully absorbed
 4. `Q-020`: Extend the predicate algebra only where the SQL semantics are explicit.
    - payload empty-container/cardinality semantics
    - text, geo, nested, and count-oriented predicates

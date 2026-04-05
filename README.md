@@ -6,8 +6,8 @@ The current crate scope is intentionally narrow: correct, paginated collection s
 canonical Arrow carriers used by `ndarrow` and `nabled::arrow`, the exact pushdown-first SQL
 bridge for ordering and filtering, append-only `INSERT INTO` over canonical qdrant row schemas, and
 the first narrow planner slices for exact `COUNT(*)` and top-facet grouped-count pushdown. It is
-not yet the broad SQL surface for `Qdrant` search, recommend, discover, fusion, or broader
-planner rewrites.
+not yet the broad SQL surface for `Qdrant` recommend, discover, fusion, or broader planner
+rewrites.
 
 ## Current Scan Contract
 
@@ -49,11 +49,14 @@ canonical carrier; missing values are not imputed during scan.
   for the current nearest-retrieval prototype
 - current exact `COUNT(*)`, scalar facet, and nearest retrieval now lower through one shared
   internal `QdrantKernelNode` / `QdrantKernelSpec` family rather than isolated logical node types
-- the first retrieval prototype is a DataFusion-native marker UDF:
+- current retrieval prototypes are DataFusion-native marker UDFs on the prepared session surface:
   - `qdrant_nearest_score(vector_column, ...)`
-  - exact lowering currently admits dense query vectors, descending score sort, `LIMIT`,
-    optional exact base filters, and optional score-threshold predicates
-  - the score column is only added when projected; aliases follow normal `DataFusion` naming
+    - exact lowering currently admits dense query vectors, descending score sort, `LIMIT`,
+      optional exact base filters, and optional score-threshold predicates
+  - `qdrant_sample_score([method])`
+    - exact lowering currently admits random sampling with descending score sort and `LIMIT`
+    - the method currently defaults to `'random'`
+  - projected score columns follow normal `DataFusion` naming and aliasing rules
 - a unified relation-pushdown analyzer scaffold now owns the admitted planner-layer subtree
   replacements instead of relying on separate analyzer-rule ownership by convention
   - the scaffold now classifies subtree source, topology, and composition explicitly as the
@@ -87,8 +90,8 @@ canonical carrier; missing values are not imputed during scan.
 - broader payload-key SQL `ORDER BY` pushdown beyond the admitted `payload:<path>` subset
 - broader aggregate/grouped SQL beyond the admitted scalar-facet subset
 - fully implicit arithmetic and similar typed SQL over raw `payload:<path>` when `DataFusion` must infer the payload scalar type during SQL planning; use `payload(payload:<path>, 'Type')` or an explicit `CAST(...)` today
-- broader `Qdrant`-specific UDF, UDAF, or UDTF surface beyond the current nearest marker UDF and typed `payload(...)` helper
-- SQL-native search / recommend / discover / fusion semantics
+- broader `Qdrant`-specific UDF, UDAF, or UDTF surface beyond the current nearest/sample marker UDFs and typed `payload(...)` helper
+- SQL-native recommend / discover / fusion semantics
 - broader planner rewrites beyond the narrow exact `COUNT(*)` / facet slices
 
 ## Basic Usage
@@ -213,6 +216,11 @@ ORDER BY payload(payload:rank, 'Integer');
 SELECT id, qdrant_nearest_score(embedding, 1.0, 0.0) AS score
 FROM docs
 WHERE qdrant_nearest_score(embedding, 1.0, 0.0) >= 0.3
+ORDER BY score DESC
+LIMIT 10;
+
+SELECT id, qdrant_sample_score() AS score
+FROM docs
 ORDER BY score DESC
 LIMIT 10;
 

@@ -4,7 +4,7 @@ use std::sync::Arc;
 use datafusion::arrow::datatypes::{DataType, Field, FieldRef};
 use datafusion::common::{Result, exec_err, plan_err};
 use datafusion::logical_expr::{
-    ColumnarValue, Expr, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
+    ColumnarValue, Expr, ScalarFunctionArgs, ScalarUDFImpl, Signature, TypeSignature, Volatility,
 };
 
 pub(crate) fn function_args<'a>(
@@ -36,11 +36,26 @@ pub(crate) struct NonExecutableScoreUdf {
 
 impl NonExecutableScoreUdf {
     pub(crate) fn new(name: &'static str, aliases: &[&str]) -> Self {
-        Self {
+        Self::new_with_signature(name, aliases, Signature::variadic_any(Volatility::Immutable))
+    }
+
+    pub(crate) fn new_nullary_or_variadic(name: &'static str, aliases: &[&str]) -> Self {
+        Self::new_with_signature(
             name,
-            aliases: aliases.iter().map(|alias| (*alias).to_owned()).collect(),
-            signature: Signature::variadic_any(Volatility::Immutable),
-        }
+            aliases,
+            Signature::one_of(
+                vec![TypeSignature::Nullary, TypeSignature::VariadicAny],
+                Volatility::Immutable,
+            ),
+        )
+    }
+
+    pub(crate) fn new_with_signature(
+        name: &'static str,
+        aliases: &[&str],
+        signature: Signature,
+    ) -> Self {
+        Self { name, aliases: aliases.iter().map(|alias| (*alias).to_owned()).collect(), signature }
     }
 }
 

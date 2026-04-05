@@ -2121,6 +2121,38 @@ mod tests {
     }
 
     #[test]
+    fn physical_plan_uses_qdrant_query_exec_for_default_sample_score_sql() {
+        let provider = test_provider(Schema::new(vec![
+            Field::new(ID_FIELD_NAME, DataType::Utf8, false),
+            Field::new(PAYLOAD_FIELD_NAME, DataType::Utf8, true),
+        ]));
+        let ctx = QdrantSessionContext::from(SessionContext::new());
+        drop(
+            ctx.session_context()
+                .register_table("vectors", Arc::new(provider))
+                .expect("register table"),
+        );
+        let dataframe =
+            ctx
+                .sql(
+                    "SELECT id, payload, qdrant_sample_score() AS score FROM vectors ORDER BY \
+                     score                  DESC LIMIT 2",
+                )
+                .now_or_never()
+                .expect("sql future is ready")
+                .expect("dataframe");
+        let plan = dataframe
+            .create_physical_plan()
+            .now_or_never()
+            .expect("plan future is ready")
+            .expect("physical plan");
+        let display = displayable(plan.as_ref()).indent(true).to_string();
+        let _query = qdrant_query(&plan);
+
+        assert!(display.contains("QdrantQueryExec"), "{display}");
+    }
+
+    #[test]
     fn physical_plan_uses_qdrant_query_exec_for_order_by_score_sql() {
         let provider = QdrantTableProvider {
             payload_schema: payload_schema([(

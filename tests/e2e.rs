@@ -117,6 +117,14 @@ e2e_test!(
 
 #[cfg(feature = "test-utils")]
 e2e_test!(
+    prepared_session_sql_sample_query,
+    tests::test_prepared_session_sql_sample_query,
+    TRACING_DIRECTIVES,
+    None
+);
+
+#[cfg(feature = "test-utils")]
+e2e_test!(
     nearest_query_projects_payload_path,
     tests::test_nearest_query_projects_payload_path,
     TRACING_DIRECTIVES,
@@ -1313,6 +1321,45 @@ mod tests {
         assert_f32_eq(scores[0], 1.0);
         assert_f32_eq(scores[1], 0.4);
         assert!(display.contains("QdrantQueryExec"), "{display}");
+
+        Ok(())
+    }
+
+    pub(super) async fn test_prepared_session_sql_sample_query(
+        c: Arc<QdrantContainer>,
+    ) -> Result<()> {
+        let client = create_qdrant_client(&c)?;
+        let collection_name = "test_session_context_sample_query";
+
+        create_scalar_collection(&client, collection_name).await?;
+
+        let points = vec![
+            PointStruct::new(1, Vector::new_dense(vec![0.1]), qdrant_client::Payload::new()),
+            PointStruct::new(2, Vector::new_dense(vec![0.2]), qdrant_client::Payload::new()),
+            PointStruct::new(3, Vector::new_dense(vec![0.3]), qdrant_client::Payload::new()),
+            PointStruct::new(4, Vector::new_dense(vec![0.4]), qdrant_client::Payload::new()),
+            PointStruct::new(5, Vector::new_dense(vec![0.5]), qdrant_client::Payload::new()),
+        ];
+        drop(client.upsert_points(UpsertPointsBuilder::new(collection_name, points)).await?);
+
+        let table_provider = QdrantTableProvider::try_new(client.clone(), collection_name).await?;
+        let ctx = QdrantSessionContext::from(SessionContext::new());
+        drop(ctx.session_context().register_table("vectors", Arc::new(table_provider))?);
+
+        let sql_variants = [
+            "SELECT id, qdrant_sample_score('random') AS score FROM vectors ORDER BY score DESC \
+             LIMIT 2",
+            "SELECT id, qdrant_sample_score() AS score FROM vectors ORDER BY score DESC LIMIT 2",
+        ];
+
+        for sql in sql_variants {
+            let (rows, display) = collect_scored_rows(&ctx, sql).await?;
+            assert_eq!(rows.len(), 2, "sql={sql}, rows={rows:?}");
+            let ids = rows.iter().map(|(id, _)| *id).collect::<BTreeSet<_>>();
+            assert_eq!(ids.len(), 2, "sql={sql}, rows={rows:?}");
+            assert!(ids.iter().all(|id| (1..=5).contains(id)), "sql={sql}, rows={rows:?}");
+            assert!(display.contains("QdrantQueryExec"), "{display}");
+        }
 
         Ok(())
     }

@@ -1,6 +1,6 @@
 # Status Snapshot
 
-Last updated: 2026-04-03
+Last updated: 2026-04-05
 
 ## Summary
 
@@ -99,16 +99,21 @@ Current branch reality:
     - facet keys still surface as `Utf8`, matching the current textual `payload:<path>` SQL bridge
     - integer payload metadata now distinguishes `lookup` from `range`, so integer `=` / `IN` pushdown no longer overstates range-only integer indexes
     - live collection introspection on the current runtime line now preserves integer lookup/range metadata well enough to admit integer facet pushdown on the same exact contract
-36. The first public retrieval prototype is now a DataFusion-native nearest marker surface over
-    the prepared session context.
-    - current public marker is `qdrant_nearest_score(...)`
-    - current admitted scope is:
+36. The first public retrieval prototypes are now DataFusion-native marker surfaces over the
+    prepared session context.
+    - current public markers are `qdrant_nearest_score(...)` and `qdrant_sample_score(...)`
+    - current nearest admitted scope is:
       - dense nearest-neighbor query over `Qdrant::query`
       - named-vector selection by the vector column argument
       - exact admitted base filters from the existing predicate algebra
       - descending score sort
       - `LIMIT`
       - optional score-threshold predicates
+    - current sample admitted scope is:
+      - `Query::Sample` with random sampling
+      - descending score sort
+      - `LIMIT`
+      - default method `'random'` when omitted
     - score output is only present when projected
     - when projected, aliases win; otherwise naming follows normal `DataFusion` expression naming
 37. Current exact `Qdrant` leaf relations now converge on one generic extracted kernel family.
