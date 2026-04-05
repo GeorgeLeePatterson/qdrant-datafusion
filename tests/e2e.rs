@@ -125,6 +125,30 @@ e2e_test!(
 
 #[cfg(feature = "test-utils")]
 e2e_test!(
+    prepared_session_sql_nearest_query_local_projection_shell,
+    tests::test_prepared_session_sql_nearest_query_local_projection_shell,
+    TRACING_DIRECTIVES,
+    None
+);
+
+#[cfg(feature = "test-utils")]
+e2e_test!(
+    prepared_session_sql_nearest_query_local_filter_shell,
+    tests::test_prepared_session_sql_nearest_query_local_filter_shell,
+    TRACING_DIRECTIVES,
+    None
+);
+
+#[cfg(feature = "test-utils")]
+e2e_test!(
+    prepared_session_sql_nearest_query_local_filter_and_projection_shell,
+    tests::test_prepared_session_sql_nearest_query_local_filter_and_projection_shell,
+    TRACING_DIRECTIVES,
+    None
+);
+
+#[cfg(feature = "test-utils")]
+e2e_test!(
     prepared_session_sql_sample_query,
     tests::test_prepared_session_sql_sample_query,
     TRACING_DIRECTIVES,
@@ -1447,6 +1471,156 @@ error: {err}"
         Ok(())
     }
 
+    pub(super) async fn test_prepared_session_sql_nearest_query_local_projection_shell(
+        c: Arc<QdrantContainer>,
+    ) -> Result<()> {
+        let client = create_qdrant_client(&c)?;
+        let collection_name = "test_session_context_nearest_query_local_projection_shell";
+
+        let mut vectors_config = VectorsConfigBuilder::default();
+        let _ = vectors_config
+            .add_named_vector_params("vector", VectorParamsBuilder::new(2, Distance::Dot).build());
+        let _ = client
+            .create_collection(
+                CreateCollectionBuilder::new(collection_name).vectors_config(vectors_config),
+            )
+            .await?;
+        let points = vec![
+            PointStruct::new(
+                1,
+                NamedVectors::default().add_vector("vector", vec![1.0, 0.0]),
+                qdrant_client::Payload::default(),
+            ),
+            PointStruct::new(
+                2,
+                NamedVectors::default().add_vector("vector", vec![0.5, 0.5]),
+                qdrant_client::Payload::default(),
+            ),
+            PointStruct::new(
+                3,
+                NamedVectors::default().add_vector("vector", vec![0.0, 1.0]),
+                qdrant_client::Payload::default(),
+            ),
+        ];
+        drop(client.upsert_points(UpsertPointsBuilder::new(collection_name, points)).await?);
+
+        let table_provider = QdrantTableProvider::try_new(client.clone(), collection_name).await?;
+        let ctx = QdrantSessionContext::from(SessionContext::new());
+        drop(ctx.session_context().register_table("vectors", Arc::new(table_provider))?);
+
+        let sql = "SELECT id, qdrant_nearest_score(vector, 1.0, 0.0) + CAST(1.0 AS FLOAT) AS \
+                   score FROM vectors";
+        let (rows, display) = collect_scored_rows(&ctx, sql).await?;
+
+        assert_eq!(rows.iter().map(|(id, _)| *id).collect::<Vec<_>>(), vec![1, 2, 3]);
+        assert_f32_eq(rows[0].1, 2.0);
+        assert_f32_eq(rows[1].1, 1.5);
+        assert_f32_eq(rows[2].1, 1.0);
+        assert!(display.contains("QdrantQueryExec"), "{display}");
+        assert!(display.contains("ProjectionExec"), "{display}");
+
+        Ok(())
+    }
+
+    pub(super) async fn test_prepared_session_sql_nearest_query_local_filter_shell(
+        c: Arc<QdrantContainer>,
+    ) -> Result<()> {
+        let client = create_qdrant_client(&c)?;
+        let collection_name = "test_session_context_nearest_query_local_filter_shell";
+
+        let mut vectors_config = VectorsConfigBuilder::default();
+        let _ = vectors_config
+            .add_named_vector_params("vector", VectorParamsBuilder::new(2, Distance::Dot).build());
+        let _ = client
+            .create_collection(
+                CreateCollectionBuilder::new(collection_name).vectors_config(vectors_config),
+            )
+            .await?;
+        let points = vec![
+            PointStruct::new(
+                1,
+                NamedVectors::default().add_vector("vector", vec![1.0, 0.0]),
+                qdrant_client::Payload::default(),
+            ),
+            PointStruct::new(
+                2,
+                NamedVectors::default().add_vector("vector", vec![0.5, 0.5]),
+                qdrant_client::Payload::default(),
+            ),
+            PointStruct::new(
+                3,
+                NamedVectors::default().add_vector("vector", vec![0.0, 1.0]),
+                qdrant_client::Payload::default(),
+            ),
+        ];
+        drop(client.upsert_points(UpsertPointsBuilder::new(collection_name, points)).await?);
+
+        let table_provider = QdrantTableProvider::try_new(client.clone(), collection_name).await?;
+        let ctx = QdrantSessionContext::from(SessionContext::new());
+        drop(ctx.session_context().register_table("vectors", Arc::new(table_provider))?);
+
+        let sql = "SELECT id FROM vectors WHERE qdrant_nearest_score(vector, 1.0, 0.0) <= 0.5";
+        let (ids, display) = collect_id_rows(&ctx, sql).await?;
+
+        assert_eq!(ids, vec![2, 3]);
+        assert!(display.contains("QdrantQueryExec"), "{display}");
+        assert!(display.contains("FilterExec"), "{display}");
+
+        Ok(())
+    }
+
+    pub(super) async fn test_prepared_session_sql_nearest_query_local_filter_and_projection_shell(
+        c: Arc<QdrantContainer>,
+    ) -> Result<()> {
+        let client = create_qdrant_client(&c)?;
+        let collection_name =
+            "test_session_context_nearest_query_local_filter_and_projection_shell";
+
+        let mut vectors_config = VectorsConfigBuilder::default();
+        let _ = vectors_config
+            .add_named_vector_params("vector", VectorParamsBuilder::new(2, Distance::Dot).build());
+        let _ = client
+            .create_collection(
+                CreateCollectionBuilder::new(collection_name).vectors_config(vectors_config),
+            )
+            .await?;
+        let points = vec![
+            PointStruct::new(
+                1,
+                NamedVectors::default().add_vector("vector", vec![1.0, 0.0]),
+                qdrant_client::Payload::default(),
+            ),
+            PointStruct::new(
+                2,
+                NamedVectors::default().add_vector("vector", vec![0.5, 0.5]),
+                qdrant_client::Payload::default(),
+            ),
+            PointStruct::new(
+                3,
+                NamedVectors::default().add_vector("vector", vec![0.0, 1.0]),
+                qdrant_client::Payload::default(),
+            ),
+        ];
+        drop(client.upsert_points(UpsertPointsBuilder::new(collection_name, points)).await?);
+
+        let table_provider = QdrantTableProvider::try_new(client.clone(), collection_name).await?;
+        let ctx = QdrantSessionContext::from(SessionContext::new());
+        drop(ctx.session_context().register_table("vectors", Arc::new(table_provider))?);
+
+        let sql = "SELECT id, qdrant_nearest_score(vector, 1.0, 0.0) AS score FROM vectors WHERE \
+                   qdrant_nearest_score(vector, 1.0, 0.0) <= 0.5";
+        let (rows, display) = collect_scored_rows(&ctx, sql).await?;
+
+        assert_eq!(rows.iter().map(|(id, _)| *id).collect::<Vec<_>>(), vec![2, 3]);
+        assert_f32_eq(rows[0].1, 0.5);
+        assert_f32_eq(rows[1].1, 0.0);
+        assert!(display.contains("QdrantQueryExec"), "{display}");
+        assert!(display.contains("FilterExec"), "{display}");
+        assert!(display.contains("ProjectionExec"), "{display}");
+
+        Ok(())
+    }
+
     pub(super) async fn test_prepared_session_sql_nearest_query(
         c: Arc<QdrantContainer>,
     ) -> Result<()> {
@@ -1695,6 +1869,11 @@ error: {err}"
                              qdrant_nearest_score(embedding, 1.0, 0.0) AS score FROM vectors \
                              ORDER BY              payload:tag, qdrant_nearest_score(embedding, \
                              1.0, 0.0) DESC) grouped";
+        let ascending_without_tiebreak_sql = "SELECT id, payload:tag AS tag, score FROM (SELECT \
+                                              DISTINCT ON (payload:tag) id,              payload, \
+                                              qdrant_nearest_score(embedding, 1.0, 0.0) AS score \
+                                              FROM vectors ORDER BY              payload:tag) \
+                                              grouped";
         let descending_sql = "SELECT id, payload:tag AS tag, score FROM (SELECT DISTINCT ON \
                               (payload:tag) id,              payload, \
                               qdrant_nearest_score(embedding, 1.0, 0.0) AS score FROM vectors \
@@ -1703,6 +1882,8 @@ error: {err}"
 
         let (ascending_rows, ascending_display) =
             collect_grouped_scored_rows(&ctx, ascending_sql).await?;
+        let (ascending_without_tiebreak_rows, ascending_without_tiebreak_display) =
+            collect_grouped_scored_rows(&ctx, ascending_without_tiebreak_sql).await?;
         let (descending_rows, descending_display) =
             collect_grouped_scored_rows(&ctx, descending_sql).await?;
 
@@ -1716,6 +1897,19 @@ error: {err}"
         assert_f32_eq(ascending_rows[2].2, 1.0);
         assert!(ascending_display.contains("QdrantQueryGroupsExec"), "{ascending_display}");
         assert!(!ascending_display.contains("SortExec"), "{ascending_display}");
+
+        assert_eq!(
+            ascending_without_tiebreak_rows, ascending_rows,
+            "rows={ascending_without_tiebreak_rows:?}"
+        );
+        assert!(
+            ascending_without_tiebreak_display.contains("QdrantQueryGroupsExec"),
+            "{ascending_without_tiebreak_display}"
+        );
+        assert!(
+            !ascending_without_tiebreak_display.contains("SortExec"),
+            "{ascending_without_tiebreak_display}"
+        );
 
         assert_eq!(
             descending_rows.iter().map(|(tag, id, _)| (tag.clone(), *id)).collect::<Vec<_>>(),

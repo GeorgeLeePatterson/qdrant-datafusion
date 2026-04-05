@@ -1,16 +1,20 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::hash::Hash;
+use std::sync::Arc;
 
-use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
-use datafusion::common::{DFSchemaRef, Result, plan_err};
+use datafusion::common::tree_node::TreeNode;
+use datafusion::common::{Column, DFSchemaRef, Result, plan_err};
 use datafusion::logical_expr::expr::BinaryExpr;
-use datafusion::logical_expr::utils::split_conjunction_owned;
-use datafusion::logical_expr::{Distinct, Expr, LogicalPlan, Operator, SortExpr};
+use datafusion::logical_expr::utils::{conjunction, expr_to_columns, split_conjunction_owned};
+use datafusion::logical_expr::{
+    Distinct, Expr, Extension, LogicalPlan, LogicalPlanBuilder, Operator, SortExpr,
+};
 
 use super::common::count_star_like;
 use super::kernel::{
     FacetKernel, KernelSpec, QueryGroupsKernel, QueryKernel, limit_rows, numeric_literal_f32,
 };
+use super::node::KernelNode;
 use super::query::{QueryBranchPlan, QueryDescriptor, QueryKind, QueryPrefetchBranch};
 use super::source::Source;
 use super::state::{FiltersState, KernelState};
@@ -65,23 +69,12 @@ impl QueryOp {
         filters: &mut FiltersState,
         predicate: &Expr,
     ) -> Result<Option<Self>> {
-        let mut threshold = self.score_threshold;
-        let mut exact_filters = Vec::new();
-        for expr in split_conjunction_owned(predicate.clone()) {
-            if let Some(value) = self.query_score_threshold_expr(&expr)? {
-                threshold = Some(threshold.map_or(value, |current| current.max(value)));
-                continue;
-            }
-            if self.contains_query_score_expr(&expr)? {
-                return plan_err!("query output filters only admit score-threshold predicates");
-            }
-            if !QdrantFilters::supports_exact(&source.schema, &source.payload_schema, &expr) {
-                return Ok(None);
-            }
-            exact_filters.push(expr);
+        let split = self.split_filter(source, predicate)?;
+        if split.residual.is_some() {
+            return Ok(None);
         }
-        filters.exprs.extend(exact_filters);
-        self.score_threshold = threshold;
+        filters.exprs.extend(split.exact_filters);
+        self = split.op;
         Ok(Some(self))
     }
 
@@ -117,6 +110,75 @@ impl QueryOp {
             self,
             limit,
         )))))
+    }
+
+    fn local_projection_shell(
+        self,
+        source: Source,
+        filters: &FiltersState,
+        plan: &LogicalPlan,
+    ) -> Result<Option<LogicalPlan>> {
+        let LogicalPlan::Projection(projection) = plan else {
+            return Ok(None);
+        };
+        let mut shell =
+            LocalQueryShellBuilder::new(&self, &source, projection.input.schema(), false);
+        let rewritten_exprs = projection
+            .expr
+            .iter()
+            .map(|expr| shell.rewrite_expr(expr))
+            .collect::<Result<Vec<_>>>()?;
+        let support_plan = LogicalPlanBuilder::from(projection.input.as_ref().clone())
+            .project(shell.support_exprs(&rewritten_exprs)?)?
+            .build()?;
+        let Some(query) = self.project(&source, &support_plan)? else {
+            return Ok(None);
+        };
+        let exact_filters = filters.exact(&source)?;
+        let kernel_plan = query_kernel_plan(
+            QueryKernel::new(source, exact_filters, query, None),
+            Arc::clone(support_plan.schema()),
+        );
+        plan.with_new_exprs(rewritten_exprs, vec![kernel_plan])?.recompute_schema().map(Some)
+    }
+
+    fn local_filter_shell(
+        self,
+        source: Source,
+        filters: &FiltersState,
+        plan: &LogicalPlan,
+    ) -> Result<Option<LogicalPlan>> {
+        let LogicalPlan::Filter(filter) = plan else {
+            return Ok(None);
+        };
+        let split = self.split_filter(&source, &filter.predicate)?;
+        let Some(residual) = split.residual else {
+            return Ok(None);
+        };
+        let mut shell =
+            LocalQueryShellBuilder::new(&split.op, &source, filter.input.schema(), true);
+        let rewritten_predicate = shell.rewrite_expr(&residual)?;
+        let support_plan = LogicalPlanBuilder::from(filter.input.as_ref().clone())
+            .project(shell.support_exprs(std::slice::from_ref(&rewritten_predicate))?)?
+            .build()?;
+        let Some(query) = split.op.project(&source, &support_plan)? else {
+            return Ok(None);
+        };
+        let mut remote_filters = filters.clone();
+        remote_filters.exprs.extend(split.exact_filters);
+        let exact_filters = remote_filters.exact(&source)?;
+        let kernel_plan = query_kernel_plan(
+            QueryKernel::new(source, exact_filters, query, None),
+            Arc::clone(support_plan.schema()),
+        );
+        let filter_plan = plan.with_new_exprs(vec![rewritten_predicate], vec![kernel_plan])?;
+        LogicalPlanBuilder::from(filter_plan)
+            .project(
+                filter.input.schema().columns().into_iter().map(Expr::Column).collect::<Vec<_>>(),
+            )?
+            .build()?
+            .recompute_schema()
+            .map(Some)
     }
 
     fn distinct_on_kernel(
@@ -204,19 +266,6 @@ impl QueryOp {
         ))
     }
 
-    fn contains_query_score_expr(&self, expr: &Expr) -> Result<bool> {
-        let mut found = false;
-        let _ = expr.apply(|node| {
-            if self.is_query_score_expr(node)? {
-                found = true;
-                Ok(TreeNodeRecursion::Stop)
-            } else {
-                Ok(TreeNodeRecursion::Continue)
-            }
-        })?;
-        Ok(found)
-    }
-
     pub(crate) fn descriptor(&self, source: &Source) -> Result<QueryDescriptor> {
         self.query.descriptor(source, &self.prefetch)
     }
@@ -246,11 +295,47 @@ impl QueryOp {
 
     pub(crate) fn score_output_names(&self) -> BTreeSet<String> { self.query_score_outputs.names() }
 
+    pub(crate) fn rewrite_score_surface_to_output_column(
+        &self,
+        expr: &Expr,
+    ) -> Result<Option<Expr>> {
+        if !self.is_query_score_expr(expr)? {
+            return Ok(None);
+        }
+        let mut names = self.query_score_outputs.names().into_iter();
+        let Some(name) = names.next() else {
+            return Ok(None);
+        };
+        if names.next().is_some() {
+            return Ok(None);
+        }
+        Ok(Some(Expr::Column(Column::from_name(name))))
+    }
+
     pub(crate) fn payload_output_paths(&self) -> BTreeMap<String, String> {
         self.payload_outputs.paths()
     }
 
     pub(crate) fn score_threshold(&self) -> Option<f32> { self.score_threshold }
+
+    fn split_filter(&self, source: &Source, predicate: &Expr) -> Result<QueryFilterSplit> {
+        let mut op = self.clone();
+        let mut exact_filters = Vec::new();
+        let mut residuals = Vec::new();
+        for expr in split_conjunction_owned(predicate.clone()) {
+            if let Some(value) = op.query_score_threshold_expr(&expr)? {
+                op.score_threshold =
+                    Some(op.score_threshold.map_or(value, |current| current.max(value)));
+                continue;
+            }
+            if QdrantFilters::supports_exact(&source.schema, &source.payload_schema, &expr) {
+                exact_filters.push(expr);
+            } else {
+                residuals.push(expr);
+            }
+        }
+        Ok(QueryFilterSplit { op, exact_filters, residual: conjunction(residuals) })
+    }
 
     fn query_score_threshold_expr(&self, expr: &Expr) -> Result<Option<f32>> {
         let expr = expr.clone().unalias_nested().data;
@@ -278,7 +363,7 @@ impl QueryOp {
         sort_exprs: &[SortExpr],
         group_field: &QdrantPayloadPath,
     ) -> Result<Option<bool>> {
-        if sort_exprs.len() != 2 {
+        if !(1..=2).contains(&sort_exprs.len()) {
             return Ok(None);
         }
         let Some(group_sort_field) =
@@ -289,7 +374,9 @@ impl QueryOp {
         if &group_sort_field != group_field {
             return Ok(None);
         }
-        if sort_exprs[1].asc || !self.is_query_score_expr(&sort_exprs[1].expr)? {
+        if sort_exprs.len() == 2
+            && (sort_exprs[1].asc || !self.is_query_score_expr(&sort_exprs[1].expr)?)
+        {
             return Ok(None);
         }
         Ok(Some(!sort_exprs[0].asc))
@@ -348,6 +435,30 @@ impl Op {
         match self {
             Self::Query(op) => op.kernel(source, filters, plan),
             Self::Facet(op) => op.kernel(source, filters, plan),
+        }
+    }
+
+    pub(super) fn local_projection_shell(
+        self,
+        source: Source,
+        filters: &FiltersState,
+        plan: &LogicalPlan,
+    ) -> Result<Option<LogicalPlan>> {
+        match self {
+            Self::Query(op) => op.local_projection_shell(source, filters, plan),
+            Self::Facet(_) => Ok(None),
+        }
+    }
+
+    pub(super) fn local_filter_shell(
+        self,
+        source: Source,
+        filters: &FiltersState,
+        plan: &LogicalPlan,
+    ) -> Result<Option<LogicalPlan>> {
+        match self {
+            Self::Query(op) => op.local_filter_shell(source, filters, plan),
+            Self::Facet(_) => Ok(None),
         }
     }
 
@@ -516,4 +627,108 @@ impl PayloadOutputs {
         }
         Self(paths)
     }
+}
+
+#[derive(Debug, Clone)]
+struct QueryFilterSplit {
+    op:            QueryOp,
+    exact_filters: Vec<Expr>,
+    residual:      Option<Expr>,
+}
+
+#[derive(Debug)]
+struct LocalQueryShellBuilder<'a> {
+    query:                 &'a QueryOp,
+    source:                &'a Source,
+    input_schema:          &'a DFSchemaRef,
+    preserve_input_schema: bool,
+    hidden_exprs:          Vec<(Expr, String)>,
+    used_names:            BTreeSet<String>,
+}
+
+impl<'a> LocalQueryShellBuilder<'a> {
+    fn new(
+        query: &'a QueryOp,
+        source: &'a Source,
+        input_schema: &'a DFSchemaRef,
+        preserve_input_schema: bool,
+    ) -> Self {
+        Self {
+            query,
+            source,
+            input_schema,
+            preserve_input_schema,
+            hidden_exprs: vec![],
+            used_names: input_schema.fields().iter().map(|field| field.name().clone()).collect(),
+        }
+    }
+
+    fn rewrite_expr(&mut self, expr: &Expr) -> Result<Expr> {
+        expr.clone()
+            .transform_up(|nested| self.rewrite_expr_node(&nested))
+            .map(|rewritten| rewritten.data)
+    }
+
+    fn support_exprs(&self, rewritten_exprs: &[Expr]) -> Result<Vec<Expr>> {
+        let mut support_exprs = if self.preserve_input_schema {
+            self.input_schema.columns().into_iter().map(Expr::Column).collect::<Vec<_>>()
+        } else {
+            let mut required_columns = HashSet::new();
+            for expr in rewritten_exprs {
+                expr_to_columns(expr, &mut required_columns)?;
+            }
+            self.input_schema
+                .columns()
+                .into_iter()
+                .filter(|column| required_columns.contains(column))
+                .map(Expr::Column)
+                .collect::<Vec<_>>()
+        };
+        support_exprs.extend(
+            self.hidden_exprs.iter().map(|(expr, alias)| expr.clone().alias(alias.clone())),
+        );
+        Ok(support_exprs)
+    }
+
+    fn rewrite_expr_node(
+        &mut self,
+        expr: &Expr,
+    ) -> Result<datafusion::common::tree_node::Transformed<Expr>> {
+        let normalized = expr.clone().unalias_nested().data;
+        if self.query.is_query_score_expr(&normalized)?
+            || self.query.payload_output_path(self.source, &normalized).is_some()
+        {
+            let alias = self.hidden_alias_for(normalized);
+            return Ok(datafusion::common::tree_node::Transformed::yes(Expr::Column(
+                Column::from_name(alias),
+            )));
+        }
+        Ok(datafusion::common::tree_node::Transformed::no(expr.clone()))
+    }
+
+    fn hidden_alias_for(&mut self, expr: Expr) -> String {
+        if let Some((_, alias)) = self.hidden_exprs.iter().find(|(existing, _)| *existing == expr) {
+            return alias.clone();
+        }
+        let alias = self.next_hidden_name();
+        self.hidden_exprs.push((expr, alias.clone()));
+        alias
+    }
+
+    fn next_hidden_name(&mut self) -> String {
+        let mut index = self.hidden_exprs.len();
+        loop {
+            let candidate = format!("__qdrant_local_{index}");
+            if self.used_names.insert(candidate.clone()) {
+                return candidate;
+            }
+            index += 1;
+        }
+    }
+}
+
+fn query_kernel_plan(kernel: QueryKernel, output_schema: DFSchemaRef) -> LogicalPlan {
+    LogicalPlan::Extension(Extension {
+        node: Arc::new(KernelNode::new(output_schema, KernelSpec::Query(kernel))),
+    })
 }

@@ -207,6 +207,7 @@ Use it to resume work without replaying the full repository history.
       - projected `ORDER BY score DESC` is redundant and optimizes away, while projected `ORDER BY score ASC` remains local
       - optional exact base filters
       - optional score-threshold predicates
+      - benign local projection shells and local residual filter shells can remain above the closed qdrant query kernel, including later score projection above those local filter shells
     - score output is only present when projected
     - when projected, aliases win; otherwise naming follows normal `DataFusion` expression naming
     - `QdrantSessionContext` now remains only as the prepared-session wrapper that installs the
@@ -264,10 +265,15 @@ Use it to resume work without replaying the full repository history.
     - docs and tracker state now promote nearest-with-MMR and relevance feedback from deferred planning inventory to current retrieval modifiers
 44. `Q-047`: grouped nearest top-1 retrieval is now validated as a narrow current grouped-query slice on the shared query/kernel architecture, with exact remote grouped retrieval and local outer `LIMIT` preservation.
     - live end-to-end coverage now proves the prepared-session `DISTINCT ON (payload:<path>) ... qdrant_nearest_score(...)` surface against `Qdrant`
-    - exact lowering currently admits one scalar keyword or lookup-capable integer payload field, `ORDER BY payload:<path>[ DESC], score DESC`, and group size 1 while any outer `LIMIT` remains local
+    - exact lowering currently admits one scalar keyword or lookup-capable integer payload field, `ORDER BY payload:<path>[ DESC]` with optional trailing `, score DESC` as an explicit in-group tie-break, and group size 1 while any outer `LIMIT` remains local
     - docs and tracker state now promote that grouped-nearest `DISTINCT ON` subset from an implementation detail to an admitted current capability while keeping broader grouped retrieval deferred
     - grouped execution validates that returned group ids match scalar payload values on hits so multi-valued grouped fields fail clearly instead of producing SQL-incompatible results
     - outer SQL `LIMIT` is preserved locally because final group ordering is imposed after grouped retrieval, while the grouped request itself uses an exact point-count upper bound instead of Qdrant's default group limit
+45. `Q-048`: retrieval kernels now allow benign local projection shells and local residual filter shells above the closed qdrant query kernel instead of requiring fully remote-only projection/filter shapes.
+    - live end-to-end coverage now proves local projection over `qdrant_nearest_score(...) + ...` above a closed `QdrantQueryExec`
+    - mixed query-kernel predicates now split into exact remote payload/id filters plus local residual `FilterExec` shells instead of fataling when a non-pushdownable score predicate remains
+    - those local residual filter shells can now still feed a later projected score column instead of forcing the score marker back into an unsupported local surface
+    - grouped nearest top-1 no longer requires an explicit trailing `score DESC` when SQL only orders by the grouped payload key, while an explicit score tie-break still lowers when present
 
 ## Next
 

@@ -69,9 +69,10 @@ canonical carrier; missing values are not imputed during scan.
       strategy coefficients; when SQL omits `LIMIT`, the remote request uses Qdrant's default result count and omitted projected score ordering uses Qdrant's native score-desc result order
   - grouped nearest top-1 via `DISTINCT ON (payload:<path>)`, with outer `LIMIT` kept local after exact grouped retrieval
     - exact lowering currently admits one scalar keyword or lookup-capable integer payload field, `qdrant_nearest_score(...)`,
-      `ORDER BY payload:<path>[ DESC], score DESC`, validates returned group ids against scalar payload values on hits,
-      and keeps any outer `LIMIT` local
+      `ORDER BY payload:<path>[ DESC]` with optional trailing `, score DESC` as an explicit in-group tie-break,
+      validates returned group ids against scalar payload values on hits, and keeps any outer `LIMIT` local
   - projected `ORDER BY score DESC` is redundant and optimizes away, while projected `ORDER BY score ASC` remains a local `DataFusion` sort
+  - retrieval kernels can now leave benign local projection shells and local residual filter shells above the closed qdrant query kernel instead of requiring fully remote-only projection/filter shapes, including later score projection above those local filter shells
   - projected score columns follow normal `DataFusion` naming and aliasing rules
 - a unified relation-pushdown analyzer scaffold now owns the admitted planner-layer subtree
   replacements instead of relying on separate analyzer-rule ownership by convention

@@ -144,11 +144,12 @@ Current branch reality:
     - current grouped-nearest admitted scope is:
       - `SELECT DISTINCT ON (payload:<path>)` over one scalar keyword or lookup-capable integer payload field
       - `qdrant_nearest_score(...)` as the grouped retrieval source
-      - `ORDER BY payload:<path>[ DESC], score DESC`
+      - `ORDER BY payload:<path>[ DESC]`, with optional trailing `, score DESC` as an explicit in-group tie-break
       - group size `1`
       - grouped execution validates that returned group ids match scalar payload values on hits
       - any outer `LIMIT` remains local above the grouped exec
     - score output is only present when projected
+    - retrieval kernels can now leave benign local projection shells and local residual filter shells above the closed qdrant query kernel instead of requiring fully remote-only projection/filter shapes, including later score projection above those local filter shells
     - when projected, aliases win; otherwise naming follows normal `DataFusion` expression naming
 37. Current exact `Qdrant` leaf relations now converge on one generic extracted kernel family.
     - exact count, scalar facet, and nearest retrieval all share one `QdrantKernelNode` /

@@ -27,7 +27,12 @@ impl ProcessingState {
         plan: LogicalPlan,
         transformed: bool,
     ) -> Result<super::super::Analysis> {
-        let Some(op) = self.op.project(&self.source, &plan)? else {
+        let Some(op) = self.op.clone().project(&self.source, &plan)? else {
+            if let Some(local_shell) =
+                self.op.clone().local_projection_shell(self.source.clone(), &self.filters, &plan)?
+            {
+                return Ok(super::super::Analysis::new(local_shell, State::local(), true));
+            }
             return Ok(super::super::fatal(
                 plan,
                 transformed,
@@ -52,7 +57,14 @@ impl ProcessingState {
         let LogicalPlan::Filter(filter) = &plan else {
             return plan_err!("prototype filter state mismatch");
         };
-        let Some(op) = self.op.filter(&self.source, &mut self.filters, &filter.predicate)? else {
+        let Some(op) =
+            self.op.clone().filter(&self.source, &mut self.filters, &filter.predicate)?
+        else {
+            if let Some(local_shell) =
+                self.op.clone().local_filter_shell(self.source.clone(), &self.filters, &plan)?
+            {
+                return Ok(super::super::Analysis::new(local_shell, State::local(), true));
+            }
             return Ok(super::super::fatal(
                 plan,
                 transformed,

@@ -1819,6 +1819,113 @@ mod tests {
     }
 
     #[test]
+    fn physical_plan_keeps_local_projection_shell_above_nearest_query_kernel() {
+        let provider = test_provider(Schema::new(vec![
+            Field::new(ID_FIELD_NAME, DataType::Utf8, false),
+            Field::new(PAYLOAD_FIELD_NAME, DataType::Utf8, true),
+            Field::new(
+                "embedding",
+                DataType::new_fixed_size_list(DataType::Float32, 2, false),
+                true,
+            ),
+        ]));
+        let ctx = QdrantSessionContext::from(SessionContext::new());
+        drop(
+            ctx.session_context()
+                .register_table("vectors", Arc::new(provider))
+                .expect("register table"),
+        );
+        let dataframe = ctx
+            .sql(
+                "SELECT id, qdrant_nearest_score(embedding, 1.0, 0.0) + 1.0 AS adjusted FROM \
+                 vectors",
+            )
+            .now_or_never()
+            .expect("sql future is ready")
+            .expect("dataframe");
+        let plan = dataframe
+            .create_physical_plan()
+            .now_or_never()
+            .expect("plan future is ready")
+            .expect("physical plan");
+        let display = displayable(plan.as_ref()).indent(true).to_string();
+
+        assert!(display.contains("QdrantQueryExec"), "{display}");
+        assert!(display.contains("ProjectionExec"), "{display}");
+    }
+
+    #[test]
+    fn physical_plan_keeps_local_filter_shell_above_nearest_query_kernel() {
+        let provider = test_provider(Schema::new(vec![
+            Field::new(ID_FIELD_NAME, DataType::Utf8, false),
+            Field::new(PAYLOAD_FIELD_NAME, DataType::Utf8, true),
+            Field::new(
+                "embedding",
+                DataType::new_fixed_size_list(DataType::Float32, 2, false),
+                true,
+            ),
+        ]));
+        let ctx = QdrantSessionContext::from(SessionContext::new());
+        drop(
+            ctx.session_context()
+                .register_table("vectors", Arc::new(provider))
+                .expect("register table"),
+        );
+        let dataframe = ctx
+            .sql("SELECT id FROM vectors WHERE qdrant_nearest_score(embedding, 1.0, 0.0) <= 0.9")
+            .now_or_never()
+            .expect("sql future is ready")
+            .expect("dataframe");
+        let plan = dataframe
+            .create_physical_plan()
+            .now_or_never()
+            .expect("plan future is ready")
+            .expect("physical plan");
+        let display = displayable(plan.as_ref()).indent(true).to_string();
+
+        assert!(display.contains("QdrantQueryExec"), "{display}");
+        assert!(display.contains("FilterExec"), "{display}");
+        assert!(display.contains("ProjectionExec"), "{display}");
+    }
+
+    #[test]
+    fn physical_plan_keeps_local_filter_and_projection_shell_above_nearest_query_kernel() {
+        let provider = test_provider(Schema::new(vec![
+            Field::new(ID_FIELD_NAME, DataType::Utf8, false),
+            Field::new(PAYLOAD_FIELD_NAME, DataType::Utf8, true),
+            Field::new(
+                "embedding",
+                DataType::new_fixed_size_list(DataType::Float32, 2, false),
+                true,
+            ),
+        ]));
+        let ctx = QdrantSessionContext::from(SessionContext::new());
+        drop(
+            ctx.session_context()
+                .register_table("vectors", Arc::new(provider))
+                .expect("register table"),
+        );
+        let dataframe = ctx
+            .sql(
+                "SELECT id, qdrant_nearest_score(embedding, 1.0, 0.0) AS score FROM vectors WHERE \
+                 qdrant_nearest_score(embedding, 1.0, 0.0) <= 0.9",
+            )
+            .now_or_never()
+            .expect("sql future is ready")
+            .expect("dataframe");
+        let plan = dataframe
+            .create_physical_plan()
+            .now_or_never()
+            .expect("plan future is ready")
+            .expect("physical plan");
+        let display = displayable(plan.as_ref()).indent(true).to_string();
+
+        assert!(display.contains("QdrantQueryExec"), "{display}");
+        assert!(display.contains("FilterExec"), "{display}");
+        assert!(display.contains("ProjectionExec"), "{display}");
+    }
+
+    #[test]
     fn physical_plan_requests_payload_for_typed_payload_udf_query_projection() {
         let provider = test_provider(Schema::new(vec![
             Field::new(ID_FIELD_NAME, DataType::Utf8, false),
@@ -2093,6 +2200,58 @@ mod tests {
             .expect("physical plan");
         let display = displayable(plan.as_ref()).indent(true).to_string();
         let _query = qdrant_query_groups(&plan);
+
+        assert!(display.contains("QdrantQueryGroupsExec"), "{display}");
+    }
+
+    #[test]
+    fn physical_plan_uses_qdrant_query_groups_exec_without_explicit_score_tiebreak() {
+        let provider = QdrantTableProvider {
+            payload_schema: payload_schema([(
+                "tag",
+                PayloadSchemaInfo {
+                    data_type: qdrant_client::qdrant::PayloadSchemaType::Keyword as i32,
+                    params: Some(qdrant_client::qdrant::PayloadIndexParams {
+                        index_params: Some(
+                            qdrant_client::qdrant::payload_index_params::IndexParams::KeywordIndexParams(
+                                qdrant_client::qdrant::KeywordIndexParams::default(),
+                            ),
+                        ),
+                    }),
+                    points: None,
+                },
+            )]),
+            ..test_provider(Schema::new(vec![
+                Field::new(ID_FIELD_NAME, DataType::Utf8, false),
+                Field::new(PAYLOAD_FIELD_NAME, DataType::Utf8, true),
+                Field::new(
+                    "embedding",
+                    DataType::new_fixed_size_list(DataType::Float32, 2, false),
+                    true,
+                ),
+            ]))
+        };
+        let ctx = QdrantSessionContext::from(SessionContext::new());
+        drop(
+            ctx.session_context()
+                .register_table("vectors", Arc::new(provider))
+                .expect("register table"),
+        );
+        let dataframe = ctx
+            .sql(
+                "SELECT DISTINCT ON (payload:tag) id, payload, embedding, \
+                 qdrant_nearest_score(embedding, 1.0, 0.0) AS score FROM vectors ORDER BY \
+                 payload:tag",
+            )
+            .now_or_never()
+            .expect("sql future is ready")
+            .expect("dataframe");
+        let plan = dataframe
+            .create_physical_plan()
+            .now_or_never()
+            .expect("plan future is ready")
+            .expect("physical plan");
+        let display = displayable(plan.as_ref()).indent(true).to_string();
 
         assert!(display.contains("QdrantQueryGroupsExec"), "{display}");
     }
