@@ -66,7 +66,7 @@ This matrix is derived from:
 | Row restriction | text match | text condition | explicit text-search predicate | `Later` | Not the same as SQL `LIKE`. |
 | Row restriction | phrase match | phrase condition | explicit text-search predicate | `Later` | Same reasoning as text match. |
 | Row ordering | ID-ordered scan | `scroll` | `ORDER BY id ASC` | `Current` | Already exact. |
-| Row ordering | payload-key ordered scroll | `order_by` on `scroll` | `ORDER BY payload:<path>` | `Current` | Admitted exact subset for indexed integer / float / datetime fields. Distributed exactness still deferred. |
+| Row ordering | payload-key ordered scroll | `order_by` on `scroll` | `ORDER BY payload:<path>` | `Current` | Admitted exact subset for indexed integer / float / datetime fields. Exact remote pushdown is now guarded by `collection_cluster_info`: stable single-peer collections stay exact, while distributed or in-flight cluster states fall back to local sorting. |
 | Row ordering | broader payload ordering | `order_by` | richer payload path ordering | `Later` | Only after payload access contract stabilizes further. |
 | Row production | ID-ordered full scan | `scroll` | base table relation | `Current` | This is the stable table-scan baseline. |
 | Row production | nearest-neighbor search | `query(Query::Nearest)` / `search` | relation-producing retrieval | `Current` | The first retrieval prototype now uses `qdrant_nearest_score(...)` as a marker UDF over the prepared session context. Exact lowering currently admits dense query vectors, descending score sort, `LIMIT`, optional exact base filters, and optional score-threshold predicates. The score only enters the output when projected, and aliases follow normal `DataFusion` naming. |

@@ -35,7 +35,9 @@ Last updated: 2026-03-26
     - ordered pagination does not use `next_page_offset`
     - continuation uses `start_from` plus accumulated boundary-ID exclusion
     - returned datetime order values currently surface as integer microseconds
-17. Distributed ordered-scroll exactness is still deferred. Do not claim broader payload-key sort exactness until the target `Qdrant` deployment mode is explicitly validated.
+17. Payload-key ordered `scroll` exactness is now explicitly guarded by collection cluster state.
+    - exact payload-key sort pushdown is admitted only when `collection_cluster_info` proves a stable single-peer collection
+    - distributed or in-flight cluster states stay unsupported and fall back to local sorting
 18. Payload-aware SQL features are semantic pushdown concerns first, not generic JSON-function concerns first. Reintroduce generic JSON helpers only when they materially improve the SQL surface over the provider-owned payload contract.
 19. The first admitted payload-key SQL sort subset is `ORDER BY payload:<path>`.
     - single sort key only

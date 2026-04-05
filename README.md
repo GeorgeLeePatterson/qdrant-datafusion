@@ -32,7 +32,8 @@ canonical carrier; missing values are not imputed during scan.
 - schema/projection-driven vector selection
 - SQL `LIMIT` pushdown to the scan stream
 - exact physical sort pushdown for `ORDER BY id ASC`
-- exact payload-key sort pushdown for the admitted single-key payload-path subset, including direct `payload:<path>`, equivalent `payload(payload:<path>, 'Type')` forms, and order-preserving casts over the authoritative payload scalar type on indexed integer, float, and datetime payload fields
+- exact payload-key sort pushdown for the admitted single-key payload-path subset, including direct `payload:<path>`, equivalent `payload(payload:<path>, 'Type')` forms, and order-preserving casts over the authoritative payload scalar type on indexed integer, float, and datetime payload fields when `collection_cluster_info` proves a stable single-peer collection
+  - distributed, transferring, or resharding collection states fall back to local `DataFusion` sorting instead of claiming exact remote order
 - exact boolean filter pushdown over the admitted leaf subset:
   - `AND`, `OR`, and `NOT`
   - `id =`, `id !=`, `id IN (...)`, `id NOT IN (...)`
@@ -77,7 +78,7 @@ canonical carrier; missing values are not imputed during scan.
   - empty scalar values remain ordinary non-null SQL values, for example `payload:<path> = ''`
 - direct scan-path projection of known payload fields now becomes typed logical output
 - public typed payload helper `payload(accessor, 'Type')` is available when SQL planning needs an explicit payload scalar type
-- exact `CAST(payload:<path> AS <canonical type>)` forms now preserve the same payload-path semantics for scan filter pushdown and qdrant query-surface payload projections when authoritative payload metadata exists, while payload-key sort pushdown also admits broader order-preserving casts such as numeric-to-numeric or temporal-to-temporal forms
+- exact `CAST(payload:<path> AS <canonical type>)` forms now preserve the same payload-path semantics for scan filter pushdown and qdrant query-surface payload projections when authoritative payload metadata exists, while payload-key sort pushdown also admits broader order-preserving casts such as numeric-to-numeric or temporal-to-temporal forms on the same guarded stable single-peer contract
 
 ## Not Yet Admitted
 

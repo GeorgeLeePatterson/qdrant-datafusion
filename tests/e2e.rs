@@ -463,12 +463,34 @@ mod tests {
     }
 
     async fn create_scalar_collection(client: &Qdrant, collection_name: &str) -> Result<()> {
+        create_scalar_collection_with_shards(client, collection_name, 1).await
+    }
+
+    async fn create_scalar_collection_with_shards(
+        client: &Qdrant,
+        collection_name: &str,
+        shard_number: u32,
+    ) -> Result<()> {
         let _ = client
             .create_collection(
                 CreateCollectionBuilder::new(collection_name)
-                    .vectors_config(VectorParamsBuilder::new(1, Distance::Dot)),
+                    .vectors_config(VectorParamsBuilder::new(1, Distance::Dot))
+                    .shard_number(shard_number),
             )
             .await?;
+        Ok(())
+    }
+
+    async fn assert_single_peer_ordered_scroll_contract(
+        client: &Qdrant,
+        collection_name: &str,
+        minimum_local_shards: usize,
+    ) -> Result<()> {
+        let info = client.collection_cluster_info(collection_name).await?;
+        assert!(info.remote_shards.is_empty(), "{info:?}");
+        assert!(info.shard_transfers.is_empty(), "{info:?}");
+        assert!(info.resharding_operations.is_empty(), "{info:?}");
+        assert!(info.local_shards.len() >= minimum_local_shards, "{info:?}");
         Ok(())
     }
 
@@ -2212,7 +2234,7 @@ mod tests {
     ) -> Result<()> {
         let client = create_qdrant_client(&c)?;
         let integer_collection = "test_ordered_scroll_integer";
-        create_scalar_collection(&client, integer_collection).await?;
+        create_scalar_collection_with_shards(&client, integer_collection, 2).await?;
         create_payload_index(
             &client,
             integer_collection,
@@ -2221,6 +2243,7 @@ mod tests {
             qdrant_client::qdrant::IntegerIndexParamsBuilder::new(false, true).build(),
         )
         .await?;
+        assert_single_peer_ordered_scroll_contract(&client, integer_collection, 2).await?;
         let integer_points = vec![
             scalar_point(1, "rank", 10_i64),
             scalar_point(2, "rank", 10_i64),

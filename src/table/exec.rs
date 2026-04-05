@@ -56,6 +56,9 @@ impl ExecutionPlan for QdrantScanExec {
             }
             return Ok(SortOrderPushdownResult::Exact { inner: Arc::new(self.clone()) });
         }
+        if !self.ordered_scroll_contract.supports_exact_payload_ordering() {
+            return Ok(SortOrderPushdownResult::Unsupported);
+        }
         let Some(path) = self.payload_schema.path_for_physical_ordering_expr(&sort.expr) else {
             return Ok(SortOrderPushdownResult::Unsupported);
         };
@@ -72,6 +75,7 @@ impl ExecutionPlan for QdrantScanExec {
                 self.collection.clone(),
                 Arc::new(pushdown),
                 Arc::clone(&self.payload_schema),
+                self.ordered_scroll_contract,
             )),
         })
     }
@@ -110,6 +114,7 @@ impl ExecutionPlan for QdrantScanExec {
             self.collection.clone(),
             Arc::new(pushdown),
             Arc::clone(&self.payload_schema),
+            self.ordered_scroll_contract,
         ))))
     }
 

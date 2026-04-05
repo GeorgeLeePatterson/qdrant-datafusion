@@ -840,16 +840,17 @@ mod tests {
 
     fn test_source(payload_schema: QdrantPayloadSchema) -> Source {
         Source {
-            client:         Arc::new(
+            client:                  Arc::new(
                 Qdrant::from_url("http://localhost:6334").build().expect("client"),
             ),
-            collection:     "vectors".to_owned(),
-            schema:         Arc::new(Schema::new(vec![Field::new(
+            collection:              "vectors".to_owned(),
+            schema:                  Arc::new(Schema::new(vec![Field::new(
                 "payload",
                 DataType::Utf8,
                 true,
             )])),
-            payload_schema: Arc::new(payload_schema),
+            payload_schema:          Arc::new(payload_schema),
+            ordered_scroll_contract: crate::table::QdrantOrderedScrollContract::ExactSinglePeer,
         }
     }
 

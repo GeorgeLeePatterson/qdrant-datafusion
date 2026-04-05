@@ -130,6 +130,10 @@ Current branch reality:
 42. Qdrant query-surface payload projections now reuse the same canonical payload resolver as scan filter/sort pushdown.
     - raw `payload:<path>`, public `payload(...)`, and exact casts to the authoritative payload scalar type now all resolve to the same payload-output path on qdrant query projections
     - exact cast query projections now preserve remote payload fetch and materialize typed output columns when authoritative payload metadata exists
+43. Ordered payload-key scroll exactness is now explicitly bounded by cluster metadata.
+    - `QdrantTableProvider::try_new` now consults `collection_cluster_info`
+    - exact payload-key sort pushdown remains enabled only for stable single-peer collections
+    - distributed, transferring, or resharding collection states now fall back to local `DataFusion` sorting instead of claiming exact remote order
 
 ## Current Code Ownership
 
@@ -179,7 +183,9 @@ Current branch reality:
    - exact scan filter and payload-key sort pushdown both reuse the same canonical payload-access recognition
    - raw unhinted arithmetic such as `payload:rank + 1` is still intentionally deferred until an earlier SQL-planning normalization seam exists
 9. The admitted exact filter bridge is now a real predicate algebra over the current admitted leaves, not just conjunctive leaf pushdown.
-10. Distributed-ordering behavior is still intentionally deferred before claiming broader payload-key sort exactness.
+10. Payload-key sort exactness is now guarded by live cluster state instead of being assumed.
+    - exact payload-key sort pushdown is admitted only for stable single-peer collections proven via `collection_cluster_info`
+    - distributed or in-flight cluster states now keep the sort local instead of overstating remote exactness
 11. The next capability round is now planned semantically rather than endpoint-by-endpoint:
     - broader aggregate-like exploration beyond the first scalar-facet slice
     - retrieval relations beyond nearest after that

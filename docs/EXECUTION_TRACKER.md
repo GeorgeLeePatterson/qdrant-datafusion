@@ -241,11 +241,15 @@ Use it to resume work without replaying the full repository history.
     - write-side Arrow/Qdrant serialization now converts canonical provider rows into `PointStruct` values
     - the current admitted contract is explicit: append-only only, with upstream schemas logically equivalent to the qdrant table schema
     - planner coverage now proves the physical plan lowers to `QdrantInsertSink` and unit coverage proves dense / named / sparse write serialization
+40. `Q-043`: Ordered payload-key scroll exactness is now explicitly guarded by cluster metadata, closing the `Q-017` validation gap.
+    - `QdrantTableProvider::try_new` now consults `collection_cluster_info`
+    - exact payload-key sort pushdown remains enabled only for stable single-peer collections
+    - distributed, transferring, or resharding collection states now fall back to local `DataFusion` sorting instead of claiming exact remote order
+    - e2e coverage now validates the single-peer multi-shard ordered-scroll contract on the target runtime
 
 ## Next
 
 1. The detailed planning inventory for the next expansion round now lives in `docs/QDRANT_COMPATIBILITY_MATRIX.md`.
-2. `Q-017`: Validate distributed-ordering behavior on the target `Qdrant` deployment modes before claiming broader exact payload-key sort pushdown.
 3. `M-003`: Extend broader aggregate-like and retrieval growth on
    the shared operator / kernel structure.
    - aggregate-like: explicit output contracts beyond exact `COUNT(*)` and the current scalar

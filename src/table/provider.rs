@@ -59,6 +59,7 @@ impl datafusion::catalog::TableProvider for QdrantTableProvider {
             self.table.table().to_string(),
             pushdown,
             Arc::clone(&self.payload_schema),
+            self.ordered_scroll_contract,
         )))
     }
 

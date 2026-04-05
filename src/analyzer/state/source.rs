@@ -86,6 +86,7 @@ impl SourceState {
                 collection: provider.collection().to_owned(),
                 schema,
                 payload_schema: Arc::clone(provider.payload_schema()),
+                ordered_scroll_contract: provider.ordered_scroll_contract(),
             },
             filters: FiltersState::default(),
         })

@@ -15,6 +15,7 @@ use datafusion::physical_plan::PlanProperties;
 use datafusion::physical_plan::execution_plan::Boundedness;
 use datafusion::sql::TableReference;
 use qdrant_client::Qdrant;
+use qdrant_client::qdrant::CollectionClusterInfoResponse;
 
 pub(crate) use self::scan_spec::{
     QdrantContinuation, QdrantOrderValue, QdrantOrderedContinuation, QdrantOrdering,
@@ -25,6 +26,32 @@ use crate::error::{Error, Result};
 use crate::qdrant::QdrantPayloadSchema;
 
 const SCAN_PAGE_SIZE: usize = 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum QdrantOrderedScrollContract {
+    ExactSinglePeer,
+    UnsupportedClustered,
+    UnsupportedUnknown,
+}
+
+impl QdrantOrderedScrollContract {
+    pub(crate) fn from_cluster_info(info: &CollectionClusterInfoResponse) -> Self {
+        if !info.remote_shards.is_empty()
+            || !info.shard_transfers.is_empty()
+            || !info.resharding_operations.is_empty()
+        {
+            Self::UnsupportedClustered
+        } else if info.local_shards.is_empty() {
+            Self::UnsupportedUnknown
+        } else {
+            Self::ExactSinglePeer
+        }
+    }
+
+    pub(crate) fn supports_exact_payload_ordering(self) -> bool {
+        matches!(self, Self::ExactSinglePeer)
+    }
+}
 
 /// `DataFusion` `TableProvider` implementation for `Qdrant` vector database collections.
 ///
@@ -84,10 +111,11 @@ const SCAN_PAGE_SIZE: usize = 1024;
 /// ```
 #[derive(Clone)]
 pub struct QdrantTableProvider {
-    table:          TableReference,
-    client:         Arc<Qdrant>,
-    schema:         Arc<Schema>,
-    payload_schema: Arc<QdrantPayloadSchema>,
+    table:                   TableReference,
+    client:                  Arc<Qdrant>,
+    schema:                  Arc<Schema>,
+    payload_schema:          Arc<QdrantPayloadSchema>,
+    ordered_scroll_contract: QdrantOrderedScrollContract,
 }
 
 impl QdrantTableProvider {
@@ -97,16 +125,24 @@ impl QdrantTableProvider {
     /// Returns an error if the collection metadata cannot be fetched or cannot
     /// be translated into the admitted Arrow schema contract.
     pub async fn try_new(client: Qdrant, collection: &str) -> Result<Self> {
+        let client = Arc::new(client);
         let info = client.collection_info(collection).await?;
         let info = info.result.ok_or(Error::MissingCollectionInfo(collection.into()))?;
         let payload_schema = Arc::new(QdrantPayloadSchema::from(info.payload_schema));
         let config = info.config.ok_or(Error::MissingCollectionInfo(collection.into()))?;
         let schema = collection_to_arrow_schema(collection, &config)?;
+        let ordered_scroll_contract = client
+            .collection_cluster_info(collection)
+            .await
+            .map_or(QdrantOrderedScrollContract::UnsupportedUnknown, |info| {
+                QdrantOrderedScrollContract::from_cluster_info(&info)
+            });
         Ok(Self {
             table: TableReference::bare(collection),
-            client: Arc::new(client),
+            client,
             schema: Arc::new(schema),
             payload_schema,
+            ordered_scroll_contract,
         })
     }
 
@@ -116,13 +152,24 @@ impl QdrantTableProvider {
 
     pub(crate) fn payload_schema(&self) -> &Arc<QdrantPayloadSchema> { &self.payload_schema }
 
+    pub(crate) fn ordered_scroll_contract(&self) -> QdrantOrderedScrollContract {
+        self.ordered_scroll_contract
+    }
+
     pub(crate) fn new_for_planner(
         collection: String,
         client: Arc<Qdrant>,
         schema: SchemaRef,
         payload_schema: Arc<QdrantPayloadSchema>,
+        ordered_scroll_contract: QdrantOrderedScrollContract,
     ) -> Self {
-        Self { table: TableReference::bare(collection), client, schema, payload_schema }
+        Self {
+            table: TableReference::bare(collection),
+            client,
+            schema,
+            payload_schema,
+            ordered_scroll_contract,
+        }
     }
 
     #[cfg(test)]
@@ -137,6 +184,7 @@ impl QdrantTableProvider {
             Arc::new(Qdrant::from_url("http://localhost:6334").build().expect("client")),
             Arc::new(schema),
             Arc::new(payload_schema),
+            QdrantOrderedScrollContract::ExactSinglePeer,
         )
     }
 }
@@ -158,11 +206,12 @@ impl QdrantTableProvider {
 /// `QdrantTableProvider` during SQL query execution.
 #[derive(Clone)]
 pub struct QdrantScanExec {
-    client:         Arc<Qdrant>,
-    collection:     String,
-    pushdown:       Arc<QdrantScanSpec>,
-    payload_schema: Arc<QdrantPayloadSchema>,
-    properties:     Arc<PlanProperties>,
+    client:                  Arc<Qdrant>,
+    collection:              String,
+    pushdown:                Arc<QdrantScanSpec>,
+    payload_schema:          Arc<QdrantPayloadSchema>,
+    ordered_scroll_contract: QdrantOrderedScrollContract,
+    properties:              Arc<PlanProperties>,
 }
 
 impl QdrantScanExec {
@@ -171,6 +220,7 @@ impl QdrantScanExec {
         collection: String,
         pushdown: Arc<QdrantScanSpec>,
         payload_schema: Arc<QdrantPayloadSchema>,
+        ordered_scroll_contract: QdrantOrderedScrollContract,
     ) -> Self {
         let mut eq_properties =
             datafusion::physical_expr::EquivalenceProperties::new(Arc::clone(&pushdown.schema));
@@ -188,7 +238,14 @@ impl QdrantScanExec {
             Boundedness::Bounded,
         );
 
-        Self { client, collection, pushdown, payload_schema, properties: Arc::new(properties) }
+        Self {
+            client,
+            collection,
+            pushdown,
+            payload_schema,
+            ordered_scroll_contract,
+            properties: Arc::new(properties),
+        }
     }
 }
 
@@ -199,6 +256,7 @@ impl std::fmt::Debug for QdrantTableProvider {
             .field("client", &"Qdrant")
             .field("schema", &self.schema)
             .field("payload_schema", &self.payload_schema)
+            .field("ordered_scroll_contract", &self.ordered_scroll_contract)
             .finish()
     }
 }
@@ -210,6 +268,7 @@ impl std::fmt::Debug for QdrantScanExec {
             .field("collection", &self.collection)
             .field("pushdown", &self.pushdown)
             .field("payload_schema", &self.payload_schema)
+            .field("ordered_scroll_contract", &self.ordered_scroll_contract)
             .finish_non_exhaustive()
     }
 }
@@ -235,6 +294,7 @@ mod tests {
     use datafusion::physical_plan::filter::FilterExec;
     use datafusion::physical_plan::projection::ProjectionExec;
     use datafusion::physical_plan::repartition::RepartitionExec;
+    use datafusion::physical_plan::sorts::sort::SortExec;
     use datafusion::physical_plan::{ExecutionPlan, SortOrderPushdownResult, displayable};
     use datafusion::prelude::{SessionContext, col};
     use futures_util::FutureExt;
@@ -260,12 +320,13 @@ mod tests {
 
     fn test_provider(schema: Schema) -> QdrantTableProvider {
         QdrantTableProvider {
-            table:          TableReference::bare("vectors"),
-            client:         Arc::new(
+            table:                   TableReference::bare("vectors"),
+            client:                  Arc::new(
                 Qdrant::from_url("http://localhost:6334").build().expect("client"),
             ),
-            schema:         Arc::new(schema),
-            payload_schema: Arc::new(QdrantPayloadSchema::default()),
+            schema:                  Arc::new(schema),
+            payload_schema:          Arc::new(QdrantPayloadSchema::default()),
+            ordered_scroll_contract: QdrantOrderedScrollContract::ExactSinglePeer,
         }
     }
 
@@ -409,6 +470,9 @@ mod tests {
         }
         if let Some(filter) = plan.as_any().downcast_ref::<FilterExec>() {
             return qdrant_scan(filter.input());
+        }
+        if let Some(sort) = plan.as_any().downcast_ref::<SortExec>() {
+            return qdrant_scan(sort.input());
         }
         if let Some(repartition) = plan.as_any().downcast_ref::<RepartitionExec>() {
             return qdrant_scan(repartition.input());
@@ -625,6 +689,7 @@ mod tests {
                     points: None,
                 },
             )]),
+            QdrantOrderedScrollContract::ExactSinglePeer,
         ));
         let order = [PhysicalSortExpr::new(
             Arc::new(PhysicalBinaryExpr::new(
@@ -687,6 +752,7 @@ mod tests {
                     points: None,
                 },
             )]),
+            QdrantOrderedScrollContract::ExactSinglePeer,
         ));
         let order = [PhysicalSortExpr::new(
             Arc::new(PhysicalBinaryExpr::new(
@@ -785,6 +851,151 @@ mod tests {
                 descending: false,
             }),
         );
+    }
+
+    #[test]
+    fn physical_plan_keeps_local_sort_for_payload_order_when_clustered_contract_is_unsupported() {
+        let provider = QdrantTableProvider {
+            ordered_scroll_contract: QdrantOrderedScrollContract::UnsupportedClustered,
+            payload_schema: payload_schema([(
+                "rank",
+                PayloadSchemaInfo {
+                    data_type: qdrant_client::qdrant::PayloadSchemaType::Integer as i32,
+                    params: Some(qdrant_client::qdrant::PayloadIndexParams {
+                        index_params: Some(
+                            qdrant_client::qdrant::payload_index_params::IndexParams::IntegerIndexParams(
+                                IntegerIndexParams {
+                                    range: Some(true),
+                                    ..Default::default()
+                                },
+                            ),
+                        ),
+                    }),
+                    points: None,
+                },
+            )]),
+            ..test_provider(Schema::new(vec![
+                Field::new(ID_FIELD_NAME, DataType::Utf8, false),
+                Field::new(PAYLOAD_FIELD_NAME, DataType::Utf8, true),
+            ]))
+        };
+        let ctx = QdrantSessionContext::from(SessionContext::new());
+        drop(
+            ctx.session_context()
+                .register_table("vectors", Arc::new(provider.clone()))
+                .expect("register table"),
+        );
+        let dataframe = ctx
+            .sql("SELECT id FROM vectors ORDER BY payload:rank")
+            .now_or_never()
+            .expect("sql future is ready")
+            .expect("dataframe");
+        let plan = dataframe
+            .create_physical_plan()
+            .now_or_never()
+            .expect("plan future is ready")
+            .expect("physical plan");
+        let display = displayable(plan.as_ref()).indent(true).to_string();
+        let scan = qdrant_scan(&plan);
+
+        assert!(display.contains("SortExec"), "{display}");
+        assert_eq!(scan.pushdown.ordering, QdrantOrdering::ById);
+    }
+
+    #[test]
+    fn ordered_scroll_contract_requires_stable_single_peer_cluster_info() {
+        use qdrant_client::qdrant::{
+            CollectionClusterInfoResponse, LocalShardInfo, RemoteShardInfo, ReplicaState,
+            ReshardingDirection, ReshardingInfo, ShardTransferInfo,
+        };
+
+        let exact =
+            QdrantOrderedScrollContract::from_cluster_info(&CollectionClusterInfoResponse {
+                peer_id:               1,
+                shard_count:           2,
+                local_shards:          vec![
+                    LocalShardInfo {
+                        shard_id:     0,
+                        points_count: 10,
+                        state:        ReplicaState::Active as i32,
+                        shard_key:    None,
+                    },
+                    LocalShardInfo {
+                        shard_id:     1,
+                        points_count: 12,
+                        state:        ReplicaState::Active as i32,
+                        shard_key:    None,
+                    },
+                ],
+                remote_shards:         vec![],
+                shard_transfers:       vec![],
+                resharding_operations: vec![],
+            });
+        assert_eq!(exact, QdrantOrderedScrollContract::ExactSinglePeer);
+
+        let clustered =
+            QdrantOrderedScrollContract::from_cluster_info(&CollectionClusterInfoResponse {
+                peer_id:               1,
+                shard_count:           2,
+                local_shards:          vec![LocalShardInfo {
+                    shard_id:     0,
+                    points_count: 10,
+                    state:        ReplicaState::Active as i32,
+                    shard_key:    None,
+                }],
+                remote_shards:         vec![RemoteShardInfo {
+                    shard_id:  1,
+                    peer_id:   2,
+                    state:     ReplicaState::Active as i32,
+                    shard_key: None,
+                }],
+                shard_transfers:       vec![],
+                resharding_operations: vec![],
+            });
+        assert_eq!(clustered, QdrantOrderedScrollContract::UnsupportedClustered);
+
+        let transferring =
+            QdrantOrderedScrollContract::from_cluster_info(&CollectionClusterInfoResponse {
+                peer_id:               1,
+                shard_count:           1,
+                local_shards:          vec![LocalShardInfo {
+                    shard_id:     0,
+                    points_count: 10,
+                    state:        ReplicaState::Active as i32,
+                    shard_key:    None,
+                }],
+                remote_shards:         vec![],
+                shard_transfers:       vec![ShardTransferInfo {
+                    shard_id:    0,
+                    to_shard_id: None,
+                    from:        1,
+                    to:          2,
+                    sync:        false,
+                }],
+                resharding_operations: vec![],
+            });
+        assert_eq!(transferring, QdrantOrderedScrollContract::UnsupportedClustered);
+
+        let resharding =
+            QdrantOrderedScrollContract::from_cluster_info(&CollectionClusterInfoResponse {
+                peer_id:               1,
+                shard_count:           1,
+                local_shards:          vec![LocalShardInfo {
+                    shard_id:     0,
+                    points_count: 10,
+                    state:        ReplicaState::Active as i32,
+                    shard_key:    None,
+                }],
+                remote_shards:         vec![],
+                shard_transfers:       vec![],
+                resharding_operations: vec![ReshardingInfo {
+                    shard_id:  0,
+                    peer_id:   1,
+                    shard_key: None,
+                    direction: ReshardingDirection::Up as i32,
+                }],
+            });
+        assert_eq!(resharding, QdrantOrderedScrollContract::UnsupportedClustered);
     }
 
     #[test]
@@ -1625,6 +1836,7 @@ mod tests {
             Arc::new(Qdrant::from_url("http://localhost:6334").build().expect("client")),
             batch.schema(),
             Arc::new(QdrantPayloadSchema::default()),
+            QdrantOrderedScrollContract::ExactSinglePeer,
         );
         let staging = MemTable::try_new(batch.schema(), vec![vec![batch]]).expect("staging table");
         let ctx = SessionContext::new();
@@ -2257,6 +2469,7 @@ mod tests {
                     points: None,
                 },
             )]),
+            ordered_scroll_contract: QdrantOrderedScrollContract::ExactSinglePeer,
         };
         let ctx = QdrantSessionContext::from(SessionContext::new());
         drop(

@@ -13,7 +13,7 @@ use qdrant_client::qdrant::point_id::PointIdOptions;
 use super::state::State;
 use crate::arrow::schema::QdrantFieldBinding;
 use crate::qdrant::{QdrantPayloadField, QdrantPayloadSchema};
-use crate::table::QdrantTableProvider;
+use crate::table::{QdrantOrderedScrollContract, QdrantTableProvider};
 
 pub(crate) fn full_row_join_keys(join: &datafusion::logical_expr::logical_plan::Join) -> bool {
     let left_fields = join.left.schema().fields();
@@ -32,10 +32,11 @@ pub(crate) fn full_row_join_keys(join: &datafusion::logical_expr::logical_plan::
 
 #[derive(Clone)]
 pub(crate) struct Source {
-    pub(super) client:         Arc<Qdrant>,
-    pub(super) collection:     String,
-    pub(super) schema:         SchemaRef,
-    pub(super) payload_schema: Arc<QdrantPayloadSchema>,
+    pub(super) client:                  Arc<Qdrant>,
+    pub(super) collection:              String,
+    pub(super) schema:                  SchemaRef,
+    pub(super) payload_schema:          Arc<QdrantPayloadSchema>,
+    pub(super) ordered_scroll_contract: QdrantOrderedScrollContract,
 }
 
 impl std::fmt::Debug for Source {
@@ -45,6 +46,7 @@ impl std::fmt::Debug for Source {
             .field("collection", &self.collection)
             .field("schema", &self.schema)
             .field("payload_schema", &self.payload_schema)
+            .field("ordered_scroll_contract", &self.ordered_scroll_contract)
             .finish()
     }
 }
@@ -59,6 +61,7 @@ impl Source {
             && Arc::ptr_eq(&self.client, &other.client)
             && format!("{:?}", self.schema) == format!("{:?}", other.schema)
             && format!("{:?}", self.payload_schema) == format!("{:?}", other.payload_schema)
+            && self.ordered_scroll_contract == other.ordered_scroll_contract
     }
 
     pub(super) fn planner_scan(&self, filter: Option<Expr>) -> Result<LogicalPlan> {
@@ -67,6 +70,7 @@ impl Source {
             Arc::clone(&self.client),
             Arc::clone(&self.schema),
             Arc::clone(&self.payload_schema),
+            self.ordered_scroll_contract,
         ));
         let builder =
             LogicalPlanBuilder::scan(self.collection.clone(), provider_as_source(provider), None)?;
