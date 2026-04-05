@@ -71,6 +71,13 @@ impl QdrantPayloadField {
         )
     }
 
+    pub(crate) fn supports_grouping(self) -> bool {
+        matches!(
+            self,
+            QdrantPayloadField::Keyword | QdrantPayloadField::Integer { lookup: true, .. }
+        )
+    }
+
     pub(crate) fn supports_exact_payload_cast(self, data_type: &DataType) -> bool {
         self.projection_data_type().as_ref().is_some_and(|expected| expected == data_type)
     }
@@ -644,8 +651,13 @@ mod tests {
         assert!(schema.field("match_only").is_some_and(QdrantPayloadField::supports_facet));
         assert!(schema.field("regular_int").is_some_and(QdrantPayloadField::supports_facet));
         assert!(!schema.field("range_only").is_some_and(QdrantPayloadField::supports_facet));
+        assert!(schema.field("match_only").is_some_and(QdrantPayloadField::supports_grouping));
+        assert!(schema.field("regular_int").is_some_and(QdrantPayloadField::supports_grouping));
+        assert!(!schema.field("range_only").is_some_and(QdrantPayloadField::supports_grouping));
         assert_eq!(schema.field("tag"), Some(QdrantPayloadField::Keyword));
+        assert!(schema.field("tag").is_some_and(QdrantPayloadField::supports_grouping));
         assert_eq!(schema.field("active"), Some(QdrantPayloadField::Bool));
+        assert!(!schema.field("active").is_some_and(QdrantPayloadField::supports_grouping));
         assert_eq!(schema.field("doc_id"), Some(QdrantPayloadField::Uuid));
         assert_eq!(schema.field_for_path("rank.value"), schema.field("rank"));
         assert_eq!(

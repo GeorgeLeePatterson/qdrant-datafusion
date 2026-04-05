@@ -6,7 +6,7 @@ The current crate scope is intentionally narrow: correct, paginated collection s
 canonical Arrow carriers used by `ndarrow` and `nabled::arrow`, the exact pushdown-first SQL
 bridge for ordering and filtering, append-only `INSERT INTO` over canonical qdrant row schemas, and
 the first narrow planner slices for exact `COUNT(*)` and top-facet grouped-count pushdown. It is
-not yet the broad SQL surface for `Qdrant` fusion, grouped retrieval, or broader planner
+not yet the broad SQL surface for `Qdrant` fusion, broader grouped retrieval, or broader planner
 rewrites.
 
 ## Current Scan Contract
@@ -51,24 +51,27 @@ canonical carrier; missing values are not imputed during scan.
   internal `QdrantKernelNode` / `QdrantKernelSpec` family rather than isolated logical node types
 - current retrieval prototypes are DataFusion-native marker UDFs on the prepared session surface:
   - `qdrant_nearest_score(vector_column, ...)`
-    - exact lowering currently admits dense query vectors, descending score sort, `LIMIT`,
-      optional exact base filters, and optional score-threshold predicates
+    - exact lowering currently admits dense query vectors, an optional `LIMIT`,
+      optional exact base filters, and optional score-threshold predicates; when SQL omits `LIMIT`, the remote request uses Qdrant's default result count and omitted projected score ordering uses Qdrant's native score-desc result order
   - `qdrant_sample_score([method])`
-    - exact lowering currently admits random sampling with descending score sort and `LIMIT`
+    - exact lowering currently admits random sampling and an optional `LIMIT`; when SQL omits `LIMIT`, the remote request uses Qdrant's default result count and omitted projected score ordering uses Qdrant's native result order
     - the method currently defaults to `'random'`
   - `qdrant_recommend_score(...)`
-    - exact lowering currently admits positive and negative example lists, descending score sort,
-      `LIMIT`, and the default or explicit recommend strategy
+    - exact lowering currently admits positive and negative example lists and an optional `LIMIT`; when SQL omits `LIMIT`, the remote request uses Qdrant's default result count and omitted projected score ordering uses Qdrant's native score-desc result order
+    - the default or explicit recommend strategy is admitted
   - `qdrant_discover_score(...)` and `qdrant_context_score(...)`
-    - exact lowering currently admits dense vector targets/context pairs, descending score sort,
-      and `LIMIT`
+    - exact lowering currently admits dense vector targets/context pairs and an optional `LIMIT`; when SQL omits `LIMIT`, the remote request uses Qdrant's default result count and omitted projected score ordering uses Qdrant's native score-desc result order
   - `qdrant_nearest_with_mmr_score(...)`
-    - exact lowering currently admits dense query vectors, diversity, candidates limit,
-      descending score sort, and `LIMIT`
+    - exact lowering currently admits dense query vectors, diversity, candidates limit, and an optional `LIMIT`; when SQL omits `LIMIT`, the remote request uses Qdrant's default result count and omitted projected score ordering uses Qdrant's native score-desc result order
   - `qdrant_relevance_feedback_score(...)`
     - exact lowering currently admits dense vector targets, feedback-item arrays using
-      `struct(example, score)` entries, descending score sort, `LIMIT`, and required naive
-      strategy coefficients
+      `struct(example, score)` entries, an optional `LIMIT`, and required naive
+      strategy coefficients; when SQL omits `LIMIT`, the remote request uses Qdrant's default result count and omitted projected score ordering uses Qdrant's native score-desc result order
+  - grouped nearest top-1 via `DISTINCT ON (payload:<path>)`, with outer `LIMIT` kept local after exact grouped retrieval
+    - exact lowering currently admits one scalar keyword or lookup-capable integer payload field, `qdrant_nearest_score(...)`,
+      `ORDER BY payload:<path>[ DESC], score DESC`, validates returned group ids against scalar payload values on hits,
+      and keeps any outer `LIMIT` local
+  - projected `ORDER BY score DESC` is redundant and optimizes away, while projected `ORDER BY score ASC` remains a local `DataFusion` sort
   - projected score columns follow normal `DataFusion` naming and aliasing rules
 - a unified relation-pushdown analyzer scaffold now owns the admitted planner-layer subtree
   replacements instead of relying on separate analyzer-rule ownership by convention
@@ -104,7 +107,7 @@ canonical carrier; missing values are not imputed during scan.
 - broader aggregate/grouped SQL beyond the admitted scalar-facet subset
 - fully implicit arithmetic and similar typed SQL over raw `payload:<path>` when `DataFusion` must infer the payload scalar type during SQL planning; use `payload(payload:<path>, 'Type')` or an explicit `CAST(...)` today
 - broader `Qdrant`-specific UDF, UDAF, or UDTF surface beyond the current retrieval marker UDFs and typed `payload(...)` helper
-- SQL-native fusion / grouped-query semantics
+- broader SQL-native fusion / grouped-query semantics beyond the admitted `DISTINCT ON` grouped-nearest subset
 - broader planner rewrites beyond the narrow exact `COUNT(*)` / facet slices
 
 ## Basic Usage
@@ -182,7 +185,6 @@ let batches = ctx
         "SELECT id, payload, qdrant_nearest_score(embedding, 1.0, 0.0, 0.0) AS score \
          FROM vectors \
          WHERE id <> '3' AND qdrant_nearest_score(embedding, 1.0, 0.0, 0.0) >= 0.25 \
-         ORDER BY score DESC \
          LIMIT 10",
     )
     .await?
@@ -229,12 +231,10 @@ ORDER BY payload(payload:rank, 'Integer');
 SELECT id, qdrant_nearest_score(embedding, 1.0, 0.0) AS score
 FROM docs
 WHERE qdrant_nearest_score(embedding, 1.0, 0.0) >= 0.3
-ORDER BY score DESC
 LIMIT 10;
 
 SELECT id, qdrant_sample_score() AS score
 FROM docs
-ORDER BY score DESC
 LIMIT 10;
 
 SELECT id

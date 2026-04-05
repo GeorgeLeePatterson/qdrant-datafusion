@@ -25,7 +25,6 @@ pub(crate) struct QueryOp {
     query_score_outputs: OutputNames,
     payload_outputs:     PayloadOutputs,
     score_threshold:     Option<f32>,
-    sorted:              bool,
     prefetch:            Vec<QueryPrefetchBranch>,
 }
 
@@ -36,7 +35,6 @@ impl QueryOp {
             query_score_outputs: OutputNames::default(),
             payload_outputs:     PayloadOutputs::default(),
             score_threshold:     None,
-            sorted:              false,
             prefetch:            vec![],
         }
     }
@@ -87,7 +85,7 @@ impl QueryOp {
         Ok(Some(self))
     }
 
-    fn sort(mut self, plan: &LogicalPlan) -> Result<Option<Self>> {
+    fn sort(self, plan: &LogicalPlan) -> Result<Option<Self>> {
         let LogicalPlan::Sort(sort) = plan else {
             return Ok(None);
         };
@@ -97,7 +95,6 @@ impl QueryOp {
         if !self.is_query_score_expr(&sort.expr[0].expr)? {
             return Ok(None);
         }
-        self.sorted = true;
         Ok(Some(self))
     }
 
@@ -107,16 +104,18 @@ impl QueryOp {
         filters: &FiltersState,
         plan: &LogicalPlan,
     ) -> Result<Option<KernelState>> {
-        if !self.sorted {
-            return Ok(None);
-        }
+        let limit = match plan {
+            LogicalPlan::Limit(_) => Some(limit_rows(plan)?),
+            LogicalPlan::Projection(_) | LogicalPlan::Sort(_) => None,
+            _ => return Ok(None),
+        };
         let exact_filters = filters.exact(&source)?;
         drop(self.descriptor(&source)?);
         Ok(Some(KernelState::new(KernelSpec::Query(QueryKernel::new(
             source,
             exact_filters,
             self,
-            limit_rows(plan)?,
+            limit,
         )))))
     }
 
@@ -140,7 +139,7 @@ impl QueryOp {
         if !source
             .payload_schema
             .field_for_path(group_field.key())
-            .is_some_and(crate::qdrant::QdrantPayloadField::supports_facet)
+            .is_some_and(crate::qdrant::QdrantPayloadField::supports_grouping)
         {
             return Ok(None);
         }
@@ -174,7 +173,6 @@ impl QueryOp {
             source,
             exact_filters,
             self,
-            None,
             group_field.key().to_owned(),
             1,
             group_descending,

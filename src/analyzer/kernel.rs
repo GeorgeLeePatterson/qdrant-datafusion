@@ -32,10 +32,9 @@ impl KernelSpec {
 
     pub(super) fn limit(self, plan: &LogicalPlan) -> Result<Option<Self>> {
         match self {
-            Self::QueryGroups(kernel) => {
-                Ok(Some(Self::QueryGroups(kernel.with_limit(Some(limit_rows(plan)?)))))
-            }
-            Self::Count(_) | Self::Query(_) | Self::QueryBatch(_) | Self::Facet(_) => Ok(None),
+            Self::Query(kernel) => Ok(Some(Self::Query(kernel.with_limit(limit_rows(plan)?)))),
+            Self::Facet(kernel) => Ok(Some(Self::Facet(kernel.with_limit(limit_rows(plan)?)))),
+            Self::Count(_) | Self::QueryBatch(_) | Self::QueryGroups(_) => Ok(None),
         }
     }
 }

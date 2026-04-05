@@ -35,6 +35,12 @@ impl ProcessingState {
             ));
         };
         self.op = op;
+        if matches!(self.op, Op::Query(_))
+            && let Some(kernel_state) =
+                self.op.clone().kernel(self.source.clone(), &self.filters, &plan)?
+        {
+            return kernel_state.absorb(plan, transformed);
+        }
         self.absorb(plan, transformed)
     }
 
@@ -70,6 +76,12 @@ impl ProcessingState {
             ));
         };
         self.op = op;
+        if matches!(self.op, Op::Query(_))
+            && let Some(kernel_state) =
+                self.op.clone().kernel(self.source.clone(), &self.filters, &plan)?
+        {
+            return kernel_state.absorb(plan, transformed);
+        }
         self.absorb(plan, transformed)
     }
 

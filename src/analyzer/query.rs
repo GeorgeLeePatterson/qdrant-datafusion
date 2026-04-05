@@ -625,12 +625,10 @@ impl QueryGroupsRequestPlan {
         collection: String,
         branch: QueryBranchPlan,
         output_schema: &datafusion::arrow::datatypes::SchemaRef,
-        payload_outputs: bool,
         group_by: String,
         group_size: u64,
     ) -> Self {
-        let payload = payload_outputs
-            || output_schema.fields().iter().any(|field| field.name() == PAYLOAD_FIELD_NAME);
+        let payload = true;
         let vectors = QueryVectorsSelector::from_schema(output_schema);
         Self { collection, branch, payload, vectors, group_by, group_size }
     }

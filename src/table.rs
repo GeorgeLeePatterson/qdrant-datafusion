@@ -549,6 +549,16 @@ mod tests {
         if let Some(cooperative) = plan.as_any().downcast_ref::<CooperativeExec>() {
             return qdrant_query_groups(cooperative.input());
         }
+        if let Some(limit) =
+            plan.as_any().downcast_ref::<datafusion::physical_plan::limit::GlobalLimitExec>()
+        {
+            return qdrant_query_groups(limit.input());
+        }
+        if let Some(limit) =
+            plan.as_any().downcast_ref::<datafusion::physical_plan::limit::LocalLimitExec>()
+        {
+            return qdrant_query_groups(limit.input());
+        }
         panic!(
             "expected qdrant query groups exec in plan:
 {}",
@@ -1686,6 +1696,46 @@ mod tests {
     }
 
     #[test]
+    fn physical_plan_uses_qdrant_query_exec_for_nearest_score_sql_without_limit() {
+        let provider = test_provider(Schema::new(vec![
+            Field::new(ID_FIELD_NAME, DataType::Utf8, false),
+            Field::new(PAYLOAD_FIELD_NAME, DataType::Utf8, true),
+            Field::new(
+                "embedding",
+                DataType::new_fixed_size_list(DataType::Float32, 2, false),
+                true,
+            ),
+        ]));
+        let ctx = QdrantSessionContext::from(SessionContext::new());
+        drop(
+            ctx.session_context()
+                .register_table("vectors", Arc::new(provider))
+                .expect("register table"),
+        );
+        let dataframe = ctx
+            .sql(
+                "SELECT id, payload, qdrant_nearest_score(embedding, 1.0, 0.0) AS score FROM \
+                 vectors",
+            )
+            .now_or_never()
+            .expect("sql future is ready")
+            .expect("dataframe");
+        let plan = dataframe
+            .create_physical_plan()
+            .now_or_never()
+            .expect("plan future is ready")
+            .expect("physical plan");
+        let display = displayable(plan.as_ref()).indent(true).to_string();
+        let _query = qdrant_query(&plan);
+
+        assert!(display.contains("QdrantQueryExec"), "{display}");
+        assert!(!display.contains("SortExec"), "{display}");
+        assert!(!display.contains(", limit="), "{display}");
+        assert!(!display.contains("GlobalLimitExec"), "{display}");
+        assert!(!display.contains("LocalLimitExec"), "{display}");
+    }
+
+    #[test]
     fn physical_plan_uses_qdrant_query_exec_for_nearest_score_sql() {
         let provider = test_provider(Schema::new(vec![
             Field::new(ID_FIELD_NAME, DataType::Utf8, false),
@@ -1729,6 +1779,43 @@ mod tests {
         let _query = qdrant_query(&plan);
 
         assert!(display.contains("QdrantQueryExec"), "{display}");
+        assert!(!display.contains("SortExec"), "{display}");
+    }
+
+    #[test]
+    fn physical_plan_keeps_local_sort_exec_for_nearest_score_sql_ordered_ascending() {
+        let provider = test_provider(Schema::new(vec![
+            Field::new(ID_FIELD_NAME, DataType::Utf8, false),
+            Field::new(PAYLOAD_FIELD_NAME, DataType::Utf8, true),
+            Field::new(
+                "embedding",
+                DataType::new_fixed_size_list(DataType::Float32, 2, false),
+                true,
+            ),
+        ]));
+        let ctx = QdrantSessionContext::from(SessionContext::new());
+        drop(
+            ctx.session_context()
+                .register_table("vectors", Arc::new(provider))
+                .expect("register table"),
+        );
+        let dataframe = ctx
+            .sql(
+                "SELECT id, qdrant_nearest_score(embedding, 1.0, 0.0) AS score FROM vectors ORDER \
+                 BY score ASC",
+            )
+            .now_or_never()
+            .expect("sql future is ready")
+            .expect("dataframe");
+        let plan = dataframe
+            .create_physical_plan()
+            .now_or_never()
+            .expect("plan future is ready")
+            .expect("physical plan");
+        let display = displayable(plan.as_ref()).indent(true).to_string();
+
+        assert!(display.contains("QdrantQueryExec"), "{display}");
+        assert!(display.contains("SortExec"), "{display}");
     }
 
     #[test]
@@ -3346,7 +3433,7 @@ mod tests {
     }
 
     #[test]
-    fn physical_plan_pushes_limit_into_qdrant_query_groups_exec() {
+    fn physical_plan_keeps_limit_local_above_qdrant_query_groups_exec() {
         let provider = QdrantTableProvider {
             payload_schema: payload_schema([(
                 "tag",
@@ -3396,7 +3483,8 @@ mod tests {
         let _query = qdrant_query_groups(&plan);
 
         assert!(display.contains("QdrantQueryGroupsExec"), "{display}");
-        assert!(display.contains("limit=3"), "{display}");
+        assert!(display.contains("GlobalLimitExec"), "{display}");
+        assert!(!display.contains(", limit="), "{display}");
     }
 
     #[test]

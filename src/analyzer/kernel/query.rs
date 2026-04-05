@@ -19,11 +19,16 @@ pub(crate) struct QueryKernel {
     source:  Source,
     filters: QdrantFilters,
     query:   QueryOp,
-    limit:   u64,
+    limit:   Option<u64>,
 }
 
 impl QueryKernel {
-    pub(crate) fn new(source: Source, filters: QdrantFilters, query: QueryOp, limit: u64) -> Self {
+    pub(crate) fn new(
+        source: Source,
+        filters: QdrantFilters,
+        query: QueryOp,
+        limit: Option<u64>,
+    ) -> Self {
         Self { source, filters, query, limit }
     }
 
@@ -36,7 +41,7 @@ impl QueryKernel {
     }
 
     pub(crate) fn branch_plan(&self) -> Result<QueryBranchPlan> {
-        self.query.branch_plan(&self.source, Some(self.filters.clone()), Some(self.limit))
+        self.query.branch_plan(&self.source, Some(self.filters.clone()), self.limit)
     }
 
     pub(crate) fn prefetch_branch(
@@ -95,11 +100,7 @@ impl QueryKernel {
         QueryRequestPlan::points(
             QueryPointsRequestPlan::new(
                 self.source.collection().to_owned(),
-                self.query.branch_plan(
-                    &self.source,
-                    Some(self.filters.clone()),
-                    Some(self.limit),
-                )?,
+                self.query.branch_plan(&self.source, Some(self.filters.clone()), self.limit)?,
                 output_schema,
                 !payload_output_paths.is_empty(),
             ),
@@ -108,7 +109,12 @@ impl QueryKernel {
         )
     }
 
-    pub(crate) fn limit(&self) -> u64 { self.limit }
+    pub(crate) fn limit(&self) -> Option<u64> { self.limit }
+
+    pub(crate) fn with_limit(mut self, limit: u64) -> Self {
+        self.limit = Some(limit);
+        self
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -173,7 +179,7 @@ impl QueryBatchKernel {
                     query.query.branch_plan(
                         &query.source,
                         Some(query.filters.clone()),
-                        Some(query.limit),
+                        query.limit,
                     )?,
                     output_schema,
                     !payload_output_paths.is_empty(),
@@ -193,7 +199,6 @@ pub(crate) struct QueryGroupsKernel {
     source:           Source,
     filters:          QdrantFilters,
     query:            QueryOp,
-    limit:            Option<u64>,
     group_by:         String,
     group_size:       u64,
     group_descending: bool,
@@ -204,12 +209,11 @@ impl QueryGroupsKernel {
         source: Source,
         filters: QdrantFilters,
         query: QueryOp,
-        limit: Option<u64>,
         group_by: String,
         group_size: u64,
         group_descending: bool,
     ) -> Self {
-        Self { source, filters, query, limit, group_by, group_size, group_descending }
+        Self { source, filters, query, group_by, group_size, group_descending }
     }
 
     pub(super) fn project(mut self, plan: &LogicalPlan) -> Result<Option<Self>> {
@@ -230,13 +234,6 @@ impl QueryGroupsKernel {
 
     pub(crate) fn group_descending(&self) -> bool { self.group_descending }
 
-    pub(crate) fn limit(&self) -> Option<u64> { self.limit }
-
-    pub(crate) fn with_limit(mut self, limit: Option<u64>) -> Self {
-        self.limit = limit;
-        self
-    }
-
     pub(crate) fn request_plan(&self, output_schema: &SchemaRef) -> Result<QueryRequestPlan> {
         let payload_output_paths = self.query.payload_output_paths();
         let mut score_output_names = self.query.score_output_names();
@@ -250,9 +247,8 @@ impl QueryGroupsKernel {
         QueryRequestPlan::groups(
             QueryGroupsRequestPlan::new(
                 self.source.collection().to_owned(),
-                self.query.branch_plan(&self.source, Some(self.filters.clone()), self.limit)?,
+                self.query.branch_plan(&self.source, Some(self.filters.clone()), None)?,
                 output_schema,
-                !payload_output_paths.is_empty(),
                 self.group_by.clone(),
                 self.group_size,
             ),

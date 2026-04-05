@@ -182,7 +182,7 @@ Use it to resume work without replaying the full repository history.
       - dense nearest-neighbor query over `Qdrant::query`
       - named-vector selection
       - exact admitted filters from the existing predicate algebra
-      - `LIMIT`
+      - explicit `LIMIT` pushdown when present, otherwise Qdrant's default result count
       - optional score threshold
     - that exact scope is now carried forward by the generic operator/kernel architecture instead
       of the removed context-owned helper surface
@@ -202,8 +202,9 @@ Use it to resume work without replaying the full repository history.
     - exact lowering currently admits:
       - dense query vectors
       - named-vector selection by the vector column argument
-      - descending score sort
-      - `LIMIT`
+      - explicit `LIMIT` pushdown when present, otherwise Qdrant's default result count
+      - omitted projected score ordering uses Qdrant's native score-desc result order
+      - projected `ORDER BY score DESC` is redundant and optimizes away, while projected `ORDER BY score ASC` remains local
       - optional exact base filters
       - optional score-threshold predicates
     - score output is only present when projected
@@ -261,6 +262,12 @@ Use it to resume work without replaying the full repository history.
     - relevance feedback live coverage now proves the explicit naive-strategy coefficient path
     - the public Rust helper surface now takes explicit naive strategy coefficients directly on `qdrant_relevance_feedback_score(...)`
     - docs and tracker state now promote nearest-with-MMR and relevance feedback from deferred planning inventory to current retrieval modifiers
+44. `Q-047`: grouped nearest top-1 retrieval is now validated as a narrow current grouped-query slice on the shared query/kernel architecture, with exact remote grouped retrieval and local outer `LIMIT` preservation.
+    - live end-to-end coverage now proves the prepared-session `DISTINCT ON (payload:<path>) ... qdrant_nearest_score(...)` surface against `Qdrant`
+    - exact lowering currently admits one scalar keyword or lookup-capable integer payload field, `ORDER BY payload:<path>[ DESC], score DESC`, and group size 1 while any outer `LIMIT` remains local
+    - docs and tracker state now promote that grouped-nearest `DISTINCT ON` subset from an implementation detail to an admitted current capability while keeping broader grouped retrieval deferred
+    - grouped execution validates that returned group ids match scalar payload values on hits so multi-valued grouped fields fail clearly instead of producing SQL-incompatible results
+    - outer SQL `LIMIT` is preserved locally because final group ordering is imposed after grouped retrieval, while the grouped request itself uses an exact point-count upper bound instead of Qdrant's default group limit
 
 ## Next
 
@@ -269,7 +276,9 @@ Use it to resume work without replaying the full repository history.
    the shared operator / kernel structure.
    - aggregate-like: explicit output contracts beyond exact `COUNT(*)` and the current scalar
      facet slice
-   - retrieval: broader `query`-family relations and modifiers such as grouped retrieval now that nearest / sample / recommend / discover / context / nearest-with-MMR / relevance feedback are all fully absorbed
+   - retrieval: broader `query`-family relations and modifiers such as grouped retrieval beyond the current grouped-nearest `DISTINCT ON` subset now that nearest / sample / recommend / discover / context / nearest-with-MMR / relevance feedback are all fully absorbed
+   - current retrieval kernels now allow omitted SQL `LIMIT`, deferring to Qdrant's native default result count unless SQL specifies one
+   - current retrieval kernels now also allow omitted projected `ORDER BY score DESC`, deferring to Qdrant's native result order unless SQL specifies a local re-sort
 4. `Q-020`: Extend the predicate algebra only where the SQL semantics are explicit.
    - payload empty-container/cardinality semantics
    - text, geo, nested, and count-oriented predicates

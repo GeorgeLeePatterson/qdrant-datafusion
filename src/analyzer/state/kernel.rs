@@ -92,6 +92,9 @@ impl KernelState {
                 "surface call above kernel does not match the extracted qdrant kernel",
             ));
         }
+        if query_kernel_preserves_score_desc_sort(self.spec(), &plan) {
+            return self.absorb(plan, transformed);
+        }
         Ok(super::super::Analysis::new(plan, State::local(), transformed))
     }
 
@@ -166,4 +169,20 @@ fn open_query_surface(
 ) -> Result<ProcessingState> {
     let op = Op::from_surface(surface, source)?.with_prefetch(prefetch)?;
     Ok(ProcessingState { source: source.clone(), filters: FiltersState::default(), op })
+}
+
+fn query_kernel_preserves_score_desc_sort(spec: &KernelSpec, plan: &LogicalPlan) -> bool {
+    let KernelSpec::Query(query) = spec else {
+        return false;
+    };
+    let LogicalPlan::Sort(sort) = plan else {
+        return false;
+    };
+    if sort.expr.len() != 1 || sort.expr[0].asc {
+        return false;
+    }
+    matches!(
+        sort.expr[0].expr.clone().unalias_nested().data,
+        datafusion::logical_expr::Expr::Column(column) if query.query().score_output_names().contains(&column.name)
+    )
 }

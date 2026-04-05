@@ -113,34 +113,41 @@ Current branch reality:
       - dense nearest-neighbor query over `Qdrant::query`
       - named-vector selection by the vector column argument
       - exact admitted base filters from the existing predicate algebra
-      - descending score sort
-      - `LIMIT`
+      - explicit `LIMIT` pushdown when present, otherwise Qdrant's default result count
+      - omitted projected score ordering uses Qdrant's native result order
       - optional score-threshold predicates
     - current sample admitted scope is:
       - `Query::Sample` with random sampling
-      - descending score sort
-      - `LIMIT`
+      - explicit `LIMIT` pushdown when present, otherwise Qdrant's default result count
+      - omitted projected score ordering uses Qdrant's native result order
       - default method `'random'` when omitted
     - current recommend admitted scope is:
       - positive / negative example lists
-      - descending score sort
-      - `LIMIT`
+      - explicit `LIMIT` pushdown when present, otherwise Qdrant's default result count
+      - omitted projected score ordering uses Qdrant's native result order
       - default or explicit strategy literal
     - current discover / context admitted scope is:
       - dense vector target/context pair inputs
-      - descending score sort
-      - `LIMIT`
+      - explicit `LIMIT` pushdown when present, otherwise Qdrant's default result count
+      - omitted projected score ordering uses Qdrant's native result order
     - current nearest-with-MMR admitted scope is:
       - dense query vectors
       - diversity and candidates-limit literals
-      - descending score sort
-      - `LIMIT`
+      - explicit `LIMIT` pushdown when present, otherwise Qdrant's default result count
+      - omitted projected score ordering uses Qdrant's native result order
     - current relevance-feedback admitted scope is:
       - dense vector targets
       - feedback-item arrays using `struct(example, score)` entries
-      - descending score sort
-      - `LIMIT`
+      - explicit `LIMIT` pushdown when present, otherwise Qdrant's default result count
+      - omitted projected score ordering uses Qdrant's native result order
       - required naive strategy coefficients
+    - current grouped-nearest admitted scope is:
+      - `SELECT DISTINCT ON (payload:<path>)` over one scalar keyword or lookup-capable integer payload field
+      - `qdrant_nearest_score(...)` as the grouped retrieval source
+      - `ORDER BY payload:<path>[ DESC], score DESC`
+      - group size `1`
+      - grouped execution validates that returned group ids match scalar payload values on hits
+      - any outer `LIMIT` remains local above the grouped exec
     - score output is only present when projected
     - when projected, aliases win; otherwise naming follows normal `DataFusion` expression naming
 37. Current exact `Qdrant` leaf relations now converge on one generic extracted kernel family.

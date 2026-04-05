@@ -38,4 +38,9 @@ impl FacetKernel {
     pub(crate) fn op(&self) -> &FacetOp { &self.op }
 
     pub(crate) fn limit(&self) -> u64 { self.limit }
+
+    pub(crate) fn with_limit(mut self, limit: u64) -> Self {
+        self.limit = limit;
+        self
+    }
 }

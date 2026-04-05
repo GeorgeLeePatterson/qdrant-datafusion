@@ -142,8 +142,9 @@ Last updated: 2026-03-26
       - dense query vector
       - named-vector selection by the vector column argument
       - exact admitted base filters from the existing predicate algebra
-      - descending score sort
-      - `LIMIT`
+      - explicit `LIMIT` pushdown when present, otherwise Qdrant's default result count
+      - omitted projected score ordering uses Qdrant's native score-desc result order
+      - projected `ORDER BY score DESC` is redundant and optimizes away, while projected `ORDER BY score ASC` remains local
       - optional score-threshold predicates
     - projecting the score column is optional
     - when the score is projected, aliases win; otherwise naming follows normal `DataFusion`

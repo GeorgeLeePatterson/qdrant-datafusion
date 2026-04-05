@@ -5,16 +5,19 @@ use std::future::Future;
 use std::sync::Arc;
 
 use datafusion::arrow::array::{ArrayRef, Int64Array, RecordBatch, StringArray};
+use datafusion::arrow::compute::SortOptions;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{Result, exec_err};
-use datafusion::physical_expr::PhysicalExpr;
+use datafusion::physical_expr::expressions::Column;
+use datafusion::physical_expr::{PhysicalExpr, PhysicalSortExpr};
 use datafusion::physical_plan::execution_plan::Boundedness;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
 use futures_util::stream;
 use qdrant_client::qdrant::{
-    CountPointsBuilder, FacetCountsBuilder, GroupId, PointGroup, ScoredPoint, facet_value, group_id,
+    CountPointsBuilder, FacetCountsBuilder, GroupId, PointGroup, ScoredPoint, Value, facet_value,
+    group_id, value,
 };
 
 use crate::analyzer::{
@@ -102,6 +105,25 @@ fn leaf_properties(schema: &SchemaRef) -> Arc<PlanProperties> {
     ))
 }
 
+fn query_properties(spec: &QueryKernel, schema: &SchemaRef) -> Arc<PlanProperties> {
+    let mut eq_properties =
+        datafusion::physical_expr::EquivalenceProperties::new(Arc::clone(schema));
+    for (index, field) in schema.fields().iter().enumerate() {
+        if spec.query().score_output_names().contains(field.name()) {
+            eq_properties.add_orderings([vec![PhysicalSortExpr::new(
+                Arc::new(Column::new(field.name(), index)),
+                SortOptions { descending: true, nulls_first: false },
+            )]]);
+        }
+    }
+    Arc::new(PlanProperties::new(
+        eq_properties,
+        datafusion::physical_plan::Partitioning::UnknownPartitioning(1),
+        datafusion::physical_plan::execution_plan::EmissionType::Final,
+        Boundedness::Bounded,
+    ))
+}
+
 fn stream_once_batch(
     schema: &SchemaRef,
     fut: impl Future<Output = Result<RecordBatch>> + Send + 'static,
@@ -123,7 +145,8 @@ impl QdrantFacetExec {
 
 impl QdrantQueryExec {
     pub(crate) fn new(spec: QueryKernel, schema: &SchemaRef) -> Self {
-        Self { spec, schema: Arc::clone(schema), properties: leaf_properties(schema) }
+        let properties = query_properties(&spec, schema);
+        Self { spec, schema: Arc::clone(schema), properties }
     }
 
     #[cfg(test)]
@@ -191,7 +214,6 @@ impl std::fmt::Debug for QdrantQueryGroupsExec {
             .field("collection", &self.spec.collection())
             .field("group_by", &self.spec.group_by())
             .field("group_size", &self.spec.group_size())
-            .field("limit", &self.spec.limit())
             .finish_non_exhaustive()
     }
 }
@@ -405,8 +427,14 @@ async fn execute_query_request_plan(
             )
         }
         QueryRequest::Groups(request) => {
+            let mut request = request.clone();
+            request.limit = Some(query_groups_limit(&client, &request).await?);
+            if request.limit == Some(0) {
+                return Ok(RecordBatch::new_empty(schema));
+            }
+            let group_by = request.group_by.clone();
             let response = client
-                .query_groups(request.clone())
+                .query_groups(request)
                 .await
                 .map_err(|error| datafusion::error::DataFusionError::External(Box::new(error)))?;
             let mut groups = response
@@ -417,6 +445,7 @@ async fn execute_query_request_plan(
                     )
                 })?
                 .groups;
+            validate_grouped_hits(&groups, &group_by)?;
             sort_point_groups(&mut groups, group_descending);
             let point_count = groups.iter().map(|group| group.hits.len()).sum();
             let points = groups.into_iter().flat_map(|group| group.hits).collect::<Vec<_>>();
@@ -429,6 +458,76 @@ async fn execute_query_request_plan(
             )
         }
     }
+}
+
+fn validate_grouped_hits(groups: &[PointGroup], group_by: &str) -> Result<()> {
+    for group in groups {
+        for hit in &group.hits {
+            if !grouped_hit_matches_id(group.id.as_ref(), hit, group_by) {
+                return exec_err!(
+                    "qdrant grouped retrieval requires scalar payload values at '{}' matching \
+                     returned group ids",
+                    group_by
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn grouped_hit_matches_id(group_id: Option<&GroupId>, hit: &ScoredPoint, group_by: &str) -> bool {
+    let Some(value) = payload_group_value_at_path(&hit.payload, group_by) else {
+        return false;
+    };
+    match (group_id.and_then(|group_id| group_id.kind.as_ref()), value.kind.as_ref()) {
+        (Some(group_id::Kind::StringValue(group)), Some(value::Kind::StringValue(payload))) => {
+            group == payload
+        }
+        (Some(group_id::Kind::IntegerValue(group)), Some(value::Kind::IntegerValue(payload))) => {
+            group == payload
+        }
+        (Some(group_id::Kind::UnsignedValue(group)), Some(value::Kind::IntegerValue(payload))) => {
+            u64::try_from(*payload).ok().is_some_and(|payload| payload == *group)
+        }
+        _ => false,
+    }
+}
+
+fn payload_group_value_at_path<'a>(
+    payload: &'a std::collections::HashMap<String, Value>,
+    path: &str,
+) -> Option<&'a Value> {
+    let mut segments = path.split('.');
+    let mut current = payload.get(segments.next()?)?;
+    for segment in segments {
+        let value::Kind::StructValue(struct_value) = current.kind.as_ref()? else {
+            return None;
+        };
+        current = struct_value.fields.get(segment)?;
+    }
+    Some(current)
+}
+
+async fn query_groups_limit(
+    client: &qdrant_client::Qdrant,
+    request: &qdrant_client::qdrant::QueryPointGroups,
+) -> Result<u64> {
+    let mut count = CountPointsBuilder::new(request.collection_name.clone()).exact(true);
+    if let Some(filter) = request.filter.clone() {
+        count = count.filter(filter);
+    }
+    let response = client
+        .count(count)
+        .await
+        .map_err(|error| datafusion::error::DataFusionError::External(Box::new(error)))?;
+    response
+        .result
+        .ok_or_else(|| {
+            datafusion::error::DataFusionError::Execution(
+                "Qdrant count response missing result".to_owned(),
+            )
+        })
+        .map(|result| result.count)
 }
 
 impl ExecutionPlan for QdrantQueryExec {
@@ -445,13 +544,8 @@ impl ExecutionPlan for QdrantQueryExec {
         let request_plan = self.spec.request_plan(&self.schema)?;
         let limit = self.spec.limit();
         let schema = Arc::clone(&self.schema);
-        let fut = execute_query_request_plan(
-            client,
-            request_plan,
-            Arc::clone(&schema),
-            Some(limit),
-            false,
-        );
+        let fut =
+            execute_query_request_plan(client, request_plan, Arc::clone(&schema), limit, false);
         Ok(stream_once_batch(&self.schema, fut))
     }
 }
@@ -536,12 +630,10 @@ impl DisplayAs for QdrantQueryExec {
                     |_| self.spec.query().score_output_names(),
                     |plan| plan.score_output_names().clone(),
                 );
-                write!(
-                    f,
-                    "QdrantQueryExec: collection={}, limit={}",
-                    self.spec.collection(),
-                    self.spec.limit()
-                )?;
+                write!(f, "QdrantQueryExec: collection={}", self.spec.collection())?;
+                if let Some(limit) = self.spec.limit() {
+                    write!(f, ", limit={limit}")?;
+                }
                 if let Some(threshold) = self.spec.query().score_threshold() {
                     write!(f, ", score_threshold={threshold}")?;
                 }
@@ -574,11 +666,7 @@ impl DisplayAs for QdrantQueryGroupsExec {
                     self.spec.collection(),
                     self.spec.group_by(),
                     self.spec.group_size()
-                )?;
-                if let Some(limit) = self.spec.limit() {
-                    write!(f, ", limit={limit}")?;
-                }
-                Ok(())
+                )
             }
             DisplayFormatType::TreeRender => write!(f, "QdrantQueryGroupsExec"),
         }
