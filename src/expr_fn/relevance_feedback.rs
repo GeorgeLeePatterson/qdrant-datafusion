@@ -13,7 +13,7 @@ pub(crate) struct RelevanceFeedbackCall {
     pub(crate) vector_field:   String,
     pub(crate) target:         Expr,
     pub(crate) feedback:       Expr,
-    pub(crate) naive_strategy: Option<(Expr, Expr, Expr)>,
+    pub(crate) naive_strategy: (Expr, Expr, Expr),
 }
 
 impl RelevanceFeedbackCall {
@@ -22,25 +22,38 @@ impl RelevanceFeedbackCall {
         else {
             return Ok(None);
         };
-        if args.len() != 3 && args.len() != 6 {
+        if args.len() != 6 {
             return plan_err!(
-                "{RELEVANCE_FEEDBACK_SCORE_FUNCTION_NAME} requires a vector column, a target                  input, feedback items, and optional naive strategy coefficients"
+                "{RELEVANCE_FEEDBACK_SCORE_FUNCTION_NAME} requires a vector column, a target \
+                 input, feedback items, and naive strategy coefficients"
             );
         }
-        let naive_strategy =
-            (args.len() == 6).then(|| (args[3].clone(), args[4].clone(), args[5].clone()));
         Ok(Some(Self {
-            vector_field: column_name(&args[0], RELEVANCE_FEEDBACK_SCORE_FUNCTION_NAME)?,
-            target: args[1].clone(),
-            feedback: args[2].clone(),
-            naive_strategy,
+            vector_field:   column_name(&args[0], RELEVANCE_FEEDBACK_SCORE_FUNCTION_NAME)?,
+            target:         args[1].clone(),
+            feedback:       args[2].clone(),
+            naive_strategy: (args[3].clone(), args[4].clone(), args[5].clone()),
         }))
     }
 }
 
 #[must_use]
-pub fn qdrant_relevance_feedback_score(vector: Expr, target: Expr, feedback: Expr) -> Expr {
-    qdrant_relevance_feedback_score_udf().call(vec![vector, target, feedback])
+pub fn qdrant_relevance_feedback_score(
+    vector: Expr,
+    target: Expr,
+    feedback: Expr,
+    a: f32,
+    b: f32,
+    c: f32,
+) -> Expr {
+    qdrant_relevance_feedback_score_udf().call(vec![
+        vector,
+        target,
+        feedback,
+        Expr::Literal(datafusion::common::ScalarValue::Float32(Some(a)), None),
+        Expr::Literal(datafusion::common::ScalarValue::Float32(Some(b)), None),
+        Expr::Literal(datafusion::common::ScalarValue::Float32(Some(c)), None),
+    ])
 }
 
 pub(crate) fn qdrant_relevance_feedback_score_udf() -> ScalarUDF {

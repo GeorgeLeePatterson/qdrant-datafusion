@@ -255,6 +255,12 @@ Use it to resume work without replaying the full repository history.
     - recommend now has explicit strategy coverage in addition to the default strategy contract
     - the public Rust helper surface now includes `qdrant_recommend_score_with_strategy(...)` for the explicit-strategy DataFrame path
     - docs and tracker state now promote recommend / discover / context from deferred planning inventory to current retrieval prototypes
+43. `Q-046`: nearest-with-MMR and relevance-feedback are now validated current retrieval modifiers on the shared operator / kernel architecture.
+    - live end-to-end coverage now proves the prepared-session `qdrant_nearest_with_mmr_score(...)` surface against `Qdrant`
+    - relevance feedback now accepts DataFusion-native feedback-item arrays using `struct(example, score)` entries on the prepared-session SQL surface
+    - relevance feedback live coverage now proves the explicit naive-strategy coefficient path
+    - the public Rust helper surface now takes explicit naive strategy coefficients directly on `qdrant_relevance_feedback_score(...)`
+    - docs and tracker state now promote nearest-with-MMR and relevance feedback from deferred planning inventory to current retrieval modifiers
 
 ## Next
 
@@ -263,9 +269,7 @@ Use it to resume work without replaying the full repository history.
    the shared operator / kernel structure.
    - aggregate-like: explicit output contracts beyond exact `COUNT(*)` and the current scalar
      facet slice
-   - retrieval: broader `query`-family relations and modifiers such as relevance feedback,
-     nearest-with-MMR, and grouped retrieval now that nearest / sample / recommend / discover /
-     context are all fully absorbed
+   - retrieval: broader `query`-family relations and modifiers such as grouped retrieval now that nearest / sample / recommend / discover / context / nearest-with-MMR / relevance feedback are all fully absorbed
 4. `Q-020`: Extend the predicate algebra only where the SQL semantics are explicit.
    - payload empty-container/cardinality semantics
    - text, geo, nested, and count-oriented predicates

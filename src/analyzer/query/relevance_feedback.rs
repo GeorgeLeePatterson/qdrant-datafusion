@@ -13,22 +13,31 @@ pub(crate) struct RelevanceFeedbackQuery {
     using:    Option<String>,
     target:   super::VectorQueryInput,
     feedback: Vec<(super::VectorQueryInput, f32)>,
-    strategy: Option<FeedbackStrategy>,
+    strategy: FeedbackStrategy,
 }
 
 impl TryFrom<RelevanceFeedbackCall> for RelevanceFeedbackQuery {
     type Error = datafusion::error::DataFusionError;
 
     fn try_from(call: RelevanceFeedbackCall) -> Result<Self> {
-        let strategy = match call.naive_strategy.as_ref() {
-            Some((a, b, c)) => Some(FeedbackStrategy {
-                variant: Some(feedback_strategy::Variant::Naive(NaiveFeedbackStrategy {
-                    a: f32_literal(a, RELEVANCE_FEEDBACK_SCORE_FUNCTION_NAME, "a")?,
-                    b: f32_literal(b, RELEVANCE_FEEDBACK_SCORE_FUNCTION_NAME, "b")?,
-                    c: f32_literal(c, RELEVANCE_FEEDBACK_SCORE_FUNCTION_NAME, "c")?,
-                })),
-            }),
-            None => None,
+        let strategy = FeedbackStrategy {
+            variant: Some(feedback_strategy::Variant::Naive(NaiveFeedbackStrategy {
+                a: f32_literal(
+                    &call.naive_strategy.0,
+                    RELEVANCE_FEEDBACK_SCORE_FUNCTION_NAME,
+                    "a",
+                )?,
+                b: f32_literal(
+                    &call.naive_strategy.1,
+                    RELEVANCE_FEEDBACK_SCORE_FUNCTION_NAME,
+                    "b",
+                )?,
+                c: f32_literal(
+                    &call.naive_strategy.2,
+                    RELEVANCE_FEEDBACK_SCORE_FUNCTION_NAME,
+                    "c",
+                )?,
+            })),
         };
         Ok(Self {
             using: Some(call.vector_field),
@@ -94,7 +103,7 @@ impl RelevanceFeedbackQuery {
                         score,
                     })
                     .collect(),
-                strategy: self.strategy,
+                strategy: Some(self.strategy),
             }),
             self.using.clone(),
         )

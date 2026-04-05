@@ -62,6 +62,13 @@ canonical carrier; missing values are not imputed during scan.
   - `qdrant_discover_score(...)` and `qdrant_context_score(...)`
     - exact lowering currently admits dense vector targets/context pairs, descending score sort,
       and `LIMIT`
+  - `qdrant_nearest_with_mmr_score(...)`
+    - exact lowering currently admits dense query vectors, diversity, candidates limit,
+      descending score sort, and `LIMIT`
+  - `qdrant_relevance_feedback_score(...)`
+    - exact lowering currently admits dense vector targets, feedback-item arrays using
+      `struct(example, score)` entries, descending score sort, `LIMIT`, and required naive
+      strategy coefficients
   - projected score columns follow normal `DataFusion` naming and aliasing rules
 - a unified relation-pushdown analyzer scaffold now owns the admitted planner-layer subtree
   replacements instead of relying on separate analyzer-rule ownership by convention

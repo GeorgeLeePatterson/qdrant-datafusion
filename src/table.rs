@@ -313,7 +313,7 @@ mod tests {
     };
     use crate::expr_fn::{
         qdrant_context_score, qdrant_discover_score, qdrant_recommend_score,
-        qdrant_recommend_score_with_strategy, qdrant_relevance_feedback_score,
+        qdrant_recommend_score_with_strategy,
     };
     use crate::qdrant::QdrantPayloadSchema;
     use crate::table::scan_spec::QdrantPayloadOrdering;
@@ -429,10 +429,6 @@ mod tests {
             dense_insert_vector_array(&[0.1_f32, 0.9_f32]),
         ])
         .expect("dense insert batch")
-    }
-
-    fn empty_list_expr(item: &DataType) -> Expr {
-        scalar_expr(ScalarValue::List(ScalarValue::new_list_nullable(&[], item)))
     }
 
     fn sort_expr(plan: &LogicalPlan) -> &Expr {
@@ -2596,26 +2592,14 @@ mod tests {
                 .expect("register table"),
         );
         let dataframe = ctx
-            .session_context()
-            .table("vectors")
+            .sql(
+                "SELECT id, payload, embedding, qdrant_relevance_feedback_score(embedding, [1.0, \
+                 0.0], [struct([1.0, 0.0], 1.0), struct([0.0, 1.0], -0.5)], 1.0, 0.5, 0.25) AS \
+                 score FROM vectors ORDER BY score DESC LIMIT 2",
+            )
             .now_or_never()
-            .expect("table future is ready")
-            .expect("table")
-            .select(vec![
-                col("id"),
-                col("payload"),
-                qdrant_relevance_feedback_score(
-                    col("embedding"),
-                    float_vector_expr(&[1.0, 0.0]),
-                    empty_list_expr(&list_data_type(DataType::Float32)),
-                )
-                .alias("score"),
-            ])
-            .expect("select")
-            .sort(vec![col("score").sort(false, false)])
-            .expect("sort")
-            .limit(0, Some(2))
-            .expect("limit");
+            .expect("sql future is ready")
+            .expect("dataframe");
         let plan = dataframe
             .create_physical_plan()
             .now_or_never()
@@ -2625,6 +2609,44 @@ mod tests {
         let _query = qdrant_query(&plan);
 
         assert!(display.contains("QdrantQueryExec"), "{display}");
+    }
+
+    #[test]
+    fn prepared_session_relevance_feedback_score_requires_naive_strategy_coefficients() {
+        let provider = test_provider(Schema::new(vec![
+            Field::new(ID_FIELD_NAME, DataType::Utf8, false),
+            Field::new(PAYLOAD_FIELD_NAME, DataType::Utf8, true),
+            Field::new(
+                "embedding",
+                DataType::new_fixed_size_list(DataType::Float32, 2, false),
+                true,
+            ),
+        ]));
+        let ctx = QdrantSessionContext::from(SessionContext::new());
+        drop(
+            ctx.session_context()
+                .register_table("vectors", Arc::new(provider))
+                .expect("register table"),
+        );
+
+        let dataframe =
+            ctx
+                .sql(
+                    "SELECT id, payload, embedding, qdrant_relevance_feedback_score(embedding, \
+                     [1.0,                  0.0], [struct([1.0, 0.0], 1.0), struct([0.0, 1.0], \
+                     -0.5)]) AS score FROM vectors                  ORDER BY score DESC LIMIT 2",
+                )
+                .now_or_never()
+                .expect("sql future is ready")
+                .expect("dataframe");
+
+        let err = dataframe
+            .create_physical_plan()
+            .now_or_never()
+            .expect("plan future is ready")
+            .expect_err("missing strategy coefficients should fail");
+
+        assert!(err.to_string().contains("naive strategy coefficients"), "{err}");
     }
 
     #[test]

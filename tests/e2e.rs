@@ -149,6 +149,22 @@ e2e_test!(
 
 #[cfg(feature = "test-utils")]
 e2e_test!(
+    prepared_session_sql_nearest_with_mmr_query,
+    tests::test_prepared_session_sql_nearest_with_mmr_query,
+    TRACING_DIRECTIVES,
+    None
+);
+
+#[cfg(feature = "test-utils")]
+e2e_test!(
+    prepared_session_sql_relevance_feedback_query,
+    tests::test_prepared_session_sql_relevance_feedback_query,
+    TRACING_DIRECTIVES,
+    None
+);
+
+#[cfg(feature = "test-utils")]
+e2e_test!(
     nearest_query_projects_payload_path,
     tests::test_nearest_query_projects_payload_path,
     TRACING_DIRECTIVES,
@@ -1441,6 +1457,52 @@ mod tests {
         assert_eq!(rows.len(), 2, "rows={rows:?}");
         assert_eq!(rows.iter().map(|(id, _)| *id).collect::<BTreeSet<_>>(), BTreeSet::from([1, 2]));
         assert!(rows.iter().all(|(_, score)| *score <= 0.0), "rows={rows:?}");
+        assert!(display.contains("QdrantQueryExec"), "{display}");
+
+        Ok(())
+    }
+
+    pub(super) async fn test_prepared_session_sql_nearest_with_mmr_query(
+        c: Arc<QdrantContainer>,
+    ) -> Result<()> {
+        let ctx =
+            create_dual_vector_query_context(&c, "test_session_context_nearest_with_mmr_query")
+                .await?;
+
+        let sql = "SELECT id, qdrant_nearest_with_mmr_score(embedding, 0.9, 8, 1.0, 0.0) AS                    score FROM vectors ORDER BY score DESC LIMIT 2";
+        let (rows, display) = collect_scored_rows(&ctx, sql).await?;
+
+        assert_eq!(rows.len(), 2, "rows={rows:?}");
+        assert_eq!(rows[0].0, 1, "rows={rows:?}");
+        assert_eq!(
+            rows.iter().map(|(id, _)| *id).collect::<BTreeSet<_>>().len(),
+            2,
+            "rows={rows:?}"
+        );
+        assert!(rows.iter().all(|(id, _)| (1..=3).contains(id)), "rows={rows:?}");
+        assert!(display.contains("QdrantQueryExec"), "{display}");
+
+        Ok(())
+    }
+
+    pub(super) async fn test_prepared_session_sql_relevance_feedback_query(
+        c: Arc<QdrantContainer>,
+    ) -> Result<()> {
+        let ctx =
+            create_dual_vector_query_context(&c, "test_session_context_relevance_feedback_query")
+                .await?;
+
+        let sql = "SELECT id, qdrant_relevance_feedback_score(embedding, [1.0, 0.0],                    [struct([1.0, 0.0], 1.0), struct([0.0, 1.0], -0.5)], 1.0, 0.5, 0.25) AS                    score FROM vectors ORDER BY score DESC LIMIT 2";
+        let (rows, display) = collect_scored_rows(&ctx, sql).await?;
+
+        assert_eq!(rows.len(), 2, "rows={rows:?}");
+        assert_eq!(rows[0].0, 1, "rows={rows:?}");
+        assert_eq!(
+            rows.iter().map(|(id, _)| *id).collect::<BTreeSet<_>>().len(),
+            2,
+            "rows={rows:?}"
+        );
+        assert!(rows.iter().all(|(id, _)| (1..=3).contains(id)), "rows={rows:?}");
         assert!(display.contains("QdrantQueryExec"), "{display}");
 
         Ok(())

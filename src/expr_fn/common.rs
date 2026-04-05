@@ -2,6 +2,7 @@ use std::any::Any;
 use std::sync::Arc;
 
 use datafusion::arrow::datatypes::{DataType, Field, FieldRef};
+use datafusion::common::scalar::ScalarStructBuilder;
 use datafusion::common::{Result, ScalarValue, exec_err, plan_err};
 use datafusion::logical_expr::{
     ColumnarValue, Expr, ScalarFunctionArgs, ScalarUDFImpl, Signature, TypeSignature, Volatility,
@@ -29,6 +30,40 @@ pub(crate) fn column_name(expr: &Expr, function_name: &str) -> Result<String> {
 
 fn is_array_constructor_function_name(name: &str) -> bool { matches!(name, "make_array" | "array") }
 
+fn is_struct_constructor_function_name(name: &str) -> bool {
+    matches!(name, "struct" | "named_struct")
+}
+
+fn struct_literal_scalar(
+    args: &[Expr],
+    is_named_struct: bool,
+    function_name: &str,
+    argument: &str,
+    expectation: &str,
+) -> Result<ScalarValue> {
+    let mut builder = ScalarStructBuilder::new();
+    if is_named_struct {
+        if args.is_empty() || !args.len().is_multiple_of(2) {
+            return plan_err!("{function_name} requires {argument} to be {expectation}");
+        }
+        for chunk in args.chunks_exact(2) {
+            let name = literal_scalar(&chunk[0], function_name, argument, expectation)?;
+            let Some(name) = name.try_as_str().flatten().filter(|name| !name.is_empty()) else {
+                return plan_err!("{function_name} requires {argument} to be {expectation}");
+            };
+            let value = literal_scalar(&chunk[1], function_name, argument, expectation)?;
+            builder = builder.with_scalar(Field::new(name, value.data_type(), true), value);
+        }
+    } else {
+        for (index, arg) in args.iter().enumerate() {
+            let value = literal_scalar(arg, function_name, argument, expectation)?;
+            builder = builder
+                .with_scalar(Field::new(format!("c{index}"), value.data_type(), true), value);
+        }
+    }
+    builder.build()
+}
+
 pub(crate) fn literal_scalar(
     expr: &Expr,
     function_name: &str,
@@ -51,6 +86,15 @@ pub(crate) fn literal_scalar(
                 .find(|value| !value.is_null())
                 .map_or(DataType::Null, ScalarValue::data_type);
             Ok(ScalarValue::List(ScalarValue::new_list_nullable(&values, &item_type)))
+        }
+        Expr::ScalarFunction(function) if is_struct_constructor_function_name(function.name()) => {
+            struct_literal_scalar(
+                &function.args,
+                function.name() == "named_struct",
+                function_name,
+                argument,
+                expectation,
+            )
         }
         _ => plan_err!("{function_name} requires {argument} to be {expectation}"),
     }

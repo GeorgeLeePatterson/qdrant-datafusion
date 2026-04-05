@@ -270,20 +270,44 @@ pub(super) fn feedback_input_list(
 ) -> Result<Vec<(VectorQueryInput, f32)>> {
     list_literal(expr, function_name, argument)?
         .iter()
-        .map(|value| {
-            let values = list_from_scalar(value, function_name, argument)?;
-            if values.len() != 2 {
-                return plan_err!(
-                    "{function_name} requires each {argument} entry to contain an example and a \
-                     score"
-                );
-            }
-            Ok((
-                vector_input_from_scalar(&values[0], function_name, argument)?,
-                scalar_f32(&values[1], function_name, argument)?,
-            ))
-        })
+        .map(|value| feedback_item_from_scalar(value, function_name, argument))
         .collect()
+}
+
+fn feedback_item_from_scalar(
+    value: &ScalarValue,
+    function_name: &str,
+    argument: &str,
+) -> Result<(VectorQueryInput, f32)> {
+    let (example, score) = if let ScalarValue::Struct(array) = value {
+        if array.null_count() == array.len() {
+            return plan_err!(
+                "{function_name} requires each {argument} entry to contain an example and a score"
+            );
+        }
+        let columns = array.columns();
+        if columns.len() != 2 {
+            return plan_err!(
+                "{function_name} requires each {argument} entry to contain an example and a score"
+            );
+        }
+        (
+            ScalarValue::try_from_array(columns[0].as_ref(), 0)?,
+            ScalarValue::try_from_array(columns[1].as_ref(), 0)?,
+        )
+    } else {
+        let values = list_from_scalar(value, function_name, argument)?;
+        if values.len() != 2 {
+            return plan_err!(
+                "{function_name} requires each {argument} entry to contain an example and a score"
+            );
+        }
+        (values[0].clone(), values[1].clone())
+    };
+    Ok((
+        vector_input_from_scalar(&example, function_name, argument)?,
+        scalar_f32(&score, function_name, argument)?,
+    ))
 }
 
 fn vector_input_from_scalar(

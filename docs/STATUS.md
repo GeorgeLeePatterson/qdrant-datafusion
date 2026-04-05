@@ -107,6 +107,8 @@ Current branch reality:
       - `qdrant_recommend_score(...)`
       - `qdrant_discover_score(...)`
       - `qdrant_context_score(...)`
+      - `qdrant_nearest_with_mmr_score(...)`
+      - `qdrant_relevance_feedback_score(...)`
     - current nearest admitted scope is:
       - dense nearest-neighbor query over `Qdrant::query`
       - named-vector selection by the vector column argument
@@ -128,6 +130,17 @@ Current branch reality:
       - dense vector target/context pair inputs
       - descending score sort
       - `LIMIT`
+    - current nearest-with-MMR admitted scope is:
+      - dense query vectors
+      - diversity and candidates-limit literals
+      - descending score sort
+      - `LIMIT`
+    - current relevance-feedback admitted scope is:
+      - dense vector targets
+      - feedback-item arrays using `struct(example, score)` entries
+      - descending score sort
+      - `LIMIT`
+      - required naive strategy coefficients
     - score output is only present when projected
     - when projected, aliases win; otherwise naming follows normal `DataFusion` expression naming
 37. Current exact `Qdrant` leaf relations now converge on one generic extracted kernel family.
