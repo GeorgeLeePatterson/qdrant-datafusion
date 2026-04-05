@@ -250,6 +250,11 @@ Use it to resume work without replaying the full repository history.
     - `qdrant_sample_score([method])` now has live end-to-end coverage on the prepared session surface
     - the current admitted method is `random`, and omitting the method now falls back to the same exact contract
     - docs and tracker state now promote `sample` from `Next` to `Current`
+42. `Q-045`: recommend / discover / context are now validated current retrieval relations on the shared operator / kernel architecture.
+    - live end-to-end coverage now proves the prepared-session recommend / discover / context surfaces against `Qdrant`
+    - recommend now has explicit strategy coverage in addition to the default strategy contract
+    - the public Rust helper surface now includes `qdrant_recommend_score_with_strategy(...)` for the explicit-strategy DataFrame path
+    - docs and tracker state now promote recommend / discover / context from deferred planning inventory to current retrieval prototypes
 
 ## Next
 
@@ -258,8 +263,9 @@ Use it to resume work without replaying the full repository history.
    the shared operator / kernel structure.
    - aggregate-like: explicit output contracts beyond exact `COUNT(*)` and the current scalar
      facet slice
-   - retrieval: broader `query`-family relations such as recommend / discover / context now that
-     nearest and sample are both fully absorbed
+   - retrieval: broader `query`-family relations and modifiers such as relevance feedback,
+     nearest-with-MMR, and grouped retrieval now that nearest / sample / recommend / discover /
+     context are all fully absorbed
 4. `Q-020`: Extend the predicate algebra only where the SQL semantics are explicit.
    - payload empty-container/cardinality semantics
    - text, geo, nested, and count-oriented predicates

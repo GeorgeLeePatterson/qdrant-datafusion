@@ -125,6 +125,30 @@ e2e_test!(
 
 #[cfg(feature = "test-utils")]
 e2e_test!(
+    prepared_session_sql_recommend_query,
+    tests::test_prepared_session_sql_recommend_query,
+    TRACING_DIRECTIVES,
+    None
+);
+
+#[cfg(feature = "test-utils")]
+e2e_test!(
+    prepared_session_sql_discover_query,
+    tests::test_prepared_session_sql_discover_query,
+    TRACING_DIRECTIVES,
+    None
+);
+
+#[cfg(feature = "test-utils")]
+e2e_test!(
+    prepared_session_sql_context_query,
+    tests::test_prepared_session_sql_context_query,
+    TRACING_DIRECTIVES,
+    None
+);
+
+#[cfg(feature = "test-utils")]
+e2e_test!(
     nearest_query_projects_payload_path,
     tests::test_nearest_query_projects_payload_path,
     TRACING_DIRECTIVES,
@@ -1360,6 +1384,64 @@ mod tests {
             assert!(ids.iter().all(|id| (1..=5).contains(id)), "sql={sql}, rows={rows:?}");
             assert!(display.contains("QdrantQueryExec"), "{display}");
         }
+
+        Ok(())
+    }
+
+    pub(super) async fn test_prepared_session_sql_recommend_query(
+        c: Arc<QdrantContainer>,
+    ) -> Result<()> {
+        let ctx =
+            create_dual_vector_query_context(&c, "test_session_context_recommend_query").await?;
+
+        let default_sql = "SELECT id, qdrant_recommend_score(embedding, [[1.0, 0.0]], [[0.0, \
+                           1.0]]) AS score FROM vectors ORDER BY score DESC LIMIT 2";
+        let strategy_sql = "SELECT id, qdrant_recommend_score(embedding, 'average_vector', [[1.0, \
+                            0.0]], [[0.0, 1.0]]) AS score FROM vectors ORDER BY score DESC LIMIT 2";
+
+        let (default_rows, default_display) = collect_scored_rows(&ctx, default_sql).await?;
+        let (strategy_rows, strategy_display) = collect_scored_rows(&ctx, strategy_sql).await?;
+
+        assert_scored_rows_eq(&default_rows, &strategy_rows);
+        assert_eq!(default_rows.iter().map(|(id, _)| *id).collect::<Vec<_>>(), vec![1, 2]);
+        assert!(default_display.contains("QdrantQueryExec"), "{default_display}");
+        assert!(strategy_display.contains("QdrantQueryExec"), "{strategy_display}");
+
+        Ok(())
+    }
+
+    pub(super) async fn test_prepared_session_sql_discover_query(
+        c: Arc<QdrantContainer>,
+    ) -> Result<()> {
+        let ctx =
+            create_dual_vector_query_context(&c, "test_session_context_discover_query").await?;
+
+        let sql = "SELECT id, qdrant_discover_score(embedding, [1.0, 0.0], [[[1.0, 0.0], [0.0, \
+                   1.0]]]) AS score FROM vectors ORDER BY score DESC LIMIT 2";
+        let (rows, display) = collect_scored_rows(&ctx, sql).await?;
+
+        assert_eq!(rows.len(), 2, "rows={rows:?}");
+        assert_eq!(rows.iter().map(|(id, _)| *id).collect::<Vec<_>>(), vec![1, 2]);
+        assert!(rows[0].1 >= rows[1].1, "rows={rows:?}");
+        assert!(display.contains("QdrantQueryExec"), "{display}");
+
+        Ok(())
+    }
+
+    pub(super) async fn test_prepared_session_sql_context_query(
+        c: Arc<QdrantContainer>,
+    ) -> Result<()> {
+        let ctx =
+            create_dual_vector_query_context(&c, "test_session_context_context_query").await?;
+
+        let sql = "SELECT id, qdrant_context_score(embedding, [[[1.0, 0.0], [0.0, 1.0]]]) AS \
+                   score FROM vectors ORDER BY score DESC LIMIT 2";
+        let (rows, display) = collect_scored_rows(&ctx, sql).await?;
+
+        assert_eq!(rows.len(), 2, "rows={rows:?}");
+        assert_eq!(rows.iter().map(|(id, _)| *id).collect::<BTreeSet<_>>(), BTreeSet::from([1, 2]));
+        assert!(rows.iter().all(|(_, score)| *score <= 0.0), "rows={rows:?}");
+        assert!(display.contains("QdrantQueryExec"), "{display}");
 
         Ok(())
     }

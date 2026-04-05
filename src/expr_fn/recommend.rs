@@ -45,6 +45,21 @@ pub fn qdrant_recommend_score(vector: Expr, positive: Expr, negative: Expr) -> E
     qdrant_recommend_score_udf().call(vec![vector, positive, negative])
 }
 
+#[must_use]
+pub fn qdrant_recommend_score_with_strategy(
+    vector: Expr,
+    strategy: impl Into<String>,
+    positive: Expr,
+    negative: Expr,
+) -> Expr {
+    qdrant_recommend_score_udf().call(vec![
+        vector,
+        Expr::Literal(datafusion::common::ScalarValue::Utf8(Some(strategy.into())), None),
+        positive,
+        negative,
+    ])
+}
+
 pub(crate) fn qdrant_recommend_score_udf() -> ScalarUDF {
     static UDF: OnceLock<ScalarUDF> = OnceLock::new();
     UDF.get_or_init(|| {

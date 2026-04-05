@@ -14,6 +14,7 @@ mod sample;
 
 use datafusion::execution::context::SessionContext;
 
+pub(crate) use self::common::literal_scalar;
 pub use self::context::{CONTEXT_SCORE_FUNCTION_NAME, qdrant_context_score};
 pub(crate) use self::context::{ContextCall, qdrant_context_score_udf};
 pub use self::discover::{DISCOVER_SCORE_FUNCTION_NAME, qdrant_discover_score};
@@ -63,7 +64,9 @@ pub(crate) use self::payload_access::{
     qdrant_payload_datetime_access_udf, qdrant_payload_float_access_udf,
     qdrant_payload_int_access_udf, qdrant_payload_text_access_udf,
 };
-pub use self::recommend::{RECOMMEND_SCORE_FUNCTION_NAME, qdrant_recommend_score};
+pub use self::recommend::{
+    RECOMMEND_SCORE_FUNCTION_NAME, qdrant_recommend_score, qdrant_recommend_score_with_strategy,
+};
 pub(crate) use self::recommend::{RecommendCall, qdrant_recommend_score_udf};
 pub use self::relevance_feedback::{
     RELEVANCE_FEEDBACK_SCORE_FUNCTION_NAME, qdrant_relevance_feedback_score,

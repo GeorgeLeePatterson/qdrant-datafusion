@@ -37,6 +37,7 @@ use crate::arrow::schema::{
     PAYLOAD_FIELD_NAME, QdrantFieldBinding, UNNAMED_VECTOR_FIELD_NAME,
     schema_uses_unnamed_vector_contract,
 };
+use crate::expr_fn::literal_scalar;
 
 #[derive(Debug, Clone)]
 pub(crate) struct QueryDescriptor {
@@ -221,14 +222,11 @@ pub(super) fn vector_input_literal(
     function_name: &str,
     argument: &str,
 ) -> Result<VectorQueryInput> {
-    match expr.clone().unalias_nested().data {
-        Expr::Cast(cast) => vector_input_literal(&cast.expr, function_name, argument),
-        Expr::TryCast(cast) => vector_input_literal(&cast.expr, function_name, argument),
-        Expr::Literal(value, _) => vector_input_from_scalar(&value, function_name, argument),
-        _ => {
-            plan_err!("{function_name} requires {argument} to be an id literal or an array literal")
-        }
-    }
+    vector_input_from_scalar(
+        &literal_scalar(expr, function_name, argument, "an id literal or an array literal")?,
+        function_name,
+        argument,
+    )
 }
 
 pub(super) fn vector_input_list(
@@ -310,12 +308,11 @@ pub(super) fn list_literal(
     function_name: &str,
     argument: &str,
 ) -> Result<Vec<ScalarValue>> {
-    match expr.clone().unalias_nested().data {
-        Expr::Cast(cast) => list_literal(&cast.expr, function_name, argument),
-        Expr::TryCast(cast) => list_literal(&cast.expr, function_name, argument),
-        Expr::Literal(value, _) => list_from_scalar(&value, function_name, argument),
-        _ => plan_err!("{function_name} requires {argument} to be an array literal"),
-    }
+    list_from_scalar(
+        &literal_scalar(expr, function_name, argument, "an array literal")?,
+        function_name,
+        argument,
+    )
 }
 
 pub(super) fn list_from_scalar(

@@ -71,9 +71,9 @@ This matrix is derived from:
 | Row production | ID-ordered full scan | `scroll` | base table relation | `Current` | This is the stable table-scan baseline. |
 | Row production | nearest-neighbor search | `query(Query::Nearest)` / `search` | relation-producing retrieval | `Current` | The first retrieval prototype now uses `qdrant_nearest_score(...)` as a marker UDF over the prepared session context. Exact lowering currently admits dense query vectors, descending score sort, `LIMIT`, optional exact base filters, and optional score-threshold predicates. The score only enters the output when projected, and aliases follow normal `DataFusion` naming. |
 | Row production | nearest with MMR | `query(Query::NearestWithMmr)` | retrieval + ranking modifier | `Later` | Best treated as retrieval modifier after nearest is admitted. |
-| Row production | recommendation | `query(Query::Recommend)`, `recommend` | relation-producing retrieval | `Later` | Depends on retrieval IR and SQL surface decision. |
-| Row production | discovery | `query(Query::Discover)`, `discover` | relation-producing retrieval | `Later` | Same dependency as recommendation. |
-| Row production | context query | `query(Query::Context)` | relation-producing retrieval | `Later` | Same dependency as recommendation / discovery. |
+| Row production | recommendation | `query(Query::Recommend)`, `recommend` | relation-producing retrieval | `Current` | Now exposed through `qdrant_recommend_score(...)` on the prepared session surface. Exact lowering currently admits positive / negative example lists, descending score sort, `LIMIT`, and default or explicit strategy selection. |
+| Row production | discovery | `query(Query::Discover)`, `discover` | relation-producing retrieval | `Current` | Now exposed through `qdrant_discover_score(...)` on the prepared session surface. Exact lowering currently admits a dense vector target, context pairs, descending score sort, and `LIMIT`. |
+| Row production | context query | `query(Query::Context)` | relation-producing retrieval | `Current` | Now exposed through `qdrant_context_score(...)` on the prepared session surface. Exact lowering currently admits context pairs, descending score sort, and `LIMIT`. |
 | Row production | sample | `query(Query::Sample)` | relation-producing retrieval | `Current` | Now exposed through `qdrant_sample_score([method])` on the prepared session surface. Exact lowering currently admits random sampling with descending score sort, `LIMIT`, and default method `'random'` when omitted. |
 | Row production | prefetch subqueries | `QueryPointsBuilder::prefetch` | retrieval pipeline / subquery composition | `Later` | Important for hybrid query plans, but should follow core retrieval IR. |
 | Row production | `using` named vector | query/search/recommend builders | retrieval relation parameter | `Current` | The current nearest prototype already admits named-vector selection through the vector column argument to `qdrant_nearest_score(...)`. |
@@ -110,7 +110,7 @@ This is still the highest-value foundation because it composes everywhere:
 1. base scans
 2. count
 3. facet
-4. nearest / recommend / discover / context
+4. nearest / sample / recommend / discover / context
 5. grouped retrieval
 
 The remaining predicate work should be treated as a single algebra problem:
@@ -129,7 +129,7 @@ The remaining predicate work should be treated as a single algebra problem:
 2. recommend
 3. discover
 4. context
-5. sample
+5. relevance feedback
 
 These should not be forced into the current table-scan contract. They are relation-producing
 operators and should be modeled as retrieval relations or retrieval specs that compose with the
@@ -190,10 +190,10 @@ to keep the retrieval family compositional without freezing SQL syntax too early
 
 Now that the first retrieval relation exists:
 
-1. recommend
-2. discover
-3. context
-4. fusion
+1. relevance feedback
+2. nearest-with-MMR
+3. fusion
+4. grouped retrieval
 5. formula
 6. MMR
 

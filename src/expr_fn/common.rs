@@ -2,7 +2,7 @@ use std::any::Any;
 use std::sync::Arc;
 
 use datafusion::arrow::datatypes::{DataType, Field, FieldRef};
-use datafusion::common::{Result, exec_err, plan_err};
+use datafusion::common::{Result, ScalarValue, exec_err, plan_err};
 use datafusion::logical_expr::{
     ColumnarValue, Expr, ScalarFunctionArgs, ScalarUDFImpl, Signature, TypeSignature, Volatility,
 };
@@ -25,6 +25,35 @@ pub(crate) fn column_name(expr: &Expr, function_name: &str) -> Result<String> {
         return plan_err!("{function_name} requires a column reference");
     };
     Ok(column.name)
+}
+
+fn is_array_constructor_function_name(name: &str) -> bool { matches!(name, "make_array" | "array") }
+
+pub(crate) fn literal_scalar(
+    expr: &Expr,
+    function_name: &str,
+    argument: &str,
+    expectation: &str,
+) -> Result<ScalarValue> {
+    match expr.clone().unalias_nested().data {
+        Expr::Alias(alias) => literal_scalar(&alias.expr, function_name, argument, expectation),
+        Expr::Cast(cast) => literal_scalar(&cast.expr, function_name, argument, expectation),
+        Expr::TryCast(cast) => literal_scalar(&cast.expr, function_name, argument, expectation),
+        Expr::Literal(value, _) => Ok(value),
+        Expr::ScalarFunction(function) if is_array_constructor_function_name(function.name()) => {
+            let values = function
+                .args
+                .iter()
+                .map(|arg| literal_scalar(arg, function_name, argument, expectation))
+                .collect::<Result<Vec<_>>>()?;
+            let item_type = values
+                .iter()
+                .find(|value| !value.is_null())
+                .map_or(DataType::Null, ScalarValue::data_type);
+            Ok(ScalarValue::List(ScalarValue::new_list_nullable(&values, &item_type)))
+        }
+        _ => plan_err!("{function_name} requires {argument} to be {expectation}"),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

@@ -6,7 +6,7 @@ The current crate scope is intentionally narrow: correct, paginated collection s
 canonical Arrow carriers used by `ndarrow` and `nabled::arrow`, the exact pushdown-first SQL
 bridge for ordering and filtering, append-only `INSERT INTO` over canonical qdrant row schemas, and
 the first narrow planner slices for exact `COUNT(*)` and top-facet grouped-count pushdown. It is
-not yet the broad SQL surface for `Qdrant` recommend, discover, fusion, or broader planner
+not yet the broad SQL surface for `Qdrant` fusion, grouped retrieval, or broader planner
 rewrites.
 
 ## Current Scan Contract
@@ -56,6 +56,12 @@ canonical carrier; missing values are not imputed during scan.
   - `qdrant_sample_score([method])`
     - exact lowering currently admits random sampling with descending score sort and `LIMIT`
     - the method currently defaults to `'random'`
+  - `qdrant_recommend_score(...)`
+    - exact lowering currently admits positive and negative example lists, descending score sort,
+      `LIMIT`, and the default or explicit recommend strategy
+  - `qdrant_discover_score(...)` and `qdrant_context_score(...)`
+    - exact lowering currently admits dense vector targets/context pairs, descending score sort,
+      and `LIMIT`
   - projected score columns follow normal `DataFusion` naming and aliasing rules
 - a unified relation-pushdown analyzer scaffold now owns the admitted planner-layer subtree
   replacements instead of relying on separate analyzer-rule ownership by convention
@@ -90,8 +96,8 @@ canonical carrier; missing values are not imputed during scan.
 - broader payload-key SQL `ORDER BY` pushdown beyond the admitted `payload:<path>` subset
 - broader aggregate/grouped SQL beyond the admitted scalar-facet subset
 - fully implicit arithmetic and similar typed SQL over raw `payload:<path>` when `DataFusion` must infer the payload scalar type during SQL planning; use `payload(payload:<path>, 'Type')` or an explicit `CAST(...)` today
-- broader `Qdrant`-specific UDF, UDAF, or UDTF surface beyond the current nearest/sample marker UDFs and typed `payload(...)` helper
-- SQL-native recommend / discover / fusion semantics
+- broader `Qdrant`-specific UDF, UDAF, or UDTF surface beyond the current retrieval marker UDFs and typed `payload(...)` helper
+- SQL-native fusion / grouped-query semantics
 - broader planner rewrites beyond the narrow exact `COUNT(*)` / facet slices
 
 ## Basic Usage

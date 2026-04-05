@@ -313,7 +313,7 @@ mod tests {
     };
     use crate::expr_fn::{
         qdrant_context_score, qdrant_discover_score, qdrant_recommend_score,
-        qdrant_relevance_feedback_score,
+        qdrant_recommend_score_with_strategy, qdrant_relevance_feedback_score,
     };
     use crate::qdrant::QdrantPayloadSchema;
     use crate::table::scan_spec::QdrantPayloadOrdering;
@@ -2357,6 +2357,56 @@ mod tests {
                 col("payload"),
                 qdrant_recommend_score(
                     col("embedding"),
+                    float_vector_list_expr(&[&[1.0, 0.0]]),
+                    float_vector_list_expr(&[&[0.0, 1.0]]),
+                )
+                .alias("score"),
+            ])
+            .expect("select")
+            .sort(vec![col("score").sort(false, false)])
+            .expect("sort")
+            .limit(0, Some(2))
+            .expect("limit");
+        let plan = dataframe
+            .create_physical_plan()
+            .now_or_never()
+            .expect("plan future is ready")
+            .expect("physical plan");
+        let display = displayable(plan.as_ref()).indent(true).to_string();
+        let _query = qdrant_query(&plan);
+
+        assert!(display.contains("QdrantQueryExec"), "{display}");
+    }
+
+    #[test]
+    fn physical_plan_uses_qdrant_query_exec_for_recommend_score_with_strategy_sql() {
+        let provider = test_provider(Schema::new(vec![
+            Field::new(ID_FIELD_NAME, DataType::Utf8, false),
+            Field::new(PAYLOAD_FIELD_NAME, DataType::Utf8, true),
+            Field::new(
+                "embedding",
+                DataType::new_fixed_size_list(DataType::Float32, 2, false),
+                true,
+            ),
+        ]));
+        let ctx = QdrantSessionContext::from(SessionContext::new());
+        drop(
+            ctx.session_context()
+                .register_table("vectors", Arc::new(provider))
+                .expect("register table"),
+        );
+        let dataframe = ctx
+            .session_context()
+            .table("vectors")
+            .now_or_never()
+            .expect("table future is ready")
+            .expect("table")
+            .select(vec![
+                col("id"),
+                col("payload"),
+                qdrant_recommend_score_with_strategy(
+                    col("embedding"),
+                    "average_vector",
                     float_vector_list_expr(&[&[1.0, 0.0]]),
                     float_vector_list_expr(&[&[0.0, 1.0]]),
                 )

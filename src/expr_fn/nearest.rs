@@ -7,7 +7,7 @@ use datafusion::prelude::lit;
 use qdrant_client::qdrant::point_id::PointIdOptions;
 use qdrant_client::qdrant::{PointId, Value};
 
-use super::common::{NonExecutableScoreUdf, column_name, function_args};
+use super::common::{NonExecutableScoreUdf, column_name, function_args, literal_scalar};
 
 pub const NEAREST_SCORE_FUNCTION_NAME: &str = "qdrant_nearest_score";
 pub const NEAREST_SPARSE_SCORE_FUNCTION_NAME: &str = "qdrant_nearest_sparse_score";
@@ -392,12 +392,11 @@ fn nested_f32_list_literal(
 }
 
 fn list_literal(expr: &Expr, function_name: &str, argument: &str) -> Result<Vec<ScalarValue>> {
-    match expr.clone().unalias_nested().data {
-        Expr::Literal(value, _) => list_from_scalar(&value, function_name, argument),
-        Expr::Cast(cast) => list_literal(&cast.expr, function_name, argument),
-        Expr::TryCast(cast) => list_literal(&cast.expr, function_name, argument),
-        _ => plan_err!("{function_name} requires {argument} to be an array literal"),
-    }
+    list_from_scalar(
+        &literal_scalar(expr, function_name, argument, "an array literal")?,
+        function_name,
+        argument,
+    )
 }
 
 fn list_from_scalar(
