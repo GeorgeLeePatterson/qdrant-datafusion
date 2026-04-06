@@ -14,11 +14,12 @@ use datafusion::physical_expr::utils::{
     split_conjunction as split_physical_conjunction, split_disjunction,
 };
 
-use super::value::point_id_scalar;
+use super::value::{float_scalar, point_id_scalar};
 use super::{QdrantFieldRef, QdrantFilterExpr, QdrantPayloadSchema, QdrantPredicate};
 use crate::arrow::schema::{ID_FIELD_NAME, QdrantFieldBinding, field_uses_unnamed_vector_contract};
 use crate::expr_fn::{
-    PAYLOAD_IS_EMPTY_ACCESS_FUNCTION_NAME, PAYLOAD_VALUES_COUNT_ACCESS_FUNCTION_NAME,
+    PAYLOAD_GEO_DISTANCE_ACCESS_FUNCTION_NAME, PAYLOAD_IS_EMPTY_ACCESS_FUNCTION_NAME,
+    PAYLOAD_VALUES_COUNT_ACCESS_FUNCTION_NAME, is_payload_geo_distance_function_name,
     is_payload_is_empty_function_name, is_payload_values_count_function_name,
 };
 use crate::qdrant::{QdrantPayloadAccess, QdrantPayloadPath};
@@ -49,6 +50,7 @@ impl<'a> QdrantExprNormalizer<'a> {
         Self { base_schema, payload_schema }
     }
 
+    #[expect(clippy::too_many_lines)]
     fn exact_expr(&self, expr: &Expr) -> Option<QdrantFilterExpr> {
         if let Some(field) = payload_is_empty_logical_path(expr) {
             return Some(QdrantFilterExpr::Predicate(QdrantPredicate::PayloadIsEmpty(field)));
@@ -90,7 +92,9 @@ impl<'a> QdrantExprNormalizer<'a> {
                         QdrantFilterExpr::Predicate(QdrantPredicate::HasVector(name)),
                     )),
                     QdrantFieldRef::Payload(field) => Some(field.sql_null_filter_expr()),
-                    QdrantFieldRef::PayloadValuesCount(_) | QdrantFieldRef::Id => None,
+                    QdrantFieldRef::PayloadValuesCount(_)
+                    | QdrantFieldRef::PayloadGeoDistance { .. }
+                    | QdrantFieldRef::Id => None,
                 }
             }
             Expr::IsNotNull(expr) => {
@@ -105,7 +109,9 @@ impl<'a> QdrantExprNormalizer<'a> {
                     QdrantFieldRef::Payload(field) => {
                         Some(QdrantFilterExpr::not(field.sql_null_filter_expr()))
                     }
-                    QdrantFieldRef::PayloadValuesCount(_) | QdrantFieldRef::Id => None,
+                    QdrantFieldRef::PayloadValuesCount(_)
+                    | QdrantFieldRef::PayloadGeoDistance { .. }
+                    | QdrantFieldRef::Id => None,
                 }
             }
             Expr::Between(Between { expr, negated, low, high }) => {
@@ -144,6 +150,24 @@ impl<'a> QdrantExprNormalizer<'a> {
                         } else {
                             Some(QdrantFilterExpr::Predicate(range))
                         }
+                    }
+                    QdrantFieldRef::PayloadGeoDistance { field, lon, lat } => {
+                        if self.payload_schema.field_for_path(field.key())?
+                            != crate::qdrant::QdrantPayloadField::Geo
+                        {
+                            return None;
+                        }
+                        let low = float_scalar(Self::logical_scalar_literal(low)?)?;
+                        if *negated || !low.is_finite() || low != 0.0 {
+                            return None;
+                        }
+                        let radius = geo_radius_scalar(Self::logical_scalar_literal(high)?)?;
+                        Some(QdrantFilterExpr::Predicate(QdrantPredicate::PayloadGeoRadius {
+                            field,
+                            lon,
+                            lat,
+                            radius,
+                        }))
                     }
                     _ => None,
                 }
@@ -217,7 +241,9 @@ impl<'a> QdrantExprNormalizer<'a> {
                     QdrantFilterExpr::Predicate(QdrantPredicate::HasVector(name)),
                 )),
                 QdrantFieldRef::Payload(field) => Some(field.sql_null_filter_expr()),
-                QdrantFieldRef::PayloadValuesCount(_) | QdrantFieldRef::Id => None,
+                QdrantFieldRef::PayloadValuesCount(_)
+                | QdrantFieldRef::PayloadGeoDistance { .. }
+                | QdrantFieldRef::Id => None,
             };
         }
         if let Some(expr) = expr.as_any().downcast_ref::<IsNotNullExpr>() {
@@ -232,7 +258,9 @@ impl<'a> QdrantExprNormalizer<'a> {
                 QdrantFieldRef::Payload(field) => {
                     Some(QdrantFilterExpr::not(field.sql_null_filter_expr()))
                 }
-                QdrantFieldRef::PayloadValuesCount(_) | QdrantFieldRef::Id => None,
+                QdrantFieldRef::PayloadValuesCount(_)
+                | QdrantFieldRef::PayloadGeoDistance { .. }
+                | QdrantFieldRef::Id => None,
             };
         }
         None
@@ -278,12 +306,15 @@ impl<'a> QdrantExprNormalizer<'a> {
                     .collect::<Option<Vec<_>>>()?;
                 QdrantPredicate::PayloadIn { field, values }
             }
-            QdrantFieldRef::PayloadValuesCount(_) | QdrantFieldRef::Vector(_) => return None,
+            QdrantFieldRef::PayloadValuesCount(_)
+            | QdrantFieldRef::PayloadGeoDistance { .. }
+            | QdrantFieldRef::Vector(_) => return None,
         };
         let expr = QdrantFilterExpr::Predicate(predicate);
         Some(if negated { QdrantFilterExpr::not(expr) } else { expr })
     }
 
+    #[expect(clippy::too_many_lines)]
     fn filter_expr(
         &self,
         field: QdrantFieldRef,
@@ -373,6 +404,25 @@ impl<'a> QdrantExprNormalizer<'a> {
                 };
                 Some(QdrantFilterExpr::Predicate(predicate))
             }
+            QdrantFieldRef::PayloadGeoDistance { field, lon, lat } => {
+                if self.payload_schema.field_for_path(field.key())?
+                    != crate::qdrant::QdrantPayloadField::Geo
+                {
+                    return None;
+                }
+                let radius = geo_radius_scalar(literal)?;
+                match op {
+                    Operator::LtEq => {
+                        Some(QdrantFilterExpr::Predicate(QdrantPredicate::PayloadGeoRadius {
+                            field,
+                            lon,
+                            lat,
+                            radius,
+                        }))
+                    }
+                    _ => None,
+                }
+            }
             QdrantFieldRef::Vector(_) => None,
         }
     }
@@ -399,6 +449,9 @@ impl QdrantFieldRef {
         if let Some(path) = payload_values_count_logical_path(expr) {
             return Some(Self::PayloadValuesCount(path));
         }
+        if let Some((field, lon, lat)) = payload_geo_distance_logical(expr) {
+            return Some(Self::PayloadGeoDistance { field, lon, lat });
+        }
         if let Some(path) = payload_schema.path_for_logical_expr(expr) {
             return Some(Self::Payload(path));
         }
@@ -416,6 +469,9 @@ impl QdrantFieldRef {
     ) -> Option<Self> {
         if let Some(path) = payload_values_count_physical_path(expr) {
             return Some(Self::PayloadValuesCount(path));
+        }
+        if let Some((field, lon, lat)) = payload_geo_distance_physical(expr) {
+            return Some(Self::PayloadGeoDistance { field, lon, lat });
         }
         if let Some(path) = payload_schema.path_for_physical_expr(expr) {
             return Some(Self::Payload(path));
@@ -498,6 +554,71 @@ fn unary_payload_physical_path(
         return None;
     };
     Some(QdrantPayloadAccess::from_physical_parts(payload, path)?.path().clone())
+}
+
+fn payload_geo_distance_logical(expr: &Expr) -> Option<(QdrantPayloadPath, f64, f64)> {
+    match expr {
+        Expr::Alias(alias) => payload_geo_distance_logical(&alias.expr),
+        Expr::ScalarFunction(function)
+            if is_payload_geo_distance_function_name(function.name()) =>
+        {
+            let [accessor, lon, lat] = function.args.as_slice() else {
+                return None;
+            };
+            Some((
+                QdrantPayloadAccess::from_logical_expr(accessor)?.path().clone(),
+                float_scalar(logical_scalar_literal_value(lon)?)?,
+                float_scalar(logical_scalar_literal_value(lat)?)?,
+            ))
+        }
+        Expr::ScalarFunction(function)
+            if function.name() == PAYLOAD_GEO_DISTANCE_ACCESS_FUNCTION_NAME =>
+        {
+            let [payload, path, lon, lat] = function.args.as_slice() else {
+                return None;
+            };
+            Some((
+                QdrantPayloadAccess::from_logical_parts(payload, path)?.path().clone(),
+                float_scalar(logical_scalar_literal_value(lon)?)?,
+                float_scalar(logical_scalar_literal_value(lat)?)?,
+            ))
+        }
+        _ => None,
+    }
+}
+
+fn payload_geo_distance_physical(
+    expr: &Arc<dyn PhysicalExpr>,
+) -> Option<(QdrantPayloadPath, f64, f64)> {
+    let function = expr.as_any().downcast_ref::<datafusion::physical_expr::ScalarFunctionExpr>()?;
+    if function.name() != PAYLOAD_GEO_DISTANCE_ACCESS_FUNCTION_NAME {
+        return None;
+    }
+    let [payload, path, lon, lat] = function.args() else {
+        return None;
+    };
+    Some((
+        QdrantPayloadAccess::from_physical_parts(payload, path)?.path().clone(),
+        float_scalar(physical_scalar_literal_value(lon)?)?,
+        float_scalar(physical_scalar_literal_value(lat)?)?,
+    ))
+}
+
+fn logical_scalar_literal_value(expr: &Expr) -> Option<&ScalarValue> {
+    match expr {
+        Expr::Literal(value, _) => Some(value),
+        Expr::Alias(alias) => logical_scalar_literal_value(&alias.expr),
+        _ => None,
+    }
+}
+
+fn physical_scalar_literal_value(expr: &Arc<dyn PhysicalExpr>) -> Option<&ScalarValue> {
+    expr.as_any().downcast_ref::<PhysicalLiteral>().map(PhysicalLiteral::value)
+}
+
+fn geo_radius_scalar(value: &ScalarValue) -> Option<f64> {
+    let value = float_scalar(value)?;
+    (value.is_finite() && value >= 0.0).then_some(value)
 }
 
 fn values_count_scalar(value: &ScalarValue) -> Option<u64> {

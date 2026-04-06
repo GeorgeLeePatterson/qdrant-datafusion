@@ -1,6 +1,6 @@
 # Locked Decisions
 
-Last updated: 2026-03-26
+Last updated: 2026-04-06
 
 ## Core Constraints
 
@@ -62,7 +62,8 @@ Last updated: 2026-03-26
     - explicit payload empty/cardinality semantics now use dedicated functions instead of overloading SQL nulls:
       - `payload_is_empty(payload:<path>)`
       - `payload_values_count(payload:<path>)`
-    - text, geo, nested, and count-oriented predicates beyond that explicit subset remain deferred until those SQL contracts are explicit
+    - explicit geo distance now uses `payload_geo_distance(payload:<path>, lon, lat)` as a local numeric bridge, with exact remote lowering only for the `<= radius` subset on geo payload fields
+    - text, nested, geo bbox/polygon, phrase/text-match, and broader count-oriented predicates beyond that explicit subset remain deferred until those SQL contracts are explicit
 21. Physical filter pushdown must absorb the admitted exact subset, not just logical filter pushdown declarations.
     - `supports_filters_pushdown` alone is not sufficient on the current `DataFusion` revision
     - `QdrantScanExec` must absorb supported physical predicates so `FilterExec` disappears from the final plan

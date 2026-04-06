@@ -1,6 +1,6 @@
 # Qdrant Compatibility Matrix
 
-Last updated: 2026-03-26
+Last updated: 2026-04-06
 
 ## Purpose
 
@@ -62,7 +62,8 @@ This matrix is derived from:
 | Row restriction | `is_empty` | field condition | payload empty / missing semantics | `Current` | Runtime contract is now validated more precisely: `is_empty` matches missing, explicit null, and `[]`, but not empty strings or empty objects on the current runtime line. The SQL bridge now exposes that explicit subset through `payload_is_empty(payload:<path>)` while still keeping empty strings on ordinary equality semantics. |
 | Row restriction | `values_count` | field condition | cardinality predicates | `Current` | The SQL bridge now exposes explicit cardinality predicates through `payload_values_count(payload:<path>)`. Current runtime tests on the active line show missing fields map to `NULL`, explicit `null` and `[]` map to `0`, and present non-array values map to `1`. Broader typed/container semantics are still deferred. |
 | Row restriction | nested object filter | nested condition | correlated payload-array predicates | `Later` | Important, but it is not equivalent to dotted-path conjunctions. Needs explicit SQL semantics. |
-| Row restriction | geo radius / bbox / polygon | geo conditions | geo predicates / functions | `Later` | Natural fit for SQL functions or typed expressions, but not first-wave. |
+| Row restriction | geo radius via explicit payload distance | `Condition::geo_radius` | `payload_geo_distance(payload:<path>, lon, lat) <= radius` | `Current` | The public SQL bridge is numeric and locally executable; only the `<= radius` subset is claimed as exact remote pushdown. |
+| Row restriction | geo bbox / polygon | geo conditions | explicit geo predicates / functions | `Later` | Natural fit for explicit SQL functions after the first geo-distance/radius bridge. |
 | Row restriction | text match | text condition | explicit text-search predicate | `Later` | Not the same as SQL `LIKE`. |
 | Row restriction | phrase match | phrase condition | explicit text-search predicate | `Later` | Same reasoning as text match. |
 | Row ordering | ID-ordered scan | `scroll` | `ORDER BY id ASC` | `Current` | Already exact. |
@@ -163,12 +164,12 @@ This remains the strongest next implementation focus.
 2. determine the next grouped/exploration surface without overstating `Qdrant` facet as general SQL grouping
 4. preserve the exact-subset-first boundary already established by the predicate algebra
 
-### P0.5: broaden predicate families beyond the new explicit empty/cardinality subset
+### P0.5: broaden predicate families beyond the current explicit empty/cardinality/geo subset
 
-The explicit `payload_is_empty(...)` / `payload_values_count(...)` slice is now in place. The remaining work is to widen the predicate family without guessing semantics.
+The explicit `payload_is_empty(...)` / `payload_values_count(...)` slice is now in place, and the first geo bridge now exists through `payload_geo_distance(...) <= radius`. The remaining work is to widen the predicate family without guessing semantics.
 
 1. keep missing-vs-null-vs-empty semantics explicit instead of guessing
-2. extend text, geo, nested, and broader count-oriented predicates only where the SQL contract is explicit
+2. extend text, nested, geo bbox/polygon, phrase/text-match, and broader count-oriented predicates only where the SQL contract is explicit
 3. avoid conflating SQL null with backend-specific container predicates
 
 ### P1: add aggregate-like exploration that composes over filters

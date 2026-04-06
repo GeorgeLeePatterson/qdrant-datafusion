@@ -1,6 +1,6 @@
 # Execution Tracker
 
-Last updated: 2026-04-05
+Last updated: 2026-04-06
 
 ## Purpose
 
@@ -282,6 +282,10 @@ Use it to resume work without replaying the full repository history.
     - `payload_is_empty(payload:<path>)` now executes locally and lowers exactly to Qdrant `is_empty` predicates on scan filters
     - `payload_values_count(payload:<path>)` now executes locally and lowers exactly to Qdrant `values_count` predicates on scan filters
     - live runtime coverage now locks the current contract down: missing maps to `NULL`, explicit `null` and `[]` map to `0`, and present non-array values map to `1` for `payload_values_count`
+48. `Q-051`: explicit geo distance semantics are now admitted without pretending all geo predicates are SQL-native.
+    - `payload_geo_distance(payload:<path>, lon, lat)` now executes locally as a numeric payload function over geo payload objects
+    - the exact `payload_geo_distance(...) <= radius` subset now lowers to Qdrant `geo_radius` filters on geo payload fields
+    - broader numeric comparisons stay local `FilterExec` shells instead of being rejected or over-pushed
 
 ## Next
 
@@ -294,7 +298,7 @@ Use it to resume work without replaying the full repository history.
    - current retrieval kernels now allow omitted SQL `LIMIT`, deferring to Qdrant's native default result count unless SQL specifies one
    - current retrieval kernels now also allow omitted projected `ORDER BY score DESC`, deferring to Qdrant's native result order unless SQL specifies a local re-sort
 4. `Q-020`: Extend the predicate algebra only where the SQL semantics are explicit.
-   - text, geo, nested, and broader count-oriented predicates beyond the current explicit `payload_is_empty(...)` / `payload_values_count(...)` subset
+   - text, nested, geo bbox/polygon, phrase/text-match, and broader count-oriented predicates beyond the current explicit `payload_is_empty(...)`, `payload_values_count(...)`, and `payload_geo_distance(...) <= radius` subset
 5. Continue mapping the pushdown model onto `DataFusion`’s own idioms where broader traversal is required.
    - `TreeNode` visitors / rewriters instead of ad hoc recursion
    - `LogicalPlan` expression and subquery helpers before project-local traversal

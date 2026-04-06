@@ -8,6 +8,7 @@ mod nearest_with_mmr;
 mod order_by;
 mod payload;
 mod payload_access;
+mod payload_geo;
 mod payload_predicate;
 mod recommend;
 mod relevance_feedback;
@@ -65,6 +66,11 @@ pub(crate) use self::payload_access::{
     qdrant_payload_datetime_access_udf, qdrant_payload_float_access_udf,
     qdrant_payload_int_access_udf, qdrant_payload_text_access_udf,
 };
+pub(crate) use self::payload_geo::{
+    PAYLOAD_GEO_DISTANCE_ACCESS_FUNCTION_NAME, is_payload_geo_distance_function_name,
+    qdrant_payload_geo_distance_access_udf, qdrant_payload_geo_distance_udf,
+};
+pub use self::payload_geo::{PAYLOAD_GEO_DISTANCE_FUNCTION_NAME, qdrant_payload_geo_distance};
 pub(crate) use self::payload_predicate::{
     PAYLOAD_IS_EMPTY_ACCESS_FUNCTION_NAME, PAYLOAD_VALUES_COUNT_ACCESS_FUNCTION_NAME,
     is_payload_is_empty_function_name, is_payload_values_count_function_name,
@@ -106,11 +112,13 @@ pub(crate) fn register_functions(ctx: &SessionContext) {
     ctx.register_udf(qdrant_payload_num_udf());
     ctx.register_udf(qdrant_payload_datetime_udf());
     ctx.register_udf(qdrant_payload_udf());
+    ctx.register_udf(qdrant_payload_geo_distance_udf());
     ctx.register_udf(qdrant_payload_text_access_udf());
     ctx.register_udf(qdrant_payload_int_access_udf());
     ctx.register_udf(qdrant_payload_float_access_udf());
     ctx.register_udf(qdrant_payload_bool_access_udf());
     ctx.register_udf(qdrant_payload_datetime_access_udf());
+    ctx.register_udf(qdrant_payload_geo_distance_access_udf());
     ctx.register_udf(qdrant_payload_is_empty_udf());
     ctx.register_udf(qdrant_payload_values_count_udf());
     ctx.register_udf(qdrant_payload_is_empty_access_udf());

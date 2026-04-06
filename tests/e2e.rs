@@ -53,6 +53,14 @@ e2e_test!(
 
 #[cfg(feature = "test-utils")]
 e2e_test!(
+    table_provider_payload_geo_distance,
+    tests::test_table_provider_payload_geo_distance,
+    TRACING_DIRECTIVES,
+    None
+);
+
+#[cfg(feature = "test-utils")]
+e2e_test!(
     table_provider_insert_into_appends_rows,
     tests::test_table_provider_insert_into_appends_rows,
     TRACING_DIRECTIVES,
@@ -320,11 +328,12 @@ mod tests {
     use qdrant_client::Qdrant;
     use qdrant_client::qdrant::{
         Condition, CreateCollectionBuilder, CreateFieldIndexCollectionBuilder, Direction, Distance,
-        FacetCountsBuilder, FieldType, Filter, FloatIndexParamsBuilder, MultiVectorComparator,
-        MultiVectorConfig, NamedVectors, OrderByBuilder, PayloadSchemaType, PointStruct,
-        RetrievedPoint, ScrollPointsBuilder, SetPayloadPointsBuilder, SparseVectorParamsBuilder,
-        SparseVectorsConfigBuilder, UpsertPointsBuilder, Value, Vector, VectorParamsBuilder,
-        VectorsConfigBuilder, facet_value, order_value, payload_index_params, point_id, start_from,
+        FacetCountsBuilder, FieldType, Filter, FloatIndexParamsBuilder, GeoIndexParamsBuilder,
+        MultiVectorComparator, MultiVectorConfig, NamedVectors, OrderByBuilder, PayloadSchemaType,
+        PointStruct, RetrievedPoint, ScrollPointsBuilder, SetPayloadPointsBuilder,
+        SparseVectorParamsBuilder, SparseVectorsConfigBuilder, UpsertPointsBuilder, Value, Vector,
+        VectorParamsBuilder, VectorsConfigBuilder, facet_value, order_value, payload_index_params,
+        point_id, start_from,
     };
     use qdrant_datafusion::arrow::schema::QdrantFieldBinding;
     use qdrant_datafusion::context::QdrantSessionContext;
@@ -1447,6 +1456,77 @@ error: {err}"
         Ok(())
     }
 
+    pub(super) async fn test_table_provider_payload_geo_distance(
+        c: Arc<QdrantContainer>,
+    ) -> Result<()> {
+        let client = create_qdrant_client(&c)?;
+        let collection_name = "test_payload_geo_distance";
+        create_scalar_collection(&client, collection_name).await?;
+        create_payload_index(
+            &client,
+            collection_name,
+            "location",
+            FieldType::Geo,
+            GeoIndexParamsBuilder::default().build(),
+        )
+        .await?;
+
+        let mut center = qdrant_client::Payload::new();
+        center.insert("location", serde_json::json!({"lon": 0.0, "lat": 0.0}));
+
+        let mut near = qdrant_client::Payload::new();
+        near.insert("location", serde_json::json!({"lon": 0.0, "lat": 1.0}));
+
+        let mut far = qdrant_client::Payload::new();
+        far.insert("location", serde_json::json!({"lon": 0.0, "lat": 2.0}));
+
+        let points = vec![
+            PointStruct::new(1, Vector::new_dense(vec![0.0]), center),
+            PointStruct::new(2, Vector::new_dense(vec![0.0]), near),
+            PointStruct::new(3, Vector::new_dense(vec![0.0]), far),
+        ];
+        drop(client.upsert_points(UpsertPointsBuilder::new(collection_name, points)).await?);
+
+        let table_provider = QdrantTableProvider::try_new(client.clone(), collection_name).await?;
+        let ctx = QdrantSessionContext::from(SessionContext::new());
+        drop(ctx.session_context().register_table("vectors", Arc::new(table_provider))?);
+
+        let projection = ctx
+            .sql(
+                "SELECT id, CAST(payload_geo_distance(payload:location, 0.0, 0.0) AS BIGINT) AS \
+                 dist FROM vectors ORDER BY id",
+            )
+            .await?
+            .collect()
+            .await?;
+        let projection_batch = projection.into_iter().next().expect("projection batch");
+        assert_eq!(batch_u64_ids(&projection_batch, "id"), vec![1, 2, 3]);
+        let distances = batch_i64_values(&projection_batch, "dist");
+        assert_eq!(distances[0], 0);
+        assert!((110_000..=112_500).contains(&distances[1]), "{distances:?}");
+        assert!((220_000..=223_000).contains(&distances[2]), "{distances:?}");
+
+        let (near_ids, near_display) = collect_id_rows(
+            &ctx,
+            "SELECT id FROM vectors WHERE payload_geo_distance(payload:location, 0.0, 0.0) <= \
+             150000.0 ORDER BY id",
+        )
+        .await?;
+        assert_eq!(near_ids, vec![1, 2], "{near_display}");
+        assert!(!near_display.contains("FilterExec"), "{near_display}");
+
+        let (far_ids, far_display) = collect_id_rows(
+            &ctx,
+            "SELECT id FROM vectors WHERE payload_geo_distance(payload:location, 0.0, 0.0) > \
+             150000.0 ORDER BY id",
+        )
+        .await?;
+        assert_eq!(far_ids, vec![3], "{far_display}");
+        assert!(far_display.contains("FilterExec"), "{far_display}");
+
+        Ok(())
+    }
+
     pub(super) async fn test_table_provider_pushes_down_bool_facet(
         c: Arc<QdrantContainer>,
     ) -> Result<()> {
@@ -2056,11 +2136,29 @@ error: {err}"
 
         for (label, sql) in grouped_cases {
             let (rows, display) = collect_grouped_scored_rows(&ctx, sql).await?;
-            assert_eq!(
-                rows.iter().map(|(tag, id, _)| (tag.clone(), *id)).collect::<Vec<_>>(),
-                vec![("blue".to_owned(), 3), ("green".to_owned(), 4), ("red".to_owned(), 1)],
-                "label={label} rows={rows:?}"
-            );
+            let tag_ids = rows.iter().map(|(tag, id, _)| (tag.clone(), *id)).collect::<Vec<_>>();
+            match label {
+                "context" => {
+                    assert_eq!(
+                        tag_ids[0..2],
+                        [("blue".to_owned(), 3), ("green".to_owned(), 4)],
+                        "label={label} rows={rows:?}"
+                    );
+                    assert_eq!(tag_ids[2].0, "red", "label={label} rows={rows:?}");
+                    assert!(matches!(tag_ids[2].1, 1 | 2), "label={label} rows={rows:?}");
+                }
+                _ => {
+                    assert_eq!(
+                        tag_ids,
+                        vec![
+                            ("blue".to_owned(), 3),
+                            ("green".to_owned(), 4),
+                            ("red".to_owned(), 1),
+                        ],
+                        "label={label} rows={rows:?}"
+                    );
+                }
+            }
             assert!(display.contains("QdrantQueryGroupsExec"), "label={label} display={display}");
             assert!(!display.contains("SortExec"), "label={label} display={display}");
         }

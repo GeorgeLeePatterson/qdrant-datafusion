@@ -1,6 +1,6 @@
 # Status Snapshot
 
-Last updated: 2026-04-05
+Last updated: 2026-04-06
 
 ## Summary
 
@@ -59,10 +59,11 @@ Current branch reality:
     - `IS NULL` means missing or explicit null
     - `IS NOT NULL` means present and non-null
     - the current lowering excludes empty arrays from SQL null by composing `is_null`, `is_empty`, and `values_count`
-25. Payload-empty and cardinality semantics are now explicit rather than overloaded onto SQL nulls.
+25. Payload-empty/cardinality semantics and the first explicit geo predicate are now admitted without overloading ordinary SQL semantics.
     - empty strings remain ordinary non-null values and are expressed through normal equality, for example `payload:<path> = ''`
     - explicit empty/container predicates now use `payload_is_empty(payload:<path>)`
     - explicit cardinality predicates now use `payload_values_count(payload:<path>)`
+    - explicit geo distance now uses `payload_geo_distance(payload:<path>, lon, lat)` with local numeric execution and exact `<= radius` scan-filter pushdown on geo payload fields
     - current runtime tests prove `payload_values_count` matches missing as `NULL`, explicit `null` and `[]` as `0`, and present non-array values as `1`
 26. Planner-layer subtree replacement now uses a unified relation-pushdown analyzer scaffold for the admitted `Qdrant` relation replacements instead of separate analyzer-rule ownership by convention.
 27. The planner scaffold now derives broader subtree classes explicitly before relation recognition.
@@ -186,9 +187,9 @@ Current branch reality:
 3. `src/qdrant.rs`, `src/qdrant/filter/*`
    - shared `Qdrant` payload schema, payload access/path recognition, payload index metadata
      normalization, and filter semantics
-4. `src/expr_fn.rs`, `src/expr_fn/payload.rs`, `src/expr_fn/payload_access.rs`, `src/expr_fn/*`
+4. `src/expr_fn.rs`, `src/expr_fn/payload.rs`, `src/expr_fn/payload_access.rs`, `src/expr_fn/payload_geo.rs`, `src/expr_fn/*`
    - public marker/helper UDF registration, the public typed `payload(...)` helper, internal
-     executable payload accessors, and query-family UDF surfaces
+     executable payload accessors, explicit geo-distance payload access, and query-family UDF surfaces
 5. `src/analyzer.rs`, `src/analyzer/*`
    - unified relation-pushdown analyzer scaffold, operator-marker detection, subtree
      classification, kernel extraction, and optimizer-side coordinated rewrites

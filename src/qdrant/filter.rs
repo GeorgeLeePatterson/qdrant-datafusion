@@ -11,9 +11,12 @@ use datafusion::logical_expr::Expr;
 use datafusion::physical_expr::PhysicalExpr;
 use normalize::{exact_expr, exact_physical_expr};
 use prost_types::Timestamp;
-use qdrant_client::qdrant::{Condition, Filter, PointId, ValuesCount};
+use qdrant_client::qdrant::{Condition, Filter, GeoPoint, GeoRadius, PointId, ValuesCount};
 
 use super::{QdrantPayloadPath, QdrantPayloadSchema};
+
+#[expect(clippy::cast_possible_truncation)]
+fn qdrant_geo_radius(radius: f64) -> f32 { radius as f32 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct QdrantFilters {
@@ -127,6 +130,12 @@ enum QdrantPredicate {
         lower: Option<(u64, bool)>,
         upper: Option<(u64, bool)>,
     },
+    PayloadGeoRadius {
+        field:  QdrantPayloadPath,
+        lon:    f64,
+        lat:    f64,
+        radius: f64,
+    },
     PayloadEq {
         field: QdrantPayloadPath,
         value: QdrantFilterValue,
@@ -187,11 +196,12 @@ impl QdrantPayloadPath {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 enum QdrantFieldRef {
     Id,
     Payload(QdrantPayloadPath),
     PayloadValuesCount(QdrantPayloadPath),
+    PayloadGeoDistance { field: QdrantPayloadPath, lon: f64, lat: f64 },
     Vector(String),
 }
 
@@ -223,6 +233,12 @@ impl QdrantPredicate {
                     }
                 }
                 Condition::values_count(field.key(), values_count)
+            }
+            Self::PayloadGeoRadius { field, lon, lat, radius } => {
+                Condition::geo_radius(field.key(), GeoRadius {
+                    center: Some(GeoPoint { lon: *lon, lat: *lat }),
+                    radius: qdrant_geo_radius(*radius),
+                })
             }
             Self::PayloadEq { field, value } => field.eq_condition(value),
             Self::PayloadIn { field, values } => field.in_condition(values),
@@ -313,8 +329,8 @@ mod tests {
         Literal as PhysicalLiteral, NotExpr,
     };
     use qdrant_client::qdrant::{
-        IntegerIndexParams, KeywordIndexParams, PayloadSchemaInfo, PayloadSchemaType,
-        payload_index_params,
+        GeoIndexParams, IntegerIndexParams, KeywordIndexParams, PayloadSchemaInfo,
+        PayloadSchemaType, payload_index_params,
     };
 
     use super::*;
@@ -352,6 +368,15 @@ mod tests {
                             range: Some(true),
                             ..Default::default()
                         },
+                    )),
+                }),
+                points:    None,
+            }),
+            ("location".to_owned(), PayloadSchemaInfo {
+                data_type: PayloadSchemaType::Geo as i32,
+                params:    Some(qdrant_client::qdrant::PayloadIndexParams {
+                    index_params: Some(payload_index_params::IndexParams::GeoIndexParams(
+                        GeoIndexParams::default(),
                     )),
                 }),
                 points:    None,
@@ -489,6 +514,32 @@ mod tests {
                 Box::new(payload_path("rank")),
                 Operator::LikeMatch,
                 Box::new(Expr::Literal(ScalarValue::Utf8(Some("%1".to_owned())), None)),
+            )),
+        ));
+        assert!(QdrantFilters::supports_exact(
+            &schema,
+            &payload_schema,
+            &Expr::BinaryExpr(BinaryExpr::new(
+                Box::new(crate::expr_fn::qdrant_payload_geo_distance(
+                    payload_path("location"),
+                    Expr::Literal(ScalarValue::Float64(Some(0.0)), None),
+                    Expr::Literal(ScalarValue::Float64(Some(0.0)), None),
+                )),
+                Operator::LtEq,
+                Box::new(Expr::Literal(ScalarValue::Float64(Some(1_000.0)), None)),
+            )),
+        ));
+        assert!(!QdrantFilters::supports_exact(
+            &schema,
+            &payload_schema,
+            &Expr::BinaryExpr(BinaryExpr::new(
+                Box::new(crate::expr_fn::qdrant_payload_geo_distance(
+                    payload_path("location"),
+                    Expr::Literal(ScalarValue::Float64(Some(0.0)), None),
+                    Expr::Literal(ScalarValue::Float64(Some(0.0)), None),
+                )),
+                Operator::Gt,
+                Box::new(Expr::Literal(ScalarValue::Float64(Some(1_000.0)), None)),
             )),
         ));
     }
