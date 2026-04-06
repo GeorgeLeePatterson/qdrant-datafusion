@@ -122,6 +122,11 @@ enum QdrantPredicate {
     PayloadIsNull(QdrantPayloadPath),
     PayloadIsEmpty(QdrantPayloadPath),
     PayloadExists(QdrantPayloadPath),
+    PayloadValuesCount {
+        field: QdrantPayloadPath,
+        lower: Option<(u64, bool)>,
+        upper: Option<(u64, bool)>,
+    },
     PayloadEq {
         field: QdrantPayloadPath,
         value: QdrantFilterValue,
@@ -186,6 +191,7 @@ impl QdrantPayloadPath {
 enum QdrantFieldRef {
     Id,
     Payload(QdrantPayloadPath),
+    PayloadValuesCount(QdrantPayloadPath),
     Vector(String),
 }
 
@@ -200,6 +206,24 @@ impl QdrantPredicate {
                 gte: Some(0),
                 ..Default::default()
             }),
+            Self::PayloadValuesCount { field, lower, upper } => {
+                let mut values_count = ValuesCount::default();
+                if let Some((value, inclusive)) = lower {
+                    if *inclusive {
+                        values_count.gte = Some(*value);
+                    } else {
+                        values_count.gt = Some(*value);
+                    }
+                }
+                if let Some((value, inclusive)) = upper {
+                    if *inclusive {
+                        values_count.lte = Some(*value);
+                    } else {
+                        values_count.lt = Some(*value);
+                    }
+                }
+                Condition::values_count(field.key(), values_count)
+            }
             Self::PayloadEq { field, value } => field.eq_condition(value),
             Self::PayloadIn { field, values } => field.in_condition(values),
             Self::PayloadRange { field, lower, upper } => {
@@ -352,6 +376,7 @@ mod tests {
     }
 
     #[test]
+    #[expect(clippy::too_many_lines)]
     fn supports_exact_payload_scalar_filters() {
         let schema = schema(vec![
             Field::new(ID_FIELD_NAME, DataType::Utf8, false),
@@ -442,6 +467,20 @@ mod tests {
             &schema,
             &payload_schema,
             &Expr::IsNotNull(Box::new(payload_path("remark"))),
+        ));
+        assert!(QdrantFilters::supports_exact(
+            &schema,
+            &payload_schema,
+            &crate::expr_fn::qdrant_payload_is_empty(payload_path("list")),
+        ));
+        assert!(QdrantFilters::supports_exact(
+            &schema,
+            &payload_schema,
+            &Expr::BinaryExpr(BinaryExpr::new(
+                Box::new(crate::expr_fn::qdrant_payload_values_count(payload_path("list"))),
+                Operator::Eq,
+                Box::new(Expr::Literal(ScalarValue::Int64(Some(0)), None)),
+            )),
         ));
         assert!(!QdrantFilters::supports_exact(
             &schema,

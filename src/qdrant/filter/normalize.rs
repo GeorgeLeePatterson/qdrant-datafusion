@@ -17,6 +17,11 @@ use datafusion::physical_expr::utils::{
 use super::value::point_id_scalar;
 use super::{QdrantFieldRef, QdrantFilterExpr, QdrantPayloadSchema, QdrantPredicate};
 use crate::arrow::schema::{ID_FIELD_NAME, QdrantFieldBinding, field_uses_unnamed_vector_contract};
+use crate::expr_fn::{
+    PAYLOAD_IS_EMPTY_ACCESS_FUNCTION_NAME, PAYLOAD_VALUES_COUNT_ACCESS_FUNCTION_NAME,
+    is_payload_is_empty_function_name, is_payload_values_count_function_name,
+};
+use crate::qdrant::{QdrantPayloadAccess, QdrantPayloadPath};
 
 pub(super) fn exact_expr(
     base_schema: &SchemaRef,
@@ -45,6 +50,9 @@ impl<'a> QdrantExprNormalizer<'a> {
     }
 
     fn exact_expr(&self, expr: &Expr) -> Option<QdrantFilterExpr> {
+        if let Some(field) = payload_is_empty_logical_path(expr) {
+            return Some(QdrantFilterExpr::Predicate(QdrantPredicate::PayloadIsEmpty(field)));
+        }
         match expr {
             Expr::Alias(alias) => self.exact_expr(&alias.expr),
             Expr::Not(expr) => Some(QdrantFilterExpr::not(self.exact_expr(expr)?)),
@@ -82,7 +90,7 @@ impl<'a> QdrantExprNormalizer<'a> {
                         QdrantFilterExpr::Predicate(QdrantPredicate::HasVector(name)),
                     )),
                     QdrantFieldRef::Payload(field) => Some(field.sql_null_filter_expr()),
-                    QdrantFieldRef::Id => None,
+                    QdrantFieldRef::PayloadValuesCount(_) | QdrantFieldRef::Id => None,
                 }
             }
             Expr::IsNotNull(expr) => {
@@ -97,27 +105,47 @@ impl<'a> QdrantExprNormalizer<'a> {
                     QdrantFieldRef::Payload(field) => {
                         Some(QdrantFilterExpr::not(field.sql_null_filter_expr()))
                     }
-                    QdrantFieldRef::Id => None,
+                    QdrantFieldRef::PayloadValuesCount(_) | QdrantFieldRef::Id => None,
                 }
             }
             Expr::Between(Between { expr, negated, low, high }) => {
-                let QdrantFieldRef::Payload(field) =
-                    QdrantFieldRef::from_logical_expr(self.base_schema, self.payload_schema, expr)?
-                else {
-                    return None;
-                };
-                let field_type = self.payload_schema.field_for_path(field.key())?;
-                let low = field_type.into_filter_value(Self::logical_scalar_literal(low)?)?;
-                let high = field_type.into_filter_value(Self::logical_scalar_literal(high)?)?;
-                let range = field_type.into_range_predicate(
-                    field,
-                    Some((low, true)),
-                    Some((high, true)),
-                )?;
-                if *negated {
-                    Some(QdrantFilterExpr::not(QdrantFilterExpr::Predicate(range)))
-                } else {
-                    Some(QdrantFilterExpr::Predicate(range))
+                match QdrantFieldRef::from_logical_expr(
+                    self.base_schema,
+                    self.payload_schema,
+                    expr,
+                )? {
+                    QdrantFieldRef::Payload(field) => {
+                        let field_type = self.payload_schema.field_for_path(field.key())?;
+                        let low =
+                            field_type.into_filter_value(Self::logical_scalar_literal(low)?)?;
+                        let high =
+                            field_type.into_filter_value(Self::logical_scalar_literal(high)?)?;
+                        let range = field_type.into_range_predicate(
+                            field,
+                            Some((low, true)),
+                            Some((high, true)),
+                        )?;
+                        if *negated {
+                            Some(QdrantFilterExpr::not(QdrantFilterExpr::Predicate(range)))
+                        } else {
+                            Some(QdrantFilterExpr::Predicate(range))
+                        }
+                    }
+                    QdrantFieldRef::PayloadValuesCount(field) => {
+                        let low = values_count_scalar(Self::logical_scalar_literal(low)?)?;
+                        let high = values_count_scalar(Self::logical_scalar_literal(high)?)?;
+                        let range = QdrantPredicate::PayloadValuesCount {
+                            field,
+                            lower: Some((low, true)),
+                            upper: Some((high, true)),
+                        };
+                        if *negated {
+                            Some(QdrantFilterExpr::not(QdrantFilterExpr::Predicate(range)))
+                        } else {
+                            Some(QdrantFilterExpr::Predicate(range))
+                        }
+                    }
+                    _ => None,
                 }
             }
             _ => None,
@@ -125,6 +153,9 @@ impl<'a> QdrantExprNormalizer<'a> {
     }
 
     fn exact_physical_expr(&self, expr: &Arc<dyn PhysicalExpr>) -> Option<QdrantFilterExpr> {
+        if let Some(field) = payload_is_empty_physical_path(expr) {
+            return Some(QdrantFilterExpr::Predicate(QdrantPredicate::PayloadIsEmpty(field)));
+        }
         if let Some(expr) = expr.as_any().downcast_ref::<NotExpr>() {
             return Some(QdrantFilterExpr::not(self.exact_physical_expr(expr.arg())?));
         }
@@ -186,7 +217,7 @@ impl<'a> QdrantExprNormalizer<'a> {
                     QdrantFilterExpr::Predicate(QdrantPredicate::HasVector(name)),
                 )),
                 QdrantFieldRef::Payload(field) => Some(field.sql_null_filter_expr()),
-                QdrantFieldRef::Id => None,
+                QdrantFieldRef::PayloadValuesCount(_) | QdrantFieldRef::Id => None,
             };
         }
         if let Some(expr) = expr.as_any().downcast_ref::<IsNotNullExpr>() {
@@ -201,7 +232,7 @@ impl<'a> QdrantExprNormalizer<'a> {
                 QdrantFieldRef::Payload(field) => {
                     Some(QdrantFilterExpr::not(field.sql_null_filter_expr()))
                 }
-                QdrantFieldRef::Id => None,
+                QdrantFieldRef::PayloadValuesCount(_) | QdrantFieldRef::Id => None,
             };
         }
         None
@@ -247,7 +278,7 @@ impl<'a> QdrantExprNormalizer<'a> {
                     .collect::<Option<Vec<_>>>()?;
                 QdrantPredicate::PayloadIn { field, values }
             }
-            QdrantFieldRef::Vector(_) => return None,
+            QdrantFieldRef::PayloadValuesCount(_) | QdrantFieldRef::Vector(_) => return None,
         };
         let expr = QdrantFilterExpr::Predicate(predicate);
         Some(if negated { QdrantFilterExpr::not(expr) } else { expr })
@@ -301,6 +332,47 @@ impl<'a> QdrantExprNormalizer<'a> {
                     _ => None,
                 }
             }
+            QdrantFieldRef::PayloadValuesCount(field) => {
+                let value = values_count_scalar(literal)?;
+                let predicate = match op {
+                    Operator::Eq => QdrantPredicate::PayloadValuesCount {
+                        field,
+                        lower: Some((value, true)),
+                        upper: Some((value, true)),
+                    },
+                    Operator::NotEq => {
+                        return Some(QdrantFilterExpr::not(QdrantFilterExpr::Predicate(
+                            QdrantPredicate::PayloadValuesCount {
+                                field,
+                                lower: Some((value, true)),
+                                upper: Some((value, true)),
+                            },
+                        )));
+                    }
+                    Operator::Lt => QdrantPredicate::PayloadValuesCount {
+                        field,
+                        lower: None,
+                        upper: Some((value, false)),
+                    },
+                    Operator::LtEq => QdrantPredicate::PayloadValuesCount {
+                        field,
+                        lower: None,
+                        upper: Some((value, true)),
+                    },
+                    Operator::Gt => QdrantPredicate::PayloadValuesCount {
+                        field,
+                        lower: Some((value, false)),
+                        upper: None,
+                    },
+                    Operator::GtEq => QdrantPredicate::PayloadValuesCount {
+                        field,
+                        lower: Some((value, true)),
+                        upper: None,
+                    },
+                    _ => return None,
+                };
+                Some(QdrantFilterExpr::Predicate(predicate))
+            }
             QdrantFieldRef::Vector(_) => None,
         }
     }
@@ -324,6 +396,9 @@ impl QdrantFieldRef {
         payload_schema: &QdrantPayloadSchema,
         expr: &Expr,
     ) -> Option<Self> {
+        if let Some(path) = payload_values_count_logical_path(expr) {
+            return Some(Self::PayloadValuesCount(path));
+        }
         if let Some(path) = payload_schema.path_for_logical_expr(expr) {
             return Some(Self::Payload(path));
         }
@@ -339,6 +414,9 @@ impl QdrantFieldRef {
         payload_schema: &QdrantPayloadSchema,
         expr: &Arc<dyn PhysicalExpr>,
     ) -> Option<Self> {
+        if let Some(path) = payload_values_count_physical_path(expr) {
+            return Some(Self::PayloadValuesCount(path));
+        }
         if let Some(path) = payload_schema.path_for_physical_expr(expr) {
             return Some(Self::Payload(path));
         }
@@ -359,6 +437,72 @@ impl QdrantFieldRef {
         }
         None
     }
+}
+
+fn payload_is_empty_logical_path(expr: &Expr) -> Option<QdrantPayloadPath> {
+    unary_payload_logical_path(
+        expr,
+        is_payload_is_empty_function_name,
+        PAYLOAD_IS_EMPTY_ACCESS_FUNCTION_NAME,
+    )
+}
+
+fn payload_values_count_logical_path(expr: &Expr) -> Option<QdrantPayloadPath> {
+    unary_payload_logical_path(
+        expr,
+        is_payload_values_count_function_name,
+        PAYLOAD_VALUES_COUNT_ACCESS_FUNCTION_NAME,
+    )
+}
+
+fn unary_payload_logical_path(
+    expr: &Expr,
+    public_name: impl Fn(&str) -> bool,
+    internal_name: &str,
+) -> Option<QdrantPayloadPath> {
+    match expr {
+        Expr::Alias(alias) => unary_payload_logical_path(&alias.expr, public_name, internal_name),
+        Expr::ScalarFunction(function) if public_name(function.name()) => {
+            let [accessor] = function.args.as_slice() else {
+                return None;
+            };
+            Some(QdrantPayloadAccess::from_logical_expr(accessor)?.path().clone())
+        }
+        Expr::ScalarFunction(function) if function.name() == internal_name => {
+            let [payload, path] = function.args.as_slice() else {
+                return None;
+            };
+            Some(QdrantPayloadAccess::from_logical_parts(payload, path)?.path().clone())
+        }
+        _ => None,
+    }
+}
+
+fn payload_is_empty_physical_path(expr: &Arc<dyn PhysicalExpr>) -> Option<QdrantPayloadPath> {
+    unary_payload_physical_path(expr, PAYLOAD_IS_EMPTY_ACCESS_FUNCTION_NAME)
+}
+
+fn payload_values_count_physical_path(expr: &Arc<dyn PhysicalExpr>) -> Option<QdrantPayloadPath> {
+    unary_payload_physical_path(expr, PAYLOAD_VALUES_COUNT_ACCESS_FUNCTION_NAME)
+}
+
+fn unary_payload_physical_path(
+    expr: &Arc<dyn PhysicalExpr>,
+    internal_name: &str,
+) -> Option<QdrantPayloadPath> {
+    let function = expr.as_any().downcast_ref::<datafusion::physical_expr::ScalarFunctionExpr>()?;
+    if function.name() != internal_name {
+        return None;
+    }
+    let [payload, path] = function.args() else {
+        return None;
+    };
+    Some(QdrantPayloadAccess::from_physical_parts(payload, path)?.path().clone())
+}
+
+fn values_count_scalar(value: &ScalarValue) -> Option<u64> {
+    let value = super::value::integer_scalar(value)?;
+    u64::try_from(value).ok()
 }
 
 fn reverse_operator(op: Operator) -> Option<Operator> {

@@ -67,11 +67,12 @@ canonical carrier; missing values are not imputed during scan.
     - exact lowering currently admits dense vector targets, feedback-item arrays using
       `struct(example, score)` entries, an optional `LIMIT`, and required naive
       strategy coefficients; when SQL omits `LIMIT`, the remote request uses Qdrant's default result count and omitted projected score ordering uses Qdrant's native score-desc result order
-  - grouped nearest top-1 via `DISTINCT ON (payload:<path>)`, with outer `LIMIT` kept local after exact grouped retrieval
-    - exact lowering currently admits one scalar keyword or lookup-capable integer payload field, `qdrant_nearest_score(...)`,
+  - grouped query-family top-1 via `DISTINCT ON (payload:<path>)`, with outer `LIMIT` kept local after exact grouped retrieval
+    - exact lowering currently admits one scalar keyword or lookup-capable integer payload field and one grouped query-family source among `qdrant_nearest_score(...)`, `qdrant_recommend_score(...)`, `qdrant_discover_score(...)`, or `qdrant_context_score(...)`,
       `ORDER BY payload:<path>[ DESC]` with optional trailing `, score DESC` as an explicit in-group tie-break,
       validates returned group ids against scalar payload values on hits, and keeps any outer `LIMIT` local
   - projected `ORDER BY score DESC` is redundant and optimizes away, while projected `ORDER BY score ASC` remains a local `DataFusion` sort
+  - explicit payload empty/cardinality semantics through `payload_is_empty(payload:<path>)` and `payload_values_count(payload:<path>)`, both with exact scan filter pushdown and local execution
   - retrieval kernels can now leave benign local projection shells and local residual filter shells above the closed qdrant query kernel instead of requiring fully remote-only projection/filter shapes, including later score projection above those local filter shells
   - projected score columns follow normal `DataFusion` naming and aliasing rules
 - a unified relation-pushdown analyzer scaffold now owns the admitted planner-layer subtree
@@ -103,12 +104,12 @@ canonical carrier; missing values are not imputed during scan.
 ## Not Yet Admitted
 
 - broader write semantics beyond append-only `INSERT INTO` on the canonical provider schema
-- payload empty-container/cardinality semantics, text, geo, nested, and count-oriented payload predicates
+- text, geo, nested, and broader count-oriented payload predicates beyond the current explicit `payload_is_empty(...)` / `payload_values_count(...)` subset
 - broader payload-key SQL `ORDER BY` pushdown beyond the admitted `payload:<path>` subset
 - broader aggregate/grouped SQL beyond the admitted scalar-facet subset
 - fully implicit arithmetic and similar typed SQL over raw `payload:<path>` when `DataFusion` must infer the payload scalar type during SQL planning; use `payload(payload:<path>, 'Type')` or an explicit `CAST(...)` today
 - broader `Qdrant`-specific UDF, UDAF, or UDTF surface beyond the current retrieval marker UDFs and typed `payload(...)` helper
-- broader SQL-native fusion / grouped-query semantics beyond the admitted `DISTINCT ON` grouped-nearest subset
+- broader SQL-native fusion / grouped-query semantics beyond the admitted `DISTINCT ON` grouped query-family subset
 - broader planner rewrites beyond the narrow exact `COUNT(*)` / facet slices
 
 ## Basic Usage

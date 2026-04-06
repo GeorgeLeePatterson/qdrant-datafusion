@@ -198,7 +198,7 @@ pub(crate) fn payload_access_expr(
     }
 }
 
-fn array_string_value(
+pub(crate) fn array_string_value(
     array: &datafusion::arrow::array::ArrayRef,
     index: usize,
     argument: &str,
@@ -239,35 +239,43 @@ fn array_string_value(
     }
 }
 
+pub(crate) fn payload_json_value(
+    payload_json: Option<&str>,
+    path: Option<&str>,
+    function_name: &str,
+) -> Result<Option<serde_json::Value>> {
+    let Some(payload_json) = payload_json else {
+        return Ok(None);
+    };
+    let Some(path) = path else {
+        return Ok(None);
+    };
+    let payload = serde_json::from_str::<serde_json::Value>(payload_json).map_err(|error| {
+        datafusion::common::DataFusionError::Execution(format!(
+            "{function_name} could not parse payload JSON: {error}"
+        ))
+    })?;
+    Ok(payload_value_at_path(&payload, path).cloned())
+}
+
 fn payload_scalar(
     kind: PayloadAccessKind,
     payload_json: Option<&str>,
     path: Option<&str>,
 ) -> Result<ScalarValue> {
-    let Some(payload_json) = payload_json else {
+    let Some(value) = payload_json_value(payload_json, path, kind.function_name())? else {
         return ScalarValue::try_new_null(&kind.return_type());
     };
-    let Some(path) = path else {
-        return ScalarValue::try_new_null(&kind.return_type());
-    };
-    let payload = serde_json::from_str::<serde_json::Value>(payload_json).map_err(|error| {
-        datafusion::common::DataFusionError::Execution(format!(
-            "{} could not parse payload JSON: {error}",
-            kind.function_name()
-        ))
-    })?;
-    let Some(value) = payload_value_at_path(&payload, path) else {
-        return ScalarValue::try_new_null(&kind.return_type());
-    };
+    let path = path.expect("payload path required when a value is present");
     match kind {
-        PayloadAccessKind::Text => Ok(ScalarValue::Utf8(Some(payload_text_value(value)))),
+        PayloadAccessKind::Text => Ok(ScalarValue::Utf8(Some(payload_text_value(&value)))),
         PayloadAccessKind::Int64 => value.as_i64().map_or_else(
             || {
                 exec_err!(
                     "{} expected integer payload value at '{}', found {}",
                     kind.function_name(),
                     path,
-                    payload_kind(value)
+                    payload_kind(&value)
                 )
             },
             |value| Ok(ScalarValue::Int64(Some(value))),
@@ -278,7 +286,7 @@ fn payload_scalar(
                     "{} expected numeric payload value at '{}', found {}",
                     kind.function_name(),
                     path,
-                    payload_kind(value)
+                    payload_kind(&value)
                 )
             },
             |value| Ok(ScalarValue::Float64(Some(value))),
@@ -289,12 +297,12 @@ fn payload_scalar(
                     "{} expected bool payload value at '{}', found {}",
                     kind.function_name(),
                     path,
-                    payload_kind(value)
+                    payload_kind(&value)
                 )
             },
             |value| Ok(ScalarValue::Boolean(Some(value))),
         ),
-        PayloadAccessKind::Datetime => payload_datetime_value(value, path),
+        PayloadAccessKind::Datetime => payload_datetime_value(&value, path),
     }
 }
 

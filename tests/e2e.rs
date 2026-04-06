@@ -45,6 +45,14 @@ e2e_test!(
 
 #[cfg(feature = "test-utils")]
 e2e_test!(
+    table_provider_payload_empty_and_values_count,
+    tests::test_table_provider_payload_empty_and_values_count,
+    TRACING_DIRECTIVES,
+    None
+);
+
+#[cfg(feature = "test-utils")]
+e2e_test!(
     table_provider_insert_into_appends_rows,
     tests::test_table_provider_insert_into_appends_rows,
     TRACING_DIRECTIVES,
@@ -199,6 +207,14 @@ e2e_test!(
 e2e_test!(
     prepared_session_sql_grouped_nearest_query,
     tests::test_prepared_session_sql_grouped_nearest_query,
+    TRACING_DIRECTIVES,
+    None
+);
+
+#[cfg(feature = "test-utils")]
+e2e_test!(
+    prepared_session_sql_grouped_query_family_queries,
+    tests::test_prepared_session_sql_grouped_query_family_queries,
     TRACING_DIRECTIVES,
     None
 );
@@ -597,6 +613,16 @@ error: {err}"
             .expect("int64 array")
             .iter()
             .map(|value| value.expect("non-null int64 value"))
+            .collect()
+    }
+
+    fn batch_optional_i64_values(batch: &RecordBatch, column: &str) -> Vec<Option<i64>> {
+        batch
+            .column(batch.schema().index_of(column).expect("int64 column"))
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .expect("int64 array")
+            .iter()
             .collect()
     }
 
@@ -1348,6 +1374,79 @@ error: {err}"
         Ok(())
     }
 
+    pub(super) async fn test_table_provider_payload_empty_and_values_count(
+        c: Arc<QdrantContainer>,
+    ) -> Result<()> {
+        let client = create_qdrant_client(&c)?;
+        let collection_name = "test_payload_empty_and_values_count";
+        create_scalar_collection(&client, collection_name).await?;
+
+        let mut missing = qdrant_client::Payload::new();
+        missing.insert("kind", "missing");
+
+        let mut nulls = qdrant_client::Payload::new();
+        nulls.insert("kind", "null");
+        nulls.insert("list", serde_json::Value::Null);
+
+        let mut empties = qdrant_client::Payload::new();
+        empties.insert("kind", "empty");
+        empties.insert("list", serde_json::json!([]));
+
+        let mut values = qdrant_client::Payload::new();
+        values.insert("kind", "value");
+        values.insert("list", serde_json::json!([1]));
+
+        let points = vec![
+            PointStruct::new(1, Vector::new_dense(vec![0.0]), missing),
+            PointStruct::new(2, Vector::new_dense(vec![0.0]), nulls),
+            PointStruct::new(3, Vector::new_dense(vec![0.0]), empties),
+            PointStruct::new(4, Vector::new_dense(vec![0.0]), values),
+        ];
+        drop(client.upsert_points(UpsertPointsBuilder::new(collection_name, points)).await?);
+
+        let table_provider = QdrantTableProvider::try_new(client.clone(), collection_name).await?;
+        let ctx = QdrantSessionContext::from(SessionContext::new());
+        drop(ctx.session_context().register_table("vectors", Arc::new(table_provider))?);
+
+        let projection = ctx
+            .sql(
+                "SELECT id, payload_is_empty(payload:list) AS list_empty,                  \
+                 payload_values_count(payload:list) AS list_count FROM vectors ORDER BY id",
+            )
+            .await?
+            .collect()
+            .await?;
+        let projection_batch = projection.into_iter().next().expect("projection batch");
+        assert_eq!(batch_u64_ids(&projection_batch, "id"), vec![1, 2, 3, 4]);
+        assert_eq!(batch_bool_values(&projection_batch, "list_empty"), vec![
+            true, true, true, false
+        ]);
+        assert_eq!(batch_optional_i64_values(&projection_batch, "list_count"), vec![
+            None,
+            Some(0),
+            Some(0),
+            Some(1)
+        ]);
+
+        let (empty_ids, empty_display) = collect_id_rows(
+            &ctx,
+            "SELECT id FROM vectors WHERE payload_is_empty(payload:list) ORDER BY id",
+        )
+        .await?;
+        assert_eq!(empty_ids, vec![1, 2, 3], "{empty_display}");
+        assert!(!empty_display.contains("FilterExec"), "{empty_display}");
+
+        let (count_ids, count_display) = collect_id_rows(
+            &ctx,
+            "SELECT id FROM vectors WHERE payload_values_count(payload:list) = 0 ORDER BY id",
+        )
+        .await?;
+        assert_eq!(count_ids, vec![2, 3], "{count_display}");
+        assert!(!count_display.contains("FilterExec"), "{count_display}");
+
+        Ok(())
+    }
+
     pub(super) async fn test_table_provider_pushes_down_bool_facet(
         c: Arc<QdrantContainer>,
     ) -> Result<()> {
@@ -1921,6 +2020,50 @@ error: {err}"
         assert!(descending_display.contains("QdrantQueryGroupsExec"), "{descending_display}");
         assert!(!descending_display.contains(", limit="), "{descending_display}");
         assert!(descending_display.contains("GlobalLimitExec"), "{descending_display}");
+
+        Ok(())
+    }
+
+    pub(super) async fn test_prepared_session_sql_grouped_query_family_queries(
+        c: Arc<QdrantContainer>,
+    ) -> Result<()> {
+        let ctx = create_grouped_nearest_query_context(
+            &c,
+            "test_session_context_grouped_query_family_queries",
+        )
+        .await?;
+
+        let grouped_cases = [
+            (
+                "recommend",
+                "SELECT id, payload:tag AS tag, score FROM (SELECT DISTINCT ON (payload:tag) id, \
+                 payload, qdrant_recommend_score(embedding, [[1.0, 0.0]], [[0.0, 1.0]]) AS score \
+                 FROM vectors ORDER BY payload:tag) grouped",
+            ),
+            (
+                "discover",
+                "SELECT id, payload:tag AS tag, score FROM (SELECT DISTINCT ON (payload:tag) id, \
+                 payload, qdrant_discover_score(embedding, [1.0, 0.0], [[[1.0, 0.0], [0.0, \
+                 1.0]]]) AS score FROM vectors ORDER BY payload:tag) grouped",
+            ),
+            (
+                "context",
+                "SELECT id, payload:tag AS tag, score FROM (SELECT DISTINCT ON (payload:tag) id, \
+                 payload, qdrant_context_score(embedding, [[[1.0, 0.0], [0.0, 1.0]]]) AS score \
+                 FROM vectors ORDER BY payload:tag) grouped",
+            ),
+        ];
+
+        for (label, sql) in grouped_cases {
+            let (rows, display) = collect_grouped_scored_rows(&ctx, sql).await?;
+            assert_eq!(
+                rows.iter().map(|(tag, id, _)| (tag.clone(), *id)).collect::<Vec<_>>(),
+                vec![("blue".to_owned(), 3), ("green".to_owned(), 4), ("red".to_owned(), 1)],
+                "label={label} rows={rows:?}"
+            );
+            assert!(display.contains("QdrantQueryGroupsExec"), "label={label} display={display}");
+            assert!(!display.contains("SortExec"), "label={label} display={display}");
+        }
 
         Ok(())
     }
@@ -3259,12 +3402,126 @@ error: {err}"
             .await?;
         let obj_exists_ids = obj_exists.result.iter().map(point_num).collect::<Vec<_>>();
 
+        let text_zero = client
+            .scroll(
+                ScrollPointsBuilder::new(collection_name)
+                    .limit(10)
+                    .with_payload(true)
+                    .with_vectors(false)
+                    .filter(Filter::all([Condition::values_count(
+                        "text",
+                        qdrant_client::qdrant::ValuesCount {
+                            gte: Some(0),
+                            lte: Some(0),
+                            ..Default::default()
+                        },
+                    )])),
+            )
+            .await?;
+        let text_zero_ids = text_zero.result.iter().map(point_num).collect::<Vec<_>>();
+
+        let text_one = client
+            .scroll(
+                ScrollPointsBuilder::new(collection_name)
+                    .limit(10)
+                    .with_payload(true)
+                    .with_vectors(false)
+                    .filter(Filter::all([Condition::values_count(
+                        "text",
+                        qdrant_client::qdrant::ValuesCount {
+                            gte: Some(1),
+                            lte: Some(1),
+                            ..Default::default()
+                        },
+                    )])),
+            )
+            .await?;
+        let text_one_ids = text_one.result.iter().map(point_num).collect::<Vec<_>>();
+
+        let list_zero = client
+            .scroll(
+                ScrollPointsBuilder::new(collection_name)
+                    .limit(10)
+                    .with_payload(true)
+                    .with_vectors(false)
+                    .filter(Filter::all([Condition::values_count(
+                        "list",
+                        qdrant_client::qdrant::ValuesCount {
+                            gte: Some(0),
+                            lte: Some(0),
+                            ..Default::default()
+                        },
+                    )])),
+            )
+            .await?;
+        let list_zero_ids = list_zero.result.iter().map(point_num).collect::<Vec<_>>();
+
+        let list_one = client
+            .scroll(
+                ScrollPointsBuilder::new(collection_name)
+                    .limit(10)
+                    .with_payload(true)
+                    .with_vectors(false)
+                    .filter(Filter::all([Condition::values_count(
+                        "list",
+                        qdrant_client::qdrant::ValuesCount {
+                            gte: Some(1),
+                            lte: Some(1),
+                            ..Default::default()
+                        },
+                    )])),
+            )
+            .await?;
+        let list_one_ids = list_one.result.iter().map(point_num).collect::<Vec<_>>();
+
+        let obj_zero = client
+            .scroll(
+                ScrollPointsBuilder::new(collection_name)
+                    .limit(10)
+                    .with_payload(true)
+                    .with_vectors(false)
+                    .filter(Filter::all([Condition::values_count(
+                        "obj",
+                        qdrant_client::qdrant::ValuesCount {
+                            gte: Some(0),
+                            lte: Some(0),
+                            ..Default::default()
+                        },
+                    )])),
+            )
+            .await?;
+        let obj_zero_ids = obj_zero.result.iter().map(point_num).collect::<Vec<_>>();
+
+        let obj_one = client
+            .scroll(
+                ScrollPointsBuilder::new(collection_name)
+                    .limit(10)
+                    .with_payload(true)
+                    .with_vectors(false)
+                    .filter(Filter::all([Condition::values_count(
+                        "obj",
+                        qdrant_client::qdrant::ValuesCount {
+                            gte: Some(1),
+                            lte: Some(1),
+                            ..Default::default()
+                        },
+                    )])),
+            )
+            .await?;
+        let obj_one_ids = obj_one.result.iter().map(point_num).collect::<Vec<_>>();
+
         assert_eq!(text_empty_ids, vec![1, 2]);
         assert_eq!(list_empty_ids, vec![1, 2, 3]);
         assert_eq!(obj_empty_ids, vec![1, 2]);
         assert_eq!(text_exists_ids, vec![2, 3, 4]);
         assert_eq!(list_exists_ids, vec![2, 3, 4]);
         assert_eq!(obj_exists_ids, vec![2, 3, 4]);
+        assert_eq!(text_zero_ids, vec![2]);
+        assert_eq!(text_one_ids, vec![3, 4]);
+        assert_eq!(list_zero_ids, vec![2, 3]);
+        assert_eq!(list_one_ids, vec![4]);
+        assert_eq!(obj_zero_ids, vec![2]);
+        assert_eq!(obj_one_ids, vec![3, 4]);
 
         Ok(())
     }

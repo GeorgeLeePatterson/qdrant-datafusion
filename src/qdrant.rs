@@ -118,6 +118,30 @@ pub(crate) struct QdrantPayloadAccess {
 }
 
 impl QdrantPayloadAccess {
+    pub(crate) fn from_logical_parts(payload: &Expr, path: &Expr) -> Option<Self> {
+        let Expr::Column(column) = payload.clone().unalias_nested().data else {
+            return None;
+        };
+        if column.name != PAYLOAD_FIELD_NAME {
+            return None;
+        }
+        Some(Self { payload: column, path: logical_path_literal(path)? })
+    }
+
+    pub(crate) fn from_physical_parts(
+        payload: &Arc<dyn PhysicalExpr>,
+        path: &Arc<dyn PhysicalExpr>,
+    ) -> Option<Self> {
+        let column = payload.as_any().downcast_ref::<PhysicalColumn>()?;
+        if column.name() != PAYLOAD_FIELD_NAME {
+            return None;
+        }
+        Some(Self {
+            payload: Column::new_unqualified(PAYLOAD_FIELD_NAME),
+            path:    physical_path_literal(path)?,
+        })
+    }
+
     pub(crate) fn from_logical_expr(expr: &Expr) -> Option<Self> {
         match expr {
             Expr::Alias(alias) => Self::from_logical_expr(&alias.expr),

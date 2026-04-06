@@ -59,7 +59,10 @@ Last updated: 2026-03-26
     - scalar empty values use ordinary SQL semantics rather than a dedicated backend-shaped empty predicate
       - for the current admitted bridge, `payload:<path> = ''` is the canonical empty-string case
       - empty strings remain distinct from `IS NULL`
-    - payload empty-container/cardinality semantics, text, geo, nested, and count-oriented predicates remain deferred until those SQL contracts are explicit
+    - explicit payload empty/cardinality semantics now use dedicated functions instead of overloading SQL nulls:
+      - `payload_is_empty(payload:<path>)`
+      - `payload_values_count(payload:<path>)`
+    - text, geo, nested, and count-oriented predicates beyond that explicit subset remain deferred until those SQL contracts are explicit
 21. Physical filter pushdown must absorb the admitted exact subset, not just logical filter pushdown declarations.
     - `supports_filters_pushdown` alone is not sufficient on the current `DataFusion` revision
     - `QdrantScanExec` must absorb supported physical predicates so `FilterExec` disappears from the final plan

@@ -59,8 +59,8 @@ This matrix is derived from:
 | Row restriction | general `OR` | `should` | boolean predicate normalization | `Current` | Admitted exactly over the current leaf subset. Unsupported branches still reject cleanly. |
 | Row restriction | general `NOT` | `must_not` | boolean predicate normalization | `Current` | Admitted exactly over the current leaf subset. Payload-empty semantics are still deferred. |
 | Row restriction | `is_null` | field condition | payload null semantics | `Current` | SQL `payload:<path> IS NULL` is now admitted exactly as missing or explicit null. Backend lowering composes `is_null` with missing-only detection. |
-| Row restriction | `is_empty` | field condition | payload empty / missing semantics | `Partial` | Runtime contract is now validated more precisely: `is_empty` matches missing, explicit null, and `[]`, but not empty strings or empty objects on the current runtime line. The current SQL bridge now settles the scalar case by keeping empty strings on ordinary equality semantics, while dedicated empty-container/cardinality semantics remain deferred. |
-| Row restriction | `values_count` | field condition | cardinality predicates | `Later` | Good fit semantically, but depends on payload shape policy. |
+| Row restriction | `is_empty` | field condition | payload empty / missing semantics | `Current` | Runtime contract is now validated more precisely: `is_empty` matches missing, explicit null, and `[]`, but not empty strings or empty objects on the current runtime line. The SQL bridge now exposes that explicit subset through `payload_is_empty(payload:<path>)` while still keeping empty strings on ordinary equality semantics. |
+| Row restriction | `values_count` | field condition | cardinality predicates | `Current` | The SQL bridge now exposes explicit cardinality predicates through `payload_values_count(payload:<path>)`. Current runtime tests on the active line show missing fields map to `NULL`, explicit `null` and `[]` map to `0`, and present non-array values map to `1`. Broader typed/container semantics are still deferred. |
 | Row restriction | nested object filter | nested condition | correlated payload-array predicates | `Later` | Important, but it is not equivalent to dotted-path conjunctions. Needs explicit SQL semantics. |
 | Row restriction | geo radius / bbox / polygon | geo conditions | geo predicates / functions | `Later` | Natural fit for SQL functions or typed expressions, but not first-wave. |
 | Row restriction | text match | text condition | explicit text-search predicate | `Later` | Not the same as SQL `LIKE`. |
@@ -86,7 +86,7 @@ This matrix is derived from:
 | Ranking / re-scoring | relevance feedback | `Query::RelevanceFeedback` | feedback-driven ranking | `Current` | Now exposed through `qdrant_relevance_feedback_score(...)` on the prepared session surface. Exact lowering currently admits dense vector targets, feedback-item arrays using `struct(example, score)` entries, an optional `LIMIT`, and required naive strategy coefficients; when SQL omits `LIMIT`, the remote request uses Qdrant's default result count, and when SQL omits projected score ordering it uses Qdrant's native score-desc result order. Projected `ORDER BY score DESC` is redundant and optimizes away, while projected `ORDER BY score ASC` remains a local DataFusion sort. |
 | Aggregation / grouping | point count | `count` | exact `COUNT(*)`-like pushdown | `Current` | The first aggregate-like slice is now admitted through a narrow analyzer / extension-planner path over a single `Qdrant` source. It composes directly over the existing predicate algebra. |
 | Aggregation / grouping | top-facet grouped counts over one scalar payload field | `facet` | `GROUP BY payload:<path> ORDER BY count DESC LIMIT N` | `Current` | The current facet slice now admits keyword, bool, and lookup-capable integer payload indexes. Facet keys still surface as `Utf8`, matching the current textual `payload:<path>` SQL bridge, so this remains intentionally narrower than general SQL grouping. Live collection introspection on the current runtime line now preserves integer lookup/range metadata well enough to keep integer facets exact on the same admission contract. |
-| Aggregation / grouping | grouped search results | `query_groups`, `search_groups`, `recommend_groups` | grouped retrieval relation | `Current` | The current admitted grouped retrieval slice is narrow: top-1 grouped nearest through `SELECT DISTINCT ON (payload:<path>) ... qdrant_nearest_score(...) ... ORDER BY payload:<path>[ DESC]`, with optional trailing `, score DESC` as an explicit in-group tie-break, lowering to `query_groups` with group size 1 over one scalar keyword or lookup-capable integer payload field. Grouped execution validates that returned group ids match scalar payload values on the hits, and because SQL group ordering is finalized locally, outer `LIMIT` remains local instead of being pushed into `query_groups`. Broader grouped retrieval variants remain later. |
+| Aggregation / grouping | grouped search results | `query_groups`, `search_groups`, `recommend_groups` | grouped retrieval relation | `Current` | The current admitted grouped retrieval slice is narrow but now query-family rather than nearest-only: top-1 grouped retrieval through `SELECT DISTINCT ON (payload:<path>) ... <grouped-score-surface> ... ORDER BY payload:<path>[ DESC]`, with optional trailing `, score DESC` as an explicit in-group tie-break, lowering to `query_groups` with group size 1 over one scalar keyword or lookup-capable integer payload field. Current grouped score surfaces are `qdrant_nearest_score(...)`, `qdrant_recommend_score(...)`, `qdrant_discover_score(...)`, and `qdrant_context_score(...)`. Grouped execution validates that returned group ids match scalar payload values on the hits, and because SQL group ordering is finalized locally, outer `LIMIT` remains local instead of being pushed into `query_groups`. Broader grouped retrieval variants remain later. |
 | Aggregation / grouping | `with_lookup` on groups | group builders | grouped retrieval enrichment | `Later` | Depends on grouped retrieval surface. |
 | Aggregation / grouping | search matrix pairs | `search_matrix_pairs` | similarity-graph / pair relation | `Later` | Interesting, but specialized. |
 | Aggregation / grouping | search matrix offsets | `search_matrix_offsets` | sparse similarity-matrix relation | `Later` | Same as above. |
@@ -163,13 +163,13 @@ This remains the strongest next implementation focus.
 2. determine the next grouped/exploration surface without overstating `Qdrant` facet as general SQL grouping
 4. preserve the exact-subset-first boundary already established by the predicate algebra
 
-### P0.5: explicit payload null / empty semantics
+### P0.5: broaden predicate families beyond the new explicit empty/cardinality subset
 
-This remains important, but the scope is now empty-container/cardinality semantics rather than payload null semantics or scalar empty-string handling.
+The explicit `payload_is_empty(...)` / `payload_values_count(...)` slice is now in place. The remaining work is to widen the predicate family without guessing semantics.
 
-1. keep empty-container semantics explicit without overloading SQL null semantics
-2. keep missing-vs-null-vs-empty semantics explicit instead of guessing
-3. avoid conflating SQL null with backend empty-container predicates
+1. keep missing-vs-null-vs-empty semantics explicit instead of guessing
+2. extend text, geo, nested, and broader count-oriented predicates only where the SQL contract is explicit
+3. avoid conflating SQL null with backend-specific container predicates
 
 ### P1: add aggregate-like exploration that composes over filters
 

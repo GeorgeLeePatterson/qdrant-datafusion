@@ -175,7 +175,7 @@ Use it to resume work without replaying the full repository history.
     - scalar empty values do not get a dedicated backend-shaped predicate
     - empty strings remain ordinary non-null values and are expressed through normal equality, for example `payload:<path> = ''`
     - current tests now prove that empty strings stay distinct from `payload:<path> IS NULL`
-    - empty-container/cardinality semantics remain deferred until typed payload access is admitted more broadly
+    - explicit empty/container/cardinality semantics landed later through dedicated `payload_is_empty(...)` / `payload_values_count(...)` functions while keeping scalar empty-string handling on ordinary SQL equality
 33. `Q-036`: The first retrieval relation reached runtime exactness through the `query` request
     family before the public/operator checkpoint landed.
     - the admitted semantics were already:
@@ -274,6 +274,14 @@ Use it to resume work without replaying the full repository history.
     - mixed query-kernel predicates now split into exact remote payload/id filters plus local residual `FilterExec` shells instead of fataling when a non-pushdownable score predicate remains
     - those local residual filter shells can now still feed a later projected score column instead of forcing the score marker back into an unsupported local surface
     - grouped nearest top-1 no longer requires an explicit trailing `score DESC` when SQL only orders by the grouped payload key, while an explicit score tie-break still lowers when present
+46. `Q-049`: grouped retrieval is now widened from nearest-only to the current grouped query-family subset on the existing `DISTINCT ON` contract.
+    - planner and live end-to-end coverage now prove grouped `qdrant_recommend_score(...)`, `qdrant_discover_score(...)`, and `qdrant_context_score(...)` on the same `QdrantQueryGroupsExec` path
+    - the admitted grouped SQL surface is still narrow: one scalar keyword or lookup-capable integer payload field, group size `1`, and `ORDER BY payload:<path>[ DESC]` with optional trailing `, score DESC` as an explicit in-group tie-break
+    - docs now promote grouped nearest / recommend / discover / context as the current grouped retrieval subset while leaving broader grouped retrieval and other query-family variants deferred
+47. `Q-050`: explicit payload empty/cardinality semantics are now admitted without overloading SQL null semantics.
+    - `payload_is_empty(payload:<path>)` now executes locally and lowers exactly to Qdrant `is_empty` predicates on scan filters
+    - `payload_values_count(payload:<path>)` now executes locally and lowers exactly to Qdrant `values_count` predicates on scan filters
+    - live runtime coverage now locks the current contract down: missing maps to `NULL`, explicit `null` and `[]` map to `0`, and present non-array values map to `1` for `payload_values_count`
 
 ## Next
 
@@ -282,12 +290,11 @@ Use it to resume work without replaying the full repository history.
    the shared operator / kernel structure.
    - aggregate-like: explicit output contracts beyond exact `COUNT(*)` and the current scalar
      facet slice
-   - retrieval: broader `query`-family relations and modifiers such as grouped retrieval beyond the current grouped-nearest `DISTINCT ON` subset now that nearest / sample / recommend / discover / context / nearest-with-MMR / relevance feedback are all fully absorbed
+   - retrieval: broader `query`-family relations and modifiers such as grouped retrieval beyond the current grouped query-family `DISTINCT ON` subset now that nearest / sample / recommend / discover / context / nearest-with-MMR / relevance feedback are all fully absorbed
    - current retrieval kernels now allow omitted SQL `LIMIT`, deferring to Qdrant's native default result count unless SQL specifies one
    - current retrieval kernels now also allow omitted projected `ORDER BY score DESC`, deferring to Qdrant's native result order unless SQL specifies a local re-sort
 4. `Q-020`: Extend the predicate algebra only where the SQL semantics are explicit.
-   - payload empty-container/cardinality semantics
-   - text, geo, nested, and count-oriented predicates
+   - text, geo, nested, and broader count-oriented predicates beyond the current explicit `payload_is_empty(...)` / `payload_values_count(...)` subset
 5. Continue mapping the pushdown model onto `DataFusion`’s own idioms where broader traversal is required.
    - `TreeNode` visitors / rewriters instead of ad hoc recursion
    - `LogicalPlan` expression and subquery helpers before project-local traversal

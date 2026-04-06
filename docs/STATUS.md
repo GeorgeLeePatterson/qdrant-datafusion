@@ -47,7 +47,7 @@ Current branch reality:
     - it reuses the existing provider-owned predicate algebra for admitted exact filters
 20. The root `README.md`, repo notes, and tracker docs describe only the admitted baseline.
 21. Detailed capability-expansion planning now has an explicit semantic inventory in `docs/QDRANT_COMPATIBILITY_MATRIX.md`.
-22. Payload-null runtime semantics are now validated; payload-empty SQL semantics are still intentionally deferred.
+22. Payload-null runtime semantics are now validated, and explicit empty/cardinality SQL semantics are now admitted through dedicated functions.
 23. On March 25, 2026, live `Qdrant 1.17.0` tests through `qdrant-client 1.17.0` validated the runtime contract:
     - explicit payload `NULL` written via point upsert is preserved
     - explicit payload `NULL` written via `set_payload` is preserved
@@ -59,10 +59,11 @@ Current branch reality:
     - `IS NULL` means missing or explicit null
     - `IS NOT NULL` means present and non-null
     - the current lowering excludes empty arrays from SQL null by composing `is_null`, `is_empty`, and `values_count`
-25. Payload-empty SQL semantics are now narrowed to the standard SQL subset that the current bridge can state honestly.
+25. Payload-empty and cardinality semantics are now explicit rather than overloaded onto SQL nulls.
     - empty strings remain ordinary non-null values and are expressed through normal equality, for example `payload:<path> = ''`
-    - current tests now prove that empty strings stay distinct from `payload:<path> IS NULL`
-    - empty-container/cardinality semantics are still intentionally deferred
+    - explicit empty/container predicates now use `payload_is_empty(payload:<path>)`
+    - explicit cardinality predicates now use `payload_values_count(payload:<path>)`
+    - current runtime tests prove `payload_values_count` matches missing as `NULL`, explicit `null` and `[]` as `0`, and present non-array values as `1`
 26. Planner-layer subtree replacement now uses a unified relation-pushdown analyzer scaffold for the admitted `Qdrant` relation replacements instead of separate analyzer-rule ownership by convention.
 27. The planner scaffold now derives broader subtree classes explicitly before relation recognition.
     - source class: `none`, `single-source Qdrant`, `multi-source Qdrant`, `mixed`
@@ -143,7 +144,7 @@ Current branch reality:
       - required naive strategy coefficients
     - current grouped-nearest admitted scope is:
       - `SELECT DISTINCT ON (payload:<path>)` over one scalar keyword or lookup-capable integer payload field
-      - `qdrant_nearest_score(...)` as the grouped retrieval source
+      - one grouped retrieval source among `qdrant_nearest_score(...)`, `qdrant_recommend_score(...)`, `qdrant_discover_score(...)`, or `qdrant_context_score(...)`
       - `ORDER BY payload:<path>[ DESC]`, with optional trailing `, score DESC` as an explicit in-group tie-break
       - group size `1`
       - grouped execution validates that returned group ids match scalar payload values on hits
