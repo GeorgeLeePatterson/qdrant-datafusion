@@ -61,6 +61,14 @@ e2e_test!(
 
 #[cfg(feature = "test-utils")]
 e2e_test!(
+    table_provider_payload_text_predicates,
+    tests::test_table_provider_payload_text_predicates,
+    TRACING_DIRECTIVES,
+    None
+);
+
+#[cfg(feature = "test-utils")]
+e2e_test!(
     table_provider_insert_into_appends_rows,
     tests::test_table_provider_insert_into_appends_rows,
     TRACING_DIRECTIVES,
@@ -331,9 +339,9 @@ mod tests {
         FacetCountsBuilder, FieldType, Filter, FloatIndexParamsBuilder, GeoIndexParamsBuilder,
         MultiVectorComparator, MultiVectorConfig, NamedVectors, OrderByBuilder, PayloadSchemaType,
         PointStruct, RetrievedPoint, ScrollPointsBuilder, SetPayloadPointsBuilder,
-        SparseVectorParamsBuilder, SparseVectorsConfigBuilder, UpsertPointsBuilder, Value, Vector,
-        VectorParamsBuilder, VectorsConfigBuilder, facet_value, order_value, payload_index_params,
-        point_id, start_from,
+        SparseVectorParamsBuilder, SparseVectorsConfigBuilder, TextIndexParamsBuilder,
+        TokenizerType, UpsertPointsBuilder, Value, Vector, VectorParamsBuilder,
+        VectorsConfigBuilder, facet_value, order_value, payload_index_params, point_id, start_from,
     };
     use qdrant_datafusion::arrow::schema::QdrantFieldBinding;
     use qdrant_datafusion::context::QdrantSessionContext;
@@ -1523,6 +1531,63 @@ error: {err}"
         .await?;
         assert_eq!(far_ids, vec![3], "{far_display}");
         assert!(far_display.contains("FilterExec"), "{far_display}");
+
+        Ok(())
+    }
+
+    pub(super) async fn test_table_provider_payload_text_predicates(
+        c: Arc<QdrantContainer>,
+    ) -> Result<()> {
+        let client = create_qdrant_client(&c)?;
+        let collection_name = "test_payload_text_predicates";
+        create_scalar_collection(&client, collection_name).await?;
+        create_payload_index(
+            &client,
+            collection_name,
+            "description",
+            FieldType::Text,
+            TextIndexParamsBuilder::new(TokenizerType::Word).phrase_matching(true).build(),
+        )
+        .await?;
+
+        let mut first = qdrant_client::Payload::new();
+        first.insert("description", "good cheap coffee");
+        let mut second = qdrant_client::Payload::new();
+        second.insert("description", "good expensive coffee");
+        let mut third = qdrant_client::Payload::new();
+        third.insert("description", "time machine novel");
+        let mut fourth = qdrant_client::Payload::new();
+        fourth.insert("description", "machine time notes");
+
+        let points = vec![
+            PointStruct::new(1, Vector::new_dense(vec![0.0]), first),
+            PointStruct::new(2, Vector::new_dense(vec![0.0]), second),
+            PointStruct::new(3, Vector::new_dense(vec![0.0]), third),
+            PointStruct::new(4, Vector::new_dense(vec![0.0]), fourth),
+        ];
+        drop(client.upsert_points(UpsertPointsBuilder::new(collection_name, points)).await?);
+
+        let table_provider = QdrantTableProvider::try_new(client.clone(), collection_name).await?;
+        let ctx = QdrantSessionContext::from(SessionContext::new());
+        drop(ctx.session_context().register_table("vectors", Arc::new(table_provider))?);
+
+        let (text_ids, text_display) = collect_id_rows(
+            &ctx,
+            "SELECT id FROM vectors WHERE payload_text_match(payload:description, 'good cheap') \
+             ORDER BY id",
+        )
+        .await?;
+        assert_eq!(text_ids, vec![1], "{text_display}");
+        assert!(!text_display.contains("FilterExec"), "{text_display}");
+
+        let (phrase_ids, phrase_display) = collect_id_rows(
+            &ctx,
+            "SELECT id FROM vectors WHERE payload_phrase_match(payload:description, 'time \
+             machine') ORDER BY id",
+        )
+        .await?;
+        assert_eq!(phrase_ids, vec![3], "{phrase_display}");
+        assert!(!phrase_display.contains("FilterExec"), "{phrase_display}");
 
         Ok(())
     }

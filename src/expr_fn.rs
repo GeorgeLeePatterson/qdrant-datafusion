@@ -10,6 +10,7 @@ mod payload;
 mod payload_access;
 mod payload_geo;
 mod payload_predicate;
+mod payload_text;
 mod recommend;
 mod relevance_feedback;
 mod sample;
@@ -81,6 +82,16 @@ pub use self::payload_predicate::{
     PAYLOAD_IS_EMPTY_FUNCTION_NAME, PAYLOAD_VALUES_COUNT_FUNCTION_NAME, qdrant_payload_is_empty,
     qdrant_payload_values_count,
 };
+pub(crate) use self::payload_text::{
+    PAYLOAD_PHRASE_MATCH_ACCESS_FUNCTION_NAME, PAYLOAD_TEXT_MATCH_ACCESS_FUNCTION_NAME,
+    is_payload_phrase_match_function_name, is_payload_text_match_function_name,
+    qdrant_payload_phrase_match_access_udf, qdrant_payload_phrase_match_udf,
+    qdrant_payload_text_match_access_udf, qdrant_payload_text_match_udf,
+};
+pub use self::payload_text::{
+    PAYLOAD_PHRASE_MATCH_FUNCTION_NAME, PAYLOAD_TEXT_MATCH_FUNCTION_NAME,
+    qdrant_payload_phrase_match, qdrant_payload_text_match,
+};
 pub use self::recommend::{
     RECOMMEND_SCORE_FUNCTION_NAME, qdrant_recommend_score, qdrant_recommend_score_with_strategy,
 };
@@ -123,6 +134,10 @@ pub(crate) fn register_functions(ctx: &SessionContext) {
     ctx.register_udf(qdrant_payload_values_count_udf());
     ctx.register_udf(qdrant_payload_is_empty_access_udf());
     ctx.register_udf(qdrant_payload_values_count_access_udf());
+    ctx.register_udf(qdrant_payload_text_match_udf());
+    ctx.register_udf(qdrant_payload_phrase_match_udf());
+    ctx.register_udf(qdrant_payload_text_match_access_udf());
+    ctx.register_udf(qdrant_payload_phrase_match_access_udf());
     ctx.register_udf(qdrant_datetime_value_udf());
     ctx.register_udf(qdrant_condition_udf());
     ctx.register_udf(qdrant_geo_distance_udf());

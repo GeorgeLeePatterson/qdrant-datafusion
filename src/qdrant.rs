@@ -30,6 +30,7 @@ pub(crate) struct QdrantPayloadSchema {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum QdrantPayloadField {
     Keyword,
+    Text { phrase_matching: bool },
     Integer { lookup: bool, range: bool },
     Float,
     Geo,
@@ -41,7 +42,9 @@ pub(crate) enum QdrantPayloadField {
 impl QdrantPayloadField {
     pub(crate) fn projection_data_type(self) -> Option<DataType> {
         match self {
-            QdrantPayloadField::Keyword | QdrantPayloadField::Uuid => Some(DataType::Utf8),
+            QdrantPayloadField::Keyword
+            | QdrantPayloadField::Text { .. }
+            | QdrantPayloadField::Uuid => Some(DataType::Utf8),
             QdrantPayloadField::Integer { .. } => Some(DataType::Int64),
             QdrantPayloadField::Float => Some(DataType::Float64),
             QdrantPayloadField::Bool => Some(DataType::Boolean),
@@ -60,6 +63,14 @@ impl QdrantPayloadField {
                 | QdrantPayloadField::Uuid
                 | QdrantPayloadField::Integer { lookup: true, .. }
         )
+    }
+
+    pub(crate) fn supports_text_match(self) -> bool {
+        matches!(self, QdrantPayloadField::Text { .. })
+    }
+
+    pub(crate) fn supports_phrase_match(self) -> bool {
+        matches!(self, QdrantPayloadField::Text { phrase_matching: true })
     }
 
     pub(crate) fn supports_facet(self) -> bool {
@@ -90,9 +101,9 @@ impl QdrantPayloadField {
 
     pub(crate) fn into_filter_value(self, literal: &ScalarValue) -> Option<QdrantFilterValue> {
         match self {
-            QdrantPayloadField::Keyword | QdrantPayloadField::Uuid => {
-                Some(QdrantFilterValue::String(string_scalar(literal)?))
-            }
+            QdrantPayloadField::Keyword
+            | QdrantPayloadField::Text { .. }
+            | QdrantPayloadField::Uuid => Some(QdrantFilterValue::String(string_scalar(literal)?)),
             QdrantPayloadField::Integer { .. } => {
                 Some(QdrantFilterValue::Integer(integer_scalar(literal)?))
             }
@@ -387,6 +398,15 @@ impl From<HashMap<String, PayloadSchemaInfo>> for QdrantPayloadSchema {
                         }
                         _ => return None,
                     },
+                    PayloadSchemaType::Text => match params {
+                        None => QdrantPayloadField::Text { phrase_matching: false },
+                        Some(payload_index_params::IndexParams::TextIndexParams(params)) => {
+                            QdrantPayloadField::Text {
+                                phrase_matching: params.phrase_matching.unwrap_or(false),
+                            }
+                        }
+                        _ => return None,
+                    },
                     PayloadSchemaType::Integer => match params {
                         None => QdrantPayloadField::Integer { lookup: true, range: true },
                         Some(payload_index_params::IndexParams::IntegerIndexParams(params)) => {
@@ -427,7 +447,7 @@ impl From<HashMap<String, PayloadSchemaInfo>> for QdrantPayloadSchema {
                         }
                         _ => return None,
                     },
-                    _ => return None,
+                    PayloadSchemaType::UnknownType => return None,
                 };
                 Some((field_name, field))
             })
@@ -459,7 +479,9 @@ fn is_order_preserving_cast_family(source_type: &DataType, target_type: &DataTyp
 #[cfg(test)]
 mod tests {
     use qdrant_client::qdrant::{
-        BoolIndexParams, FloatIndexParams, IntegerIndexParams, KeywordIndexParams, UuidIndexParams,
+        BoolIndexParams, FloatIndexParams, IntegerIndexParams, KeywordIndexParams,
+        PayloadSchemaInfo, PayloadSchemaType, TextIndexParamsBuilder, TokenizerType,
+        UuidIndexParams, payload_index_params,
     };
 
     use super::*;
@@ -636,6 +658,17 @@ mod tests {
                 }),
                 points:    None,
             }),
+            ("description".to_owned(), PayloadSchemaInfo {
+                data_type: PayloadSchemaType::Text as i32,
+                params:    Some(qdrant_client::qdrant::PayloadIndexParams {
+                    index_params: Some(payload_index_params::IndexParams::TextIndexParams(
+                        TextIndexParamsBuilder::new(TokenizerType::Word)
+                            .phrase_matching(true)
+                            .build(),
+                    )),
+                }),
+                points:    None,
+            }),
             ("doc_id".to_owned(), PayloadSchemaInfo {
                 data_type: PayloadSchemaType::Uuid as i32,
                 params:    Some(qdrant_client::qdrant::PayloadIndexParams {
@@ -680,6 +713,12 @@ mod tests {
         assert!(!schema.field("range_only").is_some_and(QdrantPayloadField::supports_grouping));
         assert_eq!(schema.field("tag"), Some(QdrantPayloadField::Keyword));
         assert!(schema.field("tag").is_some_and(QdrantPayloadField::supports_grouping));
+        assert_eq!(
+            schema.field("description"),
+            Some(QdrantPayloadField::Text { phrase_matching: true }),
+        );
+        assert!(schema.field("description").is_some_and(QdrantPayloadField::supports_text_match));
+        assert!(schema.field("description").is_some_and(QdrantPayloadField::supports_phrase_match));
         assert_eq!(schema.field("active"), Some(QdrantPayloadField::Bool));
         assert!(!schema.field("active").is_some_and(QdrantPayloadField::supports_grouping));
         assert_eq!(schema.field("doc_id"), Some(QdrantPayloadField::Uuid));

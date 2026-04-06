@@ -136,6 +136,14 @@ enum QdrantPredicate {
         lat:    f64,
         radius: f64,
     },
+    PayloadTextMatch {
+        field: QdrantPayloadPath,
+        query: String,
+    },
+    PayloadPhraseMatch {
+        field:  QdrantPayloadPath,
+        phrase: String,
+    },
     PayloadEq {
         field: QdrantPayloadPath,
         value: QdrantFilterValue,
@@ -240,6 +248,12 @@ impl QdrantPredicate {
                     radius: qdrant_geo_radius(*radius),
                 })
             }
+            Self::PayloadTextMatch { field, query } => {
+                Condition::matches_text(field.key(), query.clone())
+            }
+            Self::PayloadPhraseMatch { field, phrase } => {
+                Condition::matches_phrase(field.key(), phrase.clone())
+            }
             Self::PayloadEq { field, value } => field.eq_condition(value),
             Self::PayloadIn { field, values } => field.in_condition(values),
             Self::PayloadRange { field, lower, upper } => {
@@ -330,7 +344,7 @@ mod tests {
     };
     use qdrant_client::qdrant::{
         GeoIndexParams, IntegerIndexParams, KeywordIndexParams, PayloadSchemaInfo,
-        PayloadSchemaType, payload_index_params,
+        PayloadSchemaType, TextIndexParamsBuilder, TokenizerType, payload_index_params,
     };
 
     use super::*;
@@ -368,6 +382,26 @@ mod tests {
                             range: Some(true),
                             ..Default::default()
                         },
+                    )),
+                }),
+                points:    None,
+            }),
+            ("description".to_owned(), PayloadSchemaInfo {
+                data_type: PayloadSchemaType::Text as i32,
+                params:    Some(qdrant_client::qdrant::PayloadIndexParams {
+                    index_params: Some(payload_index_params::IndexParams::TextIndexParams(
+                        TextIndexParamsBuilder::new(TokenizerType::Word).build(),
+                    )),
+                }),
+                points:    None,
+            }),
+            ("phraseable".to_owned(), PayloadSchemaInfo {
+                data_type: PayloadSchemaType::Text as i32,
+                params:    Some(qdrant_client::qdrant::PayloadIndexParams {
+                    index_params: Some(payload_index_params::IndexParams::TextIndexParams(
+                        TextIndexParamsBuilder::new(TokenizerType::Word)
+                            .phrase_matching(true)
+                            .build(),
                     )),
                 }),
                 points:    None,
@@ -541,6 +575,30 @@ mod tests {
                 Operator::Gt,
                 Box::new(Expr::Literal(ScalarValue::Float64(Some(1_000.0)), None)),
             )),
+        ));
+        assert!(QdrantFilters::supports_exact(
+            &schema,
+            &payload_schema,
+            &crate::expr_fn::qdrant_payload_text_match(
+                payload_path("description"),
+                Expr::Literal(ScalarValue::Utf8(Some("good cheap".to_owned())), None),
+            ),
+        ));
+        assert!(QdrantFilters::supports_exact(
+            &schema,
+            &payload_schema,
+            &crate::expr_fn::qdrant_payload_phrase_match(
+                payload_path("phraseable"),
+                Expr::Literal(ScalarValue::Utf8(Some("time machine".to_owned())), None),
+            ),
+        ));
+        assert!(!QdrantFilters::supports_exact(
+            &schema,
+            &payload_schema,
+            &crate::expr_fn::qdrant_payload_phrase_match(
+                payload_path("description"),
+                Expr::Literal(ScalarValue::Utf8(Some("time machine".to_owned())), None),
+            ),
         ));
     }
 

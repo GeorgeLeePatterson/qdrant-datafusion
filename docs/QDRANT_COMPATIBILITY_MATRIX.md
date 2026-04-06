@@ -64,8 +64,9 @@ This matrix is derived from:
 | Row restriction | nested object filter | nested condition | correlated payload-array predicates | `Later` | Important, but it is not equivalent to dotted-path conjunctions. Needs explicit SQL semantics. |
 | Row restriction | geo radius via explicit payload distance | `Condition::geo_radius` | `payload_geo_distance(payload:<path>, lon, lat) <= radius` | `Current` | The public SQL bridge is numeric and locally executable; only the `<= radius` subset is claimed as exact remote pushdown. |
 | Row restriction | geo bbox / polygon | geo conditions | explicit geo predicates / functions | `Later` | Natural fit for explicit SQL functions after the first geo-distance/radius bridge. |
-| Row restriction | text match | text condition | explicit text-search predicate | `Later` | Not the same as SQL `LIKE`. |
-| Row restriction | phrase match | phrase condition | explicit text-search predicate | `Later` | Same reasoning as text match. |
+| Row restriction | text match | text condition | `payload_text_match(payload:<path>, 'query')` | `Current` | This stays an explicit remote predicate because exact semantics depend on the configured Qdrant text index rather than SQL `LIKE` or local string functions. |
+| Row restriction | phrase match | phrase condition | `payload_phrase_match(payload:<path>, 'phrase')` | `Current` | Exact pushdown now exists when the payload field is backed by a text index that enables phrase support. |
+| Row restriction | text match any | text condition | explicit text-search predicate | `Later` | A natural next extension after the first text/phrase bridge. |
 | Row ordering | ID-ordered scan | `scroll` | `ORDER BY id ASC` | `Current` | Already exact. |
 | Row ordering | payload-key ordered scroll | `order_by` on `scroll` | `ORDER BY payload:<path>` | `Current` | Admitted exact subset for indexed integer / float / datetime fields. Exact remote pushdown is now guarded by `collection_cluster_info`: stable single-peer collections stay exact, while distributed or in-flight cluster states fall back to local sorting. |
 | Row ordering | broader payload ordering | `order_by` | richer payload path ordering | `Later` | Only after payload access contract stabilizes further. |
@@ -164,12 +165,12 @@ This remains the strongest next implementation focus.
 2. determine the next grouped/exploration surface without overstating `Qdrant` facet as general SQL grouping
 4. preserve the exact-subset-first boundary already established by the predicate algebra
 
-### P0.5: broaden predicate families beyond the current explicit empty/cardinality/geo subset
+### P0.5: broaden predicate families beyond the current explicit empty/cardinality/geo/text subset
 
-The explicit `payload_is_empty(...)` / `payload_values_count(...)` slice is now in place, and the first geo bridge now exists through `payload_geo_distance(...) <= radius`. The remaining work is to widen the predicate family without guessing semantics.
+The explicit `payload_is_empty(...)` / `payload_values_count(...)` slice is now in place, the first geo bridge now exists through `payload_geo_distance(...) <= radius`, and the first text bridge now exists through `payload_text_match(...)` / `payload_phrase_match(...)`. The remaining work is to widen the predicate family without guessing semantics.
 
 1. keep missing-vs-null-vs-empty semantics explicit instead of guessing
-2. extend text, nested, geo bbox/polygon, phrase/text-match, and broader count-oriented predicates only where the SQL contract is explicit
+2. extend nested, geo bbox/polygon, text-any, and broader count-oriented predicates only where the SQL contract is explicit
 3. avoid conflating SQL null with backend-specific container predicates
 
 ### P1: add aggregate-like exploration that composes over filters

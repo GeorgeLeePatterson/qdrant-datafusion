@@ -14,13 +14,15 @@ use datafusion::physical_expr::utils::{
     split_conjunction as split_physical_conjunction, split_disjunction,
 };
 
-use super::value::{float_scalar, point_id_scalar};
+use super::value::{float_scalar, point_id_scalar, string_scalar};
 use super::{QdrantFieldRef, QdrantFilterExpr, QdrantPayloadSchema, QdrantPredicate};
 use crate::arrow::schema::{ID_FIELD_NAME, QdrantFieldBinding, field_uses_unnamed_vector_contract};
 use crate::expr_fn::{
     PAYLOAD_GEO_DISTANCE_ACCESS_FUNCTION_NAME, PAYLOAD_IS_EMPTY_ACCESS_FUNCTION_NAME,
+    PAYLOAD_PHRASE_MATCH_ACCESS_FUNCTION_NAME, PAYLOAD_TEXT_MATCH_ACCESS_FUNCTION_NAME,
     PAYLOAD_VALUES_COUNT_ACCESS_FUNCTION_NAME, is_payload_geo_distance_function_name,
-    is_payload_is_empty_function_name, is_payload_values_count_function_name,
+    is_payload_is_empty_function_name, is_payload_phrase_match_function_name,
+    is_payload_text_match_function_name, is_payload_values_count_function_name,
 };
 use crate::qdrant::{QdrantPayloadAccess, QdrantPayloadPath};
 
@@ -54,6 +56,9 @@ impl<'a> QdrantExprNormalizer<'a> {
     fn exact_expr(&self, expr: &Expr) -> Option<QdrantFilterExpr> {
         if let Some(field) = payload_is_empty_logical_path(expr) {
             return Some(QdrantFilterExpr::Predicate(QdrantPredicate::PayloadIsEmpty(field)));
+        }
+        if let Some(predicate) = payload_text_predicate_logical(self.payload_schema, expr) {
+            return Some(QdrantFilterExpr::Predicate(predicate));
         }
         match expr {
             Expr::Alias(alias) => self.exact_expr(&alias.expr),
@@ -179,6 +184,9 @@ impl<'a> QdrantExprNormalizer<'a> {
     fn exact_physical_expr(&self, expr: &Arc<dyn PhysicalExpr>) -> Option<QdrantFilterExpr> {
         if let Some(field) = payload_is_empty_physical_path(expr) {
             return Some(QdrantFilterExpr::Predicate(QdrantPredicate::PayloadIsEmpty(field)));
+        }
+        if let Some(predicate) = payload_text_predicate_physical(self.payload_schema, expr) {
+            return Some(QdrantFilterExpr::Predicate(predicate));
         }
         if let Some(expr) = expr.as_any().downcast_ref::<NotExpr>() {
             return Some(QdrantFilterExpr::not(self.exact_physical_expr(expr.arg())?));
@@ -602,6 +610,118 @@ fn payload_geo_distance_physical(
         float_scalar(physical_scalar_literal_value(lon)?)?,
         float_scalar(physical_scalar_literal_value(lat)?)?,
     ))
+}
+
+fn payload_text_predicate_logical(
+    payload_schema: &QdrantPayloadSchema,
+    expr: &Expr,
+) -> Option<QdrantPredicate> {
+    match expr {
+        Expr::Alias(alias) => payload_text_predicate_logical(payload_schema, &alias.expr),
+        Expr::ScalarFunction(function) if is_payload_text_match_function_name(function.name()) => {
+            let [accessor, query] = function.args.as_slice() else {
+                return None;
+            };
+            let access = QdrantPayloadAccess::from_logical_expr(accessor)?;
+            let field = access.path().clone();
+            let field_type = payload_schema.field_for_path(field.key())?;
+            if !field_type.supports_text_match() {
+                return None;
+            }
+            Some(QdrantPredicate::PayloadTextMatch {
+                field,
+                query: string_scalar(logical_scalar_literal_value(query)?)?,
+            })
+        }
+        Expr::ScalarFunction(function)
+            if is_payload_phrase_match_function_name(function.name()) =>
+        {
+            let [accessor, phrase] = function.args.as_slice() else {
+                return None;
+            };
+            let access = QdrantPayloadAccess::from_logical_expr(accessor)?;
+            let field = access.path().clone();
+            let field_type = payload_schema.field_for_path(field.key())?;
+            if !field_type.supports_phrase_match() {
+                return None;
+            }
+            Some(QdrantPredicate::PayloadPhraseMatch {
+                field,
+                phrase: string_scalar(logical_scalar_literal_value(phrase)?)?,
+            })
+        }
+        Expr::ScalarFunction(function)
+            if function.name() == PAYLOAD_TEXT_MATCH_ACCESS_FUNCTION_NAME =>
+        {
+            let [payload, path, query] = function.args.as_slice() else {
+                return None;
+            };
+            let field = QdrantPayloadAccess::from_logical_parts(payload, path)?.path().clone();
+            let field_type = payload_schema.field_for_path(field.key())?;
+            if !field_type.supports_text_match() {
+                return None;
+            }
+            Some(QdrantPredicate::PayloadTextMatch {
+                field,
+                query: string_scalar(logical_scalar_literal_value(query)?)?,
+            })
+        }
+        Expr::ScalarFunction(function)
+            if function.name() == PAYLOAD_PHRASE_MATCH_ACCESS_FUNCTION_NAME =>
+        {
+            let [payload, path, phrase] = function.args.as_slice() else {
+                return None;
+            };
+            let field = QdrantPayloadAccess::from_logical_parts(payload, path)?.path().clone();
+            let field_type = payload_schema.field_for_path(field.key())?;
+            if !field_type.supports_phrase_match() {
+                return None;
+            }
+            Some(QdrantPredicate::PayloadPhraseMatch {
+                field,
+                phrase: string_scalar(logical_scalar_literal_value(phrase)?)?,
+            })
+        }
+        _ => None,
+    }
+}
+
+fn payload_text_predicate_physical(
+    payload_schema: &QdrantPayloadSchema,
+    expr: &Arc<dyn PhysicalExpr>,
+) -> Option<QdrantPredicate> {
+    let function = expr.as_any().downcast_ref::<datafusion::physical_expr::ScalarFunctionExpr>()?;
+    match function.name() {
+        PAYLOAD_TEXT_MATCH_ACCESS_FUNCTION_NAME => {
+            let [payload, path, query] = function.args() else {
+                return None;
+            };
+            let field = QdrantPayloadAccess::from_physical_parts(payload, path)?.path().clone();
+            let field_type = payload_schema.field_for_path(field.key())?;
+            if !field_type.supports_text_match() {
+                return None;
+            }
+            Some(QdrantPredicate::PayloadTextMatch {
+                field,
+                query: string_scalar(physical_scalar_literal_value(query)?)?,
+            })
+        }
+        PAYLOAD_PHRASE_MATCH_ACCESS_FUNCTION_NAME => {
+            let [payload, path, phrase] = function.args() else {
+                return None;
+            };
+            let field = QdrantPayloadAccess::from_physical_parts(payload, path)?.path().clone();
+            let field_type = payload_schema.field_for_path(field.key())?;
+            if !field_type.supports_phrase_match() {
+                return None;
+            }
+            Some(QdrantPredicate::PayloadPhraseMatch {
+                field,
+                phrase: string_scalar(physical_scalar_literal_value(phrase)?)?,
+            })
+        }
+        _ => None,
+    }
 }
 
 fn logical_scalar_literal_value(expr: &Expr) -> Option<&ScalarValue> {

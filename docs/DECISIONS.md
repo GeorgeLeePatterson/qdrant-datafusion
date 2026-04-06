@@ -63,7 +63,8 @@ Last updated: 2026-04-06
       - `payload_is_empty(payload:<path>)`
       - `payload_values_count(payload:<path>)`
     - explicit geo distance now uses `payload_geo_distance(payload:<path>, lon, lat)` as a local numeric bridge, with exact remote lowering only for the `<= radius` subset on geo payload fields
-    - text, nested, geo bbox/polygon, phrase/text-match, and broader count-oriented predicates beyond that explicit subset remain deferred until those SQL contracts are explicit
+    - explicit text and phrase predicates now use `payload_text_match(payload:<path>, 'query')` and `payload_phrase_match(payload:<path>, 'phrase')`, with exact remote lowering only when the payload field is backed by a text index and phrase support exists for phrase matching
+    - nested, geo bbox/polygon, text-any, and broader count-oriented predicates beyond that explicit subset remain deferred until those SQL contracts are explicit
 21. Physical filter pushdown must absorb the admitted exact subset, not just logical filter pushdown declarations.
     - `supports_filters_pushdown` alone is not sufficient on the current `DataFusion` revision
     - `QdrantScanExec` must absorb supported physical predicates so `FilterExec` disappears from the final plan
