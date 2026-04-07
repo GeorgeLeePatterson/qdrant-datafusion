@@ -653,6 +653,17 @@ pub(crate) mod supported {
                 "SELECT payload:tag AS tag, COUNT(*) AS total FROM vectors WHERE payload:rank >= \
                  10 GROUP BY payload:tag ORDER BY total DESC LIMIT 2",
             );
+            pub(crate) const HAVING_FACET: SqlCase = SqlCase::new(
+                "scan.aggregates.having_facet",
+                "SELECT payload:tag AS tag, COUNT(*) AS total FROM vectors GROUP BY payload:tag \
+                 HAVING COUNT(*) >= 1 ORDER BY total DESC, tag",
+            );
+            pub(crate) const WINDOW_OVER_FACET_SUBQUERY: SqlCase = SqlCase::new(
+                "scan.aggregates.window_over_facet_subquery",
+                "SELECT tag, total, ROW_NUMBER() OVER (ORDER BY total DESC, tag) AS row_num FROM \
+                 (SELECT payload:tag AS tag, COUNT(*) AS total FROM vectors GROUP BY payload:tag) \
+                 facet ORDER BY row_num",
+            );
             pub(crate) const SUBQUERY: SqlCase = SqlCase::new(
                 "scan.aggregates.subquery",
                 "SELECT COUNT(*) AS total FROM (SELECT id FROM vectors WHERE payload:rank >= 20) \
@@ -673,6 +684,8 @@ pub(crate) mod supported {
                 CASE_HINTED_PAYLOAD,
                 HAVING_LOCAL_TYPED,
                 TAG_FACET_WITH_FILTER,
+                HAVING_FACET,
+                WINDOW_OVER_FACET_SUBQUERY,
                 SUBQUERY,
                 CTE,
             ];
@@ -1853,28 +1866,8 @@ pub(crate) mod unsupported {
                  HAVING MAX(payload_text_match(payload:description, 'good cheap'))",
                 "text-match stays a remote-only predicate and is not locally executable inside \
                  HAVING aggregate semantics",
-                "Binary operator 'Colon' is not supported in the physical expr",
+                "payload_text_match requires exact qdrant text-index filter pushdown",
             );
-            pub(crate) const HAVING_FACET: UnsupportedSqlCase = UnsupportedSqlCase::new(
-                "scan.aggregates.having_facet",
-                "SELECT payload:tag AS tag, COUNT(*) AS total FROM vectors GROUP BY payload:tag \
-                 HAVING COUNT(*) >= 1 ORDER BY total DESC, tag",
-                "Q-055",
-                "remote facet/count aggregates still do not leave a local HAVING shell in this \
-                 shape",
-                "Binary operator 'Colon' is not supported in the physical expr",
-            );
-            pub(crate) const WINDOW_OVER_FACET_SUBQUERY: UnsupportedSqlCase =
-                UnsupportedSqlCase::new(
-                    "scan.aggregates.window_over_facet_subquery",
-                    "SELECT tag, total, ROW_NUMBER() OVER (ORDER BY total DESC, tag) AS row_num \
-                     FROM (SELECT payload:tag AS tag, COUNT(*) AS total FROM vectors GROUP BY \
-                     payload:tag) facet ORDER BY row_num",
-                    "Q-055",
-                    "remote facet/count aggregates still do not thread payload-path aliases \
-                     through later local window execution in this shape",
-                    "Binary operator 'Colon' is not supported in the physical expr",
-                );
 
             pub(crate) const ALL: &[UnsupportedSqlCase] = &[
                 RAW_PAYLOAD_ARITHMETIC,
@@ -1885,8 +1878,6 @@ pub(crate) mod unsupported {
                 TEXT_MATCH_AGGREGATE,
                 TEXT_MATCH_CASE_AGGREGATE,
                 TEXT_MATCH_HAVING,
-                HAVING_FACET,
-                WINDOW_OVER_FACET_SUBQUERY,
             ];
         }
     }

@@ -1466,6 +1466,8 @@ error: {err}"
             sql::scan::aggregates::SUM_HINTED_PAYLOAD_ARITHMETIC,
             sql::scan::aggregates::CASE_HINTED_PAYLOAD,
             sql::scan::aggregates::HAVING_LOCAL_TYPED,
+            sql::scan::aggregates::HAVING_FACET,
+            sql::scan::aggregates::WINDOW_OVER_FACET_SUBQUERY,
             sql::scan::aggregates::SUBQUERY,
             sql::scan::aggregates::CTE,
         ];

@@ -3,6 +3,7 @@ mod kernel;
 mod node;
 mod op;
 mod optimize;
+mod payload;
 mod query;
 mod source;
 mod state;

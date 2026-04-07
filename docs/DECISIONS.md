@@ -98,6 +98,7 @@ Last updated: 2026-04-07
     - this path also requires the `Qdrant` session/planner helper rather than plain `SessionContext`
     - facet keys still surface as `Utf8`, matching the current textual `payload:<path>` SQL bridge
     - broader grouped SQL remains deferred because `Qdrant` facet denotes top-N grouped counts, not unconstrained SQL grouping
+    - when broader grouped SQL leaves that exact top-facet contract, the plan should fall back to local `DataFusion` execution rather than failing; `HAVING` and window/subquery shells over `GROUP BY payload:<path>` now follow that fallback path
 27. Planner-layer subtree replacement should be owned by one `Qdrant` relation-pushdown analyzer scaffold rather than by independent analyzer rules alone.
     - separate recognizers may remain modular
     - the scaffold now derives broader internal subtree classifications:

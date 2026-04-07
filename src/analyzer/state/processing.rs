@@ -33,6 +33,9 @@ impl ProcessingState {
             {
                 return Ok(super::super::Analysis::new(local_shell, State::local(), true));
             }
+            if let Some(local_plan) = self.op.clone().local_fallback(&self.source, &plan)? {
+                return Ok(super::super::Analysis::new(local_plan, State::local(), true));
+            }
             return Ok(super::super::fatal(
                 plan,
                 transformed,
@@ -65,6 +68,9 @@ impl ProcessingState {
             {
                 return Ok(super::super::Analysis::new(local_shell, State::local(), true));
             }
+            if let Some(local_plan) = self.op.clone().local_fallback(&self.source, &plan)? {
+                return Ok(super::super::Analysis::new(local_plan, State::local(), true));
+            }
             return Ok(super::super::fatal(
                 plan,
                 transformed,
@@ -80,7 +86,11 @@ impl ProcessingState {
         plan: LogicalPlan,
         transformed: bool,
     ) -> Result<super::super::Analysis> {
-        let Some(op) = self.op.sort(&plan)? else {
+        let prior_op = self.op.clone();
+        let Some(op) = prior_op.sort(&plan)? else {
+            if let Some(local_plan) = self.op.clone().local_fallback(&self.source, &plan)? {
+                return Ok(super::super::Analysis::new(local_plan, State::local(), true));
+            }
             return Ok(super::super::fatal(
                 plan,
                 transformed,
@@ -102,7 +112,12 @@ impl ProcessingState {
         plan: LogicalPlan,
         transformed: bool,
     ) -> Result<super::super::Analysis> {
-        let Some(kernel_state) = self.op.kernel(self.source, &self.filters, &plan)? else {
+        let source = self.source.clone();
+        let op = self.op.clone();
+        let Some(kernel_state) = self.op.kernel(source, &self.filters, &plan)? else {
+            if let Some(local_plan) = op.local_fallback(&self.source, &plan)? {
+                return Ok(super::super::Analysis::new(local_plan, State::local(), true));
+            }
             return Ok(super::super::fatal(
                 plan,
                 transformed,
@@ -135,7 +150,13 @@ impl ProcessingState {
             return kernel_state.absorb(plan, transformed);
         }
         if matches!(plan, LogicalPlan::SubqueryAlias(_)) {
+            if let Some(local_plan) = self.op.clone().local_fallback(&self.source, &plan)? {
+                return Ok(super::super::Analysis::new(local_plan, State::local(), true));
+            }
             return self.absorb(plan, transformed);
+        }
+        if let Some(local_plan) = self.op.local_fallback(&self.source, &plan)? {
+            return Ok(super::super::Analysis::new(local_plan, State::local(), true));
         }
         Ok(super::super::fatal(
             plan,

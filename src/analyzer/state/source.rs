@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::common::{Result, plan_err};
 use datafusion::datasource::source_as_provider;
 use datafusion::logical_expr::expr::Alias;
@@ -9,10 +8,9 @@ use datafusion::logical_expr::{Distinct, Expr, LogicalPlan};
 use super::{FiltersState, KernelState, ProcessingState, State};
 use crate::analyzer::kernel::{CountKernel, KernelSpec};
 use crate::analyzer::op::{FacetOp, Op, OutputNames};
+use crate::analyzer::payload::rewrite_typed_payload_plan;
 use crate::analyzer::source::Source;
 use crate::analyzer::surface::SurfaceCall;
-use crate::expr_fn::payload_access_expr;
-use crate::qdrant::QdrantPayloadAccess;
 use crate::qdrant::filter::QdrantFilters;
 use crate::table::QdrantTableProvider;
 
@@ -65,14 +63,6 @@ impl AggregateSurface {
     }
 }
 
-#[expect(
-    clippy::unnecessary_wraps,
-    reason = "state transition methods share a uniform Result-based interface across variants"
-)]
-#[expect(
-    clippy::unused_self,
-    reason = "source transition methods stay instance-based to mirror the state machine surface"
-)]
 impl SourceState {
     pub(crate) fn from_scan(
         scan: &datafusion::logical_expr::logical_plan::TableScan,
@@ -102,7 +92,7 @@ impl SourceState {
             return self.open(surface)?.projection(plan, transformed);
         }
         let mut transformed = transformed;
-        if let Some(rewritten) = rewrite_typed_payload_projection(&plan, &self.source)? {
+        if let Some(rewritten) = rewrite_typed_payload_plan(&plan, &self.source)? {
             plan = rewritten;
             transformed = true;
         }
@@ -114,7 +104,7 @@ impl SourceState {
         {
             return Ok(super::super::Analysis::new(plan, State::Source(self), transformed));
         }
-        Ok(super::super::Analysis::new(plan, State::local(), transformed))
+        self.localize(plan, transformed)
     }
 
     pub(super) fn filter(
@@ -141,7 +131,7 @@ impl SourceState {
                 transformed,
             ));
         }
-        Ok(super::super::Analysis::new(plan, State::local(), transformed))
+        self.localize(plan, transformed)
     }
 
     pub(super) fn sort(
@@ -151,7 +141,7 @@ impl SourceState {
     ) -> Result<super::super::Analysis> {
         let surface = SurfaceCall::collect(&plan.expressions())?;
         let Some(surface) = surface else {
-            return Ok(super::super::Analysis::new(plan, State::local(), transformed));
+            return self.localize(plan, transformed);
         };
         self.open(surface)?.sort(plan, transformed)
     }
@@ -161,7 +151,7 @@ impl SourceState {
         plan: LogicalPlan,
         transformed: bool,
     ) -> Result<super::super::Analysis> {
-        Ok(super::super::Analysis::new(plan, State::local(), transformed))
+        self.localize(plan, transformed)
     }
 
     pub(super) fn aggregate(
@@ -177,9 +167,7 @@ impl SourceState {
             ));
         }
         match AggregateSurface::of(&plan, &self.source)? {
-            AggregateSurface::Local => {
-                Ok(super::super::Analysis::new(plan, State::local(), transformed))
-            }
+            AggregateSurface::Local => self.localize(plan, transformed),
             AggregateSurface::Count => {
                 let exact_filters = self.filters.exact(&self.source)?;
                 KernelState::new(KernelSpec::Count(CountKernel::new(self.source, exact_filters)))
@@ -212,7 +200,7 @@ impl SourceState {
         if let Some(surface) = SurfaceCall::collect(&plan.expressions())? {
             return self.open(surface)?.unary(plan, transformed);
         }
-        Ok(super::super::Analysis::new(plan, State::local(), transformed))
+        self.localize(plan, transformed)
     }
 
     fn open(&self, surface: SurfaceCall) -> Result<ProcessingState> {
@@ -222,44 +210,13 @@ impl SourceState {
             op:      Op::from_surface(surface, &self.source)?,
         })
     }
-}
 
-fn rewrite_typed_payload_projection(
-    plan: &LogicalPlan,
-    source: &Source,
-) -> Result<Option<LogicalPlan>> {
-    let LogicalPlan::Projection(projection) = plan else {
-        return Ok(None);
-    };
-    let mut transformed = false;
-    let mut rewritten_exprs = Vec::with_capacity(projection.expr.len());
-    for expr in &projection.expr {
-        let rewritten = expr
-            .clone()
-            .transform_up(|nested| Ok(rewrite_typed_payload_projection_expr(&nested, source)))?;
-        transformed |= rewritten.transformed;
-        rewritten_exprs.push(rewritten.data);
+    fn localize(self, mut plan: LogicalPlan, transformed: bool) -> Result<super::super::Analysis> {
+        let mut transformed = transformed;
+        if let Some(rewritten) = rewrite_typed_payload_plan(&plan, &self.source)? {
+            plan = rewritten;
+            transformed = true;
+        }
+        Ok(super::super::Analysis::new(plan, State::local(), transformed))
     }
-    if !transformed {
-        return Ok(None);
-    }
-    plan.with_new_exprs(rewritten_exprs, vec![projection.input.as_ref().clone()])?
-        .recompute_schema()
-        .map(Some)
-}
-
-fn rewrite_typed_payload_projection_expr(expr: &Expr, source: &Source) -> Transformed<Expr> {
-    let Some(access) = QdrantPayloadAccess::from_raw_logical_expr(expr) else {
-        return Transformed::no(expr.clone());
-    };
-    let path = access.path().key().to_owned();
-    let payload = access.payload_expr();
-    let data_type = source
-        .payload_field(&path)
-        .and_then(crate::qdrant::QdrantPayloadField::projection_data_type)
-        .unwrap_or(datafusion::arrow::datatypes::DataType::Utf8);
-    let Some(rewritten) = payload_access_expr(payload, path, &data_type) else {
-        return Transformed::no(expr.clone());
-    };
-    Transformed::yes(rewritten)
 }

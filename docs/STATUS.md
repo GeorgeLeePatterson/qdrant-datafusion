@@ -242,3 +242,6 @@ Current branch reality:
     - broader source-set ownership
     - richer composition classes beyond the first sound `mergeable` proof case
     - maximal exact kernel extraction inside larger `Qdrant` regions beyond the first raw-union, union-distinct, and raw-distinct collapses
+13. Broader grouped SQL no longer fails just because the source group key is `payload:<path>`.
+    - exact top-facet replacement still only claims `GROUP BY payload:<path> ORDER BY count DESC LIMIT N`
+    - when later `HAVING` or window/subquery shells leave that exact contract, the analyzer now localizes cleanly and rewrites raw payload access into executable typed local expressions

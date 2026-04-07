@@ -15,6 +15,7 @@ use super::kernel::{
     FacetKernel, KernelSpec, QueryGroupsKernel, QueryKernel, limit_rows, numeric_literal_f32,
 };
 use super::node::KernelNode;
+use super::payload::rewrite_typed_payload_plan;
 use super::query::{QueryBranchPlan, QueryDescriptor, QueryKind, QueryPrefetchBranch};
 use super::source::Source;
 use super::state::{FiltersState, KernelState};
@@ -459,6 +460,17 @@ impl Op {
         match self {
             Self::Query(op) => op.local_filter_shell(source, filters, plan),
             Self::Facet(_) => Ok(None),
+        }
+    }
+
+    pub(super) fn local_fallback(
+        self,
+        source: &Source,
+        plan: &LogicalPlan,
+    ) -> Result<Option<LogicalPlan>> {
+        match self {
+            Self::Query(_) => Ok(None),
+            Self::Facet(_) => rewrite_typed_payload_plan(plan, source),
         }
     }
 

@@ -1888,6 +1888,103 @@ mod tests {
     }
 
     #[test]
+    fn physical_plan_localizes_having_over_facet_shape() {
+        let provider = QdrantTableProvider {
+            payload_schema: payload_schema([(
+                "tag",
+                PayloadSchemaInfo {
+                    data_type: qdrant_client::qdrant::PayloadSchemaType::Keyword as i32,
+                    params: Some(qdrant_client::qdrant::PayloadIndexParams {
+                        index_params: Some(
+                            qdrant_client::qdrant::payload_index_params::IndexParams::KeywordIndexParams(
+                                qdrant_client::qdrant::KeywordIndexParams::default(),
+                            ),
+                        ),
+                    }),
+                    points: None,
+                },
+            )]),
+            ..test_provider(Schema::new(vec![
+                Field::new(ID_FIELD_NAME, DataType::Utf8, false),
+                Field::new(PAYLOAD_FIELD_NAME, DataType::Utf8, true),
+            ]))
+        };
+        let ctx = QdrantSessionContext::from(SessionContext::new());
+        drop(
+            ctx.session_context()
+                .register_table("vectors", Arc::new(provider))
+                .expect("register table"),
+        );
+        let dataframe = ctx
+            .sql(
+                "SELECT payload:tag AS tag, COUNT(*) AS total FROM vectors GROUP BY payload:tag \
+                 HAVING COUNT(*) >= 1 ORDER BY total DESC, tag",
+            )
+            .now_or_never()
+            .expect("sql future is ready")
+            .expect("dataframe");
+        let plan = dataframe
+            .create_physical_plan()
+            .now_or_never()
+            .expect("plan future is ready")
+            .expect("physical plan");
+        let display = displayable(plan.as_ref()).indent(true).to_string();
+
+        assert!(display.contains("AggregateExec"), "{display}");
+        assert!(display.contains("FilterExec"), "{display}");
+        assert!(!display.contains("QdrantFacetExec"), "{display}");
+    }
+
+    #[test]
+    fn physical_plan_localizes_window_over_facet_subquery_shape() {
+        let provider = QdrantTableProvider {
+            payload_schema: payload_schema([(
+                "tag",
+                PayloadSchemaInfo {
+                    data_type: qdrant_client::qdrant::PayloadSchemaType::Keyword as i32,
+                    params: Some(qdrant_client::qdrant::PayloadIndexParams {
+                        index_params: Some(
+                            qdrant_client::qdrant::payload_index_params::IndexParams::KeywordIndexParams(
+                                qdrant_client::qdrant::KeywordIndexParams::default(),
+                            ),
+                        ),
+                    }),
+                    points: None,
+                },
+            )]),
+            ..test_provider(Schema::new(vec![
+                Field::new(ID_FIELD_NAME, DataType::Utf8, false),
+                Field::new(PAYLOAD_FIELD_NAME, DataType::Utf8, true),
+            ]))
+        };
+        let ctx = QdrantSessionContext::from(SessionContext::new());
+        drop(
+            ctx.session_context()
+                .register_table("vectors", Arc::new(provider))
+                .expect("register table"),
+        );
+        let dataframe = ctx
+            .sql(
+                "SELECT tag, total, ROW_NUMBER() OVER (ORDER BY total DESC, tag) AS row_num FROM \
+                 (SELECT payload:tag AS tag, COUNT(*) AS total FROM vectors GROUP BY payload:tag) \
+                 facet ORDER BY row_num",
+            )
+            .now_or_never()
+            .expect("sql future is ready")
+            .expect("dataframe");
+        let plan = dataframe
+            .create_physical_plan()
+            .now_or_never()
+            .expect("plan future is ready")
+            .expect("physical plan");
+        let display = displayable(plan.as_ref()).indent(true).to_string();
+
+        assert!(display.contains("AggregateExec"), "{display}");
+        assert!(display.contains("WindowAggExec"), "{display}");
+        assert!(!display.contains("QdrantFacetExec"), "{display}");
+    }
+
+    #[test]
     fn physical_plan_uses_qdrant_query_exec_for_nearest_score_sql_without_limit() {
         let provider = test_provider(Schema::new(vec![
             Field::new(ID_FIELD_NAME, DataType::Utf8, false),

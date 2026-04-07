@@ -300,11 +300,10 @@ Use it to resume work without replaying the full repository history.
     - `tests/e2e.rs` and `tests/unsupported_e2e.rs` now exercise those catalog additions directly instead of leaving them as unconsumed inventory
     - catalog expansion is now explicitly SQL-space-first: the inventories should grow by stretching the admitted and deferred SQL surface broadly, with code-gap audit used only to explain failures after the catalog exposes them
     - unsupported inventory is now explicitly classified per query as `Deferred`, `ByDesign`, `Upstream`, or `InvalidInput`, so the reference surface distinguishes “not yet”, “not intended”, and “not our limitation”
-52. `Q-055`: remote facet/count aggregate subqueries still have one unresolved local-shell gap.
-    - outer local window execution over some remote facet/count aggregate subqueries still leaves residual `payload:<path>` expressions too late in execution
-    - local `HAVING` above the current remote facet/count aggregate path is also still unresolved in the same family
-    - the concrete tracked failing shapes are represented in `tests/catalog/mod.rs::unsupported::scan::aggregates::WINDOW_OVER_FACET_SUBQUERY` and `tests/catalog/mod.rs::unsupported::scan::aggregates::HAVING_FACET`
-    - this is tracked as a local-shell threading gap, not as a reason to narrow the SQL inventory
+52. `Q-055`: facet/count-localization gaps are closed.
+    - unfinished scalar-facet regions now localize cleanly instead of failing when later SQL leaves the exact top-facet contract
+    - recursive typed payload rewriting now keeps `payload:<path>` executable through broader local aggregate / `HAVING` / window shells
+    - `tests/catalog/mod.rs::supported::scan::aggregates::HAVING_FACET` and `tests/catalog/mod.rs::supported::scan::aggregates::WINDOW_OVER_FACET_SUBQUERY` now track those admitted shapes directly
 
 ## Next
 
