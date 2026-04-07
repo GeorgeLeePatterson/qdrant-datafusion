@@ -59,6 +59,7 @@ This matrix is derived from:
 | Row restriction | general `OR` | `should` | boolean predicate normalization | `Current` | Admitted exactly over the current leaf subset. Unsupported branches still reject cleanly. |
 | Row restriction | general `NOT` | `must_not` | boolean predicate normalization | `Current` | Admitted exactly over the current leaf subset. Payload-empty semantics are still deferred. |
 | Row restriction | `is_null` | field condition | payload null semantics | `Current` | SQL `payload:<path> IS NULL` is now admitted exactly as missing or explicit null. Backend lowering composes `is_null` with missing-only detection. |
+| Row restriction | field existence | `values_count >= 0` | `payload_exists(payload:<path>)` | `Current` | The SQL bridge now exposes explicit field presence semantics separately from SQL null semantics. Present explicit `null` and empty arrays still count as existing fields. |
 | Row restriction | `is_empty` | field condition | payload empty / missing semantics | `Current` | Runtime contract is now validated more precisely: `is_empty` matches missing, explicit null, and `[]`, but not empty strings or empty objects on the current runtime line. The SQL bridge now exposes that explicit subset through `payload_is_empty(payload:<path>)` while still keeping empty strings on ordinary equality semantics. |
 | Row restriction | `values_count` | field condition | cardinality predicates | `Current` | The SQL bridge now exposes explicit cardinality predicates through `payload_values_count(payload:<path>)`. Current runtime tests on the active line show missing fields map to `NULL`, explicit `null` and `[]` map to `0`, and present non-array values map to `1`. Broader typed/container semantics are still deferred. |
 | Row restriction | nested object filter | nested condition | `payload_nested_match(payload:<path>, <predicate>)` | `Current` | The SQL bridge now exposes explicit nested-array/object predicates by reusing the existing payload filter algebra inside a nested scope instead of introducing a string mini-language. |
@@ -167,7 +168,7 @@ This remains the strongest next implementation focus.
 
 ### P0.5: broaden predicate families beyond the current explicit empty/cardinality/geo/text subset
 
-The explicit `payload_is_empty(...)` / `payload_values_count(...)` slice is now in place, the first geo bridge now exists through `payload_geo_distance(...) <= radius`, the first text bridge now exists through `payload_text_match(...)` / `payload_phrase_match(...)`, and nested payload-array/object predicates now exist through `payload_nested_match(...)`. The remaining work is to widen the predicate family without guessing semantics.
+The explicit `payload_exists(...)` / `payload_is_empty(...)` / `payload_values_count(...)` slice is now in place, the first geo bridge now exists through `payload_geo_distance(...) <= radius`, the first text bridge now exists through `payload_text_match(...)` / `payload_phrase_match(...)`, and nested payload-array/object predicates now exist through `payload_nested_match(...)`. The remaining work is to widen the predicate family without guessing semantics.
 
 1. keep missing-vs-null-vs-empty semantics explicit instead of guessing
 2. extend broader count-oriented predicates only where the SQL contract is explicit

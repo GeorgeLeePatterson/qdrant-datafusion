@@ -87,13 +87,16 @@ pub(crate) use self::payload_nested::{
     is_payload_nested_match_function_name, qdrant_payload_nested_match_udf,
 };
 pub(crate) use self::payload_predicate::{
-    PAYLOAD_IS_EMPTY_ACCESS_FUNCTION_NAME, PAYLOAD_VALUES_COUNT_ACCESS_FUNCTION_NAME,
+    PAYLOAD_EXISTS_ACCESS_FUNCTION_NAME, PAYLOAD_IS_EMPTY_ACCESS_FUNCTION_NAME,
+    PAYLOAD_VALUES_COUNT_ACCESS_FUNCTION_NAME, is_payload_exists_function_name,
     is_payload_is_empty_function_name, is_payload_values_count_function_name,
+    qdrant_payload_exists_access_udf, qdrant_payload_exists_udf,
     qdrant_payload_is_empty_access_udf, qdrant_payload_is_empty_udf,
     qdrant_payload_values_count_access_udf, qdrant_payload_values_count_udf,
 };
 pub use self::payload_predicate::{
-    PAYLOAD_IS_EMPTY_FUNCTION_NAME, PAYLOAD_VALUES_COUNT_FUNCTION_NAME, qdrant_payload_is_empty,
+    PAYLOAD_EXISTS_FUNCTION_NAME, PAYLOAD_IS_EMPTY_FUNCTION_NAME,
+    PAYLOAD_VALUES_COUNT_FUNCTION_NAME, qdrant_payload_exists, qdrant_payload_is_empty,
     qdrant_payload_values_count,
 };
 pub(crate) use self::payload_text::{
@@ -153,8 +156,10 @@ pub(crate) fn register_functions(ctx: &SessionContext) {
     ctx.register_udf(qdrant_payload_geo_distance_access_udf());
     ctx.register_udf(qdrant_payload_geo_within_bbox_access_udf());
     ctx.register_udf(qdrant_payload_geo_within_polygon_access_udf());
+    ctx.register_udf(qdrant_payload_exists_udf());
     ctx.register_udf(qdrant_payload_is_empty_udf());
     ctx.register_udf(qdrant_payload_values_count_udf());
+    ctx.register_udf(qdrant_payload_exists_access_udf());
     ctx.register_udf(qdrant_payload_is_empty_access_udf());
     ctx.register_udf(qdrant_payload_values_count_access_udf());
     ctx.register_udf(qdrant_payload_text_match_udf());

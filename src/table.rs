@@ -1318,6 +1318,35 @@ mod tests {
     }
 
     #[test]
+    fn physical_plan_drops_filter_exec_for_payload_exists_udf() {
+        let provider = test_provider(Schema::new(vec![
+            Field::new(ID_FIELD_NAME, DataType::Utf8, false),
+            Field::new(PAYLOAD_FIELD_NAME, DataType::Utf8, true),
+        ]));
+        let ctx = QdrantSessionContext::from(SessionContext::new());
+        drop(
+            ctx.session_context()
+                .register_table("vectors", Arc::new(provider.clone()))
+                .expect("register table"),
+        );
+        let dataframe = ctx
+            .sql("SELECT id FROM vectors WHERE payload_exists(payload:list)")
+            .now_or_never()
+            .expect("sql future is ready")
+            .expect("dataframe");
+        let plan = dataframe
+            .create_physical_plan()
+            .now_or_never()
+            .expect("plan future is ready")
+            .expect("physical plan");
+        let display = displayable(plan.as_ref()).indent(true).to_string();
+        let scan = qdrant_scan(&plan);
+
+        assert_eq!(scan.pushdown.filters.len(), 1);
+        assert!(!display.contains("FilterExec"), "{display}");
+    }
+
+    #[test]
     fn physical_plan_drops_filter_exec_for_payload_values_count_udf() {
         let provider = test_provider(Schema::new(vec![
             Field::new(ID_FIELD_NAME, DataType::Utf8, false),

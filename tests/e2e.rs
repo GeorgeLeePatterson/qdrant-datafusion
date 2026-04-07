@@ -1713,6 +1713,9 @@ error: {err}"
             ctx.sql(sql::scan::projection::EMPTY_AND_COUNT_VALUES.sql).await?.collect().await?;
         let projection_batch = projection.into_iter().next().expect("projection batch");
         assert_eq!(batch_u64_ids(&projection_batch, "id"), vec![1, 2, 3, 4]);
+        assert_eq!(batch_bool_values(&projection_batch, "list_exists"), vec![
+            false, true, true, true
+        ]);
         assert_eq!(batch_bool_values(&projection_batch, "list_empty"), vec![
             true, true, true, false
         ]);
@@ -1727,6 +1730,16 @@ error: {err}"
             collect_id_rows(&ctx, sql::scan::filters::EMPTY.sql).await?;
         assert_eq!(empty_ids, vec![1, 2, 3], "{empty_display}");
         assert!(!empty_display.contains("FilterExec"), "{empty_display}");
+
+        let (exists_ids, exists_display) =
+            collect_id_rows(&ctx, sql::scan::filters::EXISTS.sql).await?;
+        assert_eq!(exists_ids, vec![2, 3, 4], "{exists_display}");
+        assert!(!exists_display.contains("FilterExec"), "{exists_display}");
+
+        let (missing_ids, missing_display) =
+            collect_id_rows(&ctx, sql::scan::filters::NOT_EXISTS.sql).await?;
+        assert_eq!(missing_ids, vec![1], "{missing_display}");
+        assert!(!missing_display.contains("FilterExec"), "{missing_display}");
 
         let (count_ids, count_display) =
             collect_id_rows(&ctx, sql::scan::filters::VALUES_COUNT_ZERO.sql).await?;

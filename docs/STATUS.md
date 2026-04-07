@@ -61,6 +61,7 @@ Current branch reality:
     - the current lowering excludes empty arrays from SQL null by composing `is_null`, `is_empty`, and `values_count`
 25. Payload-empty/cardinality semantics plus the first explicit geo and text predicates are now admitted without overloading ordinary SQL semantics.
     - empty strings remain ordinary non-null values and are expressed through normal equality, for example `payload:<path> = ''`
+    - explicit presence predicates now use `payload_exists(payload:<path>)`
     - explicit empty/container predicates now use `payload_is_empty(payload:<path>)`
     - explicit cardinality predicates now use `payload_values_count(payload:<path>)`
     - explicit geo distance now uses `payload_geo_distance(payload:<path>, lon, lat)` with local numeric execution and exact `<= radius` scan-filter pushdown on geo payload fields

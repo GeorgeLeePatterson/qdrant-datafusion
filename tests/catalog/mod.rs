@@ -241,7 +241,8 @@ pub(crate) mod supported {
             pub(crate) const EMPTY_AND_COUNT_VALUES: SqlCase = SqlCase::new(
                 "scan.projection.empty_and_count_values",
                 concat!(
-                    "SELECT id, payload_is_empty(payload:list) AS list_empty, ",
+                    "SELECT id, payload_exists(payload:list) AS list_exists, \
+                     payload_is_empty(payload:list) AS list_empty, ",
                     "payload_values_count(payload:list) AS list_count FROM vectors ORDER BY id"
                 ),
             );
@@ -505,6 +506,14 @@ pub(crate) mod supported {
                 "scan.filters.empty",
                 "SELECT id FROM vectors WHERE payload_is_empty(payload:list) ORDER BY id",
             );
+            pub(crate) const EXISTS: SqlCase = SqlCase::new(
+                "scan.filters.exists",
+                "SELECT id FROM vectors WHERE payload_exists(payload:list) ORDER BY id",
+            );
+            pub(crate) const NOT_EXISTS: SqlCase = SqlCase::new(
+                "scan.filters.not_exists",
+                "SELECT id FROM vectors WHERE NOT payload_exists(payload:list) ORDER BY id",
+            );
             pub(crate) const VALUES_COUNT_ZERO: SqlCase = SqlCase::new(
                 "scan.filters.values_count_zero",
                 "SELECT id FROM vectors WHERE payload_values_count(payload:list) = 0 ORDER BY id",
@@ -625,6 +634,11 @@ pub(crate) mod supported {
                 "SELECT id FROM (SELECT id FROM vectors WHERE \
                  payload_text_any(payload:description, ['good', 'cheap'])) filtered ORDER BY id",
             );
+            pub(crate) const EXISTS_SUBQUERY: SqlCase = SqlCase::new(
+                "scan.filters.exists_subquery",
+                "SELECT id FROM (SELECT id FROM vectors WHERE payload_exists(payload:list)) \
+                 filtered ORDER BY id",
+            );
             pub(crate) const GEO_BBOX_SUBQUERY: SqlCase = SqlCase::new(
                 "scan.filters.geo_bbox_subquery",
                 "SELECT id FROM (SELECT id FROM vectors WHERE \
@@ -664,6 +678,8 @@ pub(crate) mod supported {
                 TEXT_MATCH_CASE,
                 PHRASE_MATCH_WRAPPED,
                 EMPTY,
+                EXISTS,
+                NOT_EXISTS,
                 VALUES_COUNT_ZERO,
                 VALUES_COUNT_GE_ONE,
                 GEO_RADIUS,
@@ -690,6 +706,7 @@ pub(crate) mod supported {
                 SUBQUERY,
                 CTE,
                 TEXT_ANY_SUBQUERY,
+                EXISTS_SUBQUERY,
                 GEO_BBOX_SUBQUERY,
                 GEO_POLYGON_SUBQUERY,
                 NESTED_MATCH_SUBQUERY,

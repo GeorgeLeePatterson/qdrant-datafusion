@@ -18,16 +18,17 @@ use super::value::{float_scalar, point_id_scalar, string_scalar};
 use super::{QdrantFieldRef, QdrantFilterExpr, QdrantPayloadSchema, QdrantPredicate};
 use crate::arrow::schema::{ID_FIELD_NAME, QdrantFieldBinding, field_uses_unnamed_vector_contract};
 use crate::expr_fn::{
-    PAYLOAD_GEO_DISTANCE_ACCESS_FUNCTION_NAME, PAYLOAD_GEO_WITHIN_BBOX_ACCESS_FUNCTION_NAME,
-    PAYLOAD_GEO_WITHIN_POLYGON_ACCESS_FUNCTION_NAME, PAYLOAD_IS_EMPTY_ACCESS_FUNCTION_NAME,
-    PAYLOAD_NESTED_MATCH_FUNCTION_NAME, PAYLOAD_PHRASE_MATCH_ACCESS_FUNCTION_NAME,
-    PAYLOAD_TEXT_ANY_ACCESS_FUNCTION_NAME, PAYLOAD_TEXT_MATCH_ACCESS_FUNCTION_NAME,
-    PAYLOAD_VALUES_COUNT_ACCESS_FUNCTION_NAME, canonical_geo_polygon,
-    is_payload_geo_distance_function_name, is_payload_geo_within_bbox_function_name,
-    is_payload_geo_within_polygon_function_name, is_payload_is_empty_function_name,
-    is_payload_nested_match_function_name, is_payload_phrase_match_function_name,
-    is_payload_text_any_function_name, is_payload_text_match_function_name,
-    is_payload_values_count_function_name, payload_text_any_query_string,
+    PAYLOAD_EXISTS_ACCESS_FUNCTION_NAME, PAYLOAD_GEO_DISTANCE_ACCESS_FUNCTION_NAME,
+    PAYLOAD_GEO_WITHIN_BBOX_ACCESS_FUNCTION_NAME, PAYLOAD_GEO_WITHIN_POLYGON_ACCESS_FUNCTION_NAME,
+    PAYLOAD_IS_EMPTY_ACCESS_FUNCTION_NAME, PAYLOAD_NESTED_MATCH_FUNCTION_NAME,
+    PAYLOAD_PHRASE_MATCH_ACCESS_FUNCTION_NAME, PAYLOAD_TEXT_ANY_ACCESS_FUNCTION_NAME,
+    PAYLOAD_TEXT_MATCH_ACCESS_FUNCTION_NAME, PAYLOAD_VALUES_COUNT_ACCESS_FUNCTION_NAME,
+    canonical_geo_polygon, is_payload_exists_function_name, is_payload_geo_distance_function_name,
+    is_payload_geo_within_bbox_function_name, is_payload_geo_within_polygon_function_name,
+    is_payload_is_empty_function_name, is_payload_nested_match_function_name,
+    is_payload_phrase_match_function_name, is_payload_text_any_function_name,
+    is_payload_text_match_function_name, is_payload_values_count_function_name,
+    payload_text_any_query_string,
 };
 use crate::qdrant::{QdrantPayloadAccess, QdrantPayloadPath};
 
@@ -75,6 +76,15 @@ impl<'a> QdrantExprNormalizer<'a> {
         expr: &Expr,
         nested_base: Option<&QdrantPayloadPath>,
     ) -> Option<QdrantFilterExpr> {
+        if let Some(field) = unary_payload_logical_path(
+            self.payload_schema,
+            nested_base,
+            expr,
+            is_payload_exists_function_name,
+            PAYLOAD_EXISTS_ACCESS_FUNCTION_NAME,
+        ) {
+            return Some(QdrantFilterExpr::Predicate(QdrantPredicate::PayloadExists(field)));
+        }
         if let Some(field) = unary_payload_logical_path(
             self.payload_schema,
             nested_base,
@@ -252,6 +262,14 @@ impl<'a> QdrantExprNormalizer<'a> {
         expr: &Arc<dyn PhysicalExpr>,
         nested_base: Option<&QdrantPayloadPath>,
     ) -> Option<QdrantFilterExpr> {
+        if let Some(field) = unary_payload_physical_path(
+            self.payload_schema,
+            nested_base,
+            expr,
+            PAYLOAD_EXISTS_ACCESS_FUNCTION_NAME,
+        ) {
+            return Some(QdrantFilterExpr::Predicate(QdrantPredicate::PayloadExists(field)));
+        }
         if let Some(field) = unary_payload_physical_path(
             self.payload_schema,
             nested_base,

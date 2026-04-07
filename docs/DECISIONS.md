@@ -59,7 +59,8 @@ Last updated: 2026-04-07
     - scalar empty values use ordinary SQL semantics rather than a dedicated backend-shaped empty predicate
       - for the current admitted bridge, `payload:<path> = ''` is the canonical empty-string case
       - empty strings remain distinct from `IS NULL`
-    - explicit payload empty/cardinality semantics now use dedicated functions instead of overloading SQL nulls:
+    - explicit payload presence/empty/cardinality semantics now use dedicated functions instead of overloading SQL nulls:
+      - `payload_exists(payload:<path>)`
       - `payload_is_empty(payload:<path>)`
       - `payload_values_count(payload:<path>)`
     - explicit geo predicates now use `payload_geo_distance(payload:<path>, lon, lat)` as a local numeric bridge, `payload_geo_within_bbox(payload:<path>, lon1, lat1, lon2, lat2)` as an explicit bbox predicate over two opposing corners, and `payload_geo_within_polygon(payload:<path>, [[lon, lat], ...])` as an explicit polygon predicate over one exterior ring, with exact remote lowering only for the admitted geo subset on geo payload fields
