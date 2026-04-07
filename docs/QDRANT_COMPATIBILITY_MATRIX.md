@@ -48,7 +48,7 @@ This matrix is derived from:
 
 | Semantic family | Qdrant capability | Current qdrant-client surface | SQL / DataFusion shape | Release fit | Notes |
 |---|---|---|---|---|---|
-| Row restriction | `must` / `should` / `must_not` / nested filter composition | `Filter`, `Condition` | predicate algebra | `Next` | This is the core bridge. General boolean normalization should be implemented over provider-owned predicate IR, not inline expression lowering. |
+| Row restriction | `must` / `should` / `must_not` / nested filter composition | `Filter`, `Condition` | predicate algebra | `Current` | The core bridge is now provider-owned predicate IR rather than ad hoc inline lowering, including nested-scope reuse through `payload_nested_match(...)`. |
 | Row restriction | `has_id` | `Condition::has_id` | `id =`, `id !=`, `id IN`, `id NOT IN` | `Current` | Already admitted. |
 | Row restriction | `has_vector` | `Condition::has_vector` | vector-column `IS NULL` / `IS NOT NULL` | `Current` | Already admitted through nullable vector scan contract. |
 | Row restriction | payload equality | `Condition::matches` | `payload:<path> = ...` | `Current` | Already admitted for indexed scalar payload fields. Integer equality currently requires lookup-capable integer indexes. |
@@ -61,7 +61,7 @@ This matrix is derived from:
 | Row restriction | `is_null` | field condition | payload null semantics | `Current` | SQL `payload:<path> IS NULL` is now admitted exactly as missing or explicit null. Backend lowering composes `is_null` with missing-only detection. |
 | Row restriction | `is_empty` | field condition | payload empty / missing semantics | `Current` | Runtime contract is now validated more precisely: `is_empty` matches missing, explicit null, and `[]`, but not empty strings or empty objects on the current runtime line. The SQL bridge now exposes that explicit subset through `payload_is_empty(payload:<path>)` while still keeping empty strings on ordinary equality semantics. |
 | Row restriction | `values_count` | field condition | cardinality predicates | `Current` | The SQL bridge now exposes explicit cardinality predicates through `payload_values_count(payload:<path>)`. Current runtime tests on the active line show missing fields map to `NULL`, explicit `null` and `[]` map to `0`, and present non-array values map to `1`. Broader typed/container semantics are still deferred. |
-| Row restriction | nested object filter | nested condition | correlated payload-array predicates | `Later` | Important, but it is not equivalent to dotted-path conjunctions. Needs explicit SQL semantics. |
+| Row restriction | nested object filter | nested condition | `payload_nested_match(payload:<path>, <predicate>)` | `Current` | The SQL bridge now exposes explicit nested-array/object predicates by reusing the existing payload filter algebra inside a nested scope instead of introducing a string mini-language. |
 | Row restriction | geo radius via explicit payload distance | `Condition::geo_radius` | `payload_geo_distance(payload:<path>, lon, lat) <= radius` | `Current` | The public SQL bridge is numeric and locally executable; only the `<= radius` subset is claimed as exact remote pushdown. |
 | Row restriction | geo bbox / polygon | geo conditions | `payload_geo_within_bbox(payload:<path>, lon1, lat1, lon2, lat2)` / `payload_geo_within_polygon(payload:<path>, [[lon, lat], ...])` | `Current` | The SQL bridge now exposes explicit bbox and polygon predicates over geo payload fields. Bbox accepts two opposing corners, polygon currently models one exterior ring and auto-closes an open ring instead of requiring the first point to be repeated. |
 | Row restriction | text match | text condition | `payload_text_match(payload:<path>, 'query')` | `Current` | This stays an explicit remote predicate because exact semantics depend on the configured Qdrant text index rather than SQL `LIKE` or local string functions. |
@@ -167,10 +167,10 @@ This remains the strongest next implementation focus.
 
 ### P0.5: broaden predicate families beyond the current explicit empty/cardinality/geo/text subset
 
-The explicit `payload_is_empty(...)` / `payload_values_count(...)` slice is now in place, the first geo bridge now exists through `payload_geo_distance(...) <= radius`, and the first text bridge now exists through `payload_text_match(...)` / `payload_phrase_match(...)`. The remaining work is to widen the predicate family without guessing semantics.
+The explicit `payload_is_empty(...)` / `payload_values_count(...)` slice is now in place, the first geo bridge now exists through `payload_geo_distance(...) <= radius`, the first text bridge now exists through `payload_text_match(...)` / `payload_phrase_match(...)`, and nested payload-array/object predicates now exist through `payload_nested_match(...)`. The remaining work is to widen the predicate family without guessing semantics.
 
 1. keep missing-vs-null-vs-empty semantics explicit instead of guessing
-2. extend nested and broader count-oriented predicates only where the SQL contract is explicit
+2. extend broader count-oriented predicates only where the SQL contract is explicit
 3. avoid conflating SQL null with backend-specific container predicates
 
 ### P1: add aggregate-like exploration that composes over filters

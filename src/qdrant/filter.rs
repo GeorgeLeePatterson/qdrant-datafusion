@@ -162,6 +162,10 @@ enum QdrantPredicate {
         field:  QdrantPayloadPath,
         phrase: String,
     },
+    PayloadNested {
+        field:  QdrantPayloadPath,
+        filter: Box<QdrantFilterExpr>,
+    },
     PayloadEq {
         field: QdrantPayloadPath,
         value: QdrantFilterValue,
@@ -292,6 +296,9 @@ impl QdrantPredicate {
             Self::PayloadPhraseMatch { field, phrase } => {
                 Condition::matches_phrase(field.key(), phrase.clone())
             }
+            Self::PayloadNested { field, filter } => {
+                Condition::nested(field.key(), filter.to_filter())
+            }
             Self::PayloadEq { field, value } => field.eq_condition(value),
             Self::PayloadIn { field, values } => field.in_condition(values),
             Self::PayloadRange { field, lower, upper } => {
@@ -302,6 +309,19 @@ impl QdrantPredicate {
 }
 
 impl QdrantFilterExpr {
+    fn supports_nested(&self) -> bool {
+        match self {
+            Self::Predicate(
+                QdrantPredicate::IdIn(_)
+                | QdrantPredicate::HasVector(_)
+                | QdrantPredicate::PayloadNested { .. },
+            ) => false,
+            Self::Predicate(_) => true,
+            Self::And(exprs) | Self::Or(exprs) => exprs.iter().all(Self::supports_nested),
+            Self::Not(expr) => expr.supports_nested(),
+        }
+    }
+
     fn and(exprs: impl IntoIterator<Item = Self>) -> Self {
         let mut flat = exprs.into_iter().flat_map(Self::into_and_parts).collect::<Vec<_>>();
         match flat.len() {

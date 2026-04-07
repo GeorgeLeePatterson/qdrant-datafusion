@@ -304,6 +304,10 @@ Use it to resume work without replaying the full repository history.
     - unfinished scalar-facet regions now localize cleanly instead of failing when later SQL leaves the exact top-facet contract
     - recursive typed payload rewriting now keeps `payload:<path>` executable through broader local aggregate / `HAVING` / window shells
     - `tests/catalog/mod.rs::supported::scan::aggregates::HAVING_FACET` and `tests/catalog/mod.rs::supported::scan::aggregates::WINDOW_OVER_FACET_SUBQUERY` now track those admitted shapes directly
+53. `Q-056`: explicit nested payload predicates are now admitted without introducing a string mini-language.
+    - `payload_nested_match(payload:<path>, <predicate>)` now lowers exactly to Qdrant nested conditions on scan filters
+    - the nested predicate reuses the existing payload filter algebra in a nested scope instead of inventing a separate parser surface
+    - catalog coverage now tracks both direct and subquery nested-filter SQL in the supported inventory
 
 ## Next
 
@@ -316,7 +320,7 @@ Use it to resume work without replaying the full repository history.
    - current retrieval kernels now allow omitted SQL `LIMIT`, deferring to Qdrant's native default result count unless SQL specifies one
    - current retrieval kernels now also allow omitted projected `ORDER BY score DESC`, deferring to Qdrant's native result order unless SQL specifies a local re-sort
 4. `Q-020`: Extend the predicate algebra only where the SQL semantics are explicit.
-   - nested and broader count-oriented predicates beyond the current explicit `payload_is_empty(...)`, `payload_values_count(...)`, `payload_geo_distance(...) <= radius`, `payload_geo_within_bbox(...)`, `payload_geo_within_polygon(...)`, `payload_text_match(...)`, `payload_text_any(...)`, and `payload_phrase_match(...)` subset
+   - broader count-oriented predicates beyond the current explicit `payload_is_empty(...)`, `payload_values_count(...)`, `payload_geo_distance(...) <= radius`, `payload_geo_within_bbox(...)`, `payload_geo_within_polygon(...)`, `payload_nested_match(...)`, `payload_text_match(...)`, `payload_text_any(...)`, and `payload_phrase_match(...)` subset
 5. Keep the new admission/fallback catalog current as behavior widens.
    - move shared strictness out of scattered implicit notes and into `docs/ADMISSION_MATRIX.md`
    - when a path is strict-for-now, track the affected consumers and the intended widening there

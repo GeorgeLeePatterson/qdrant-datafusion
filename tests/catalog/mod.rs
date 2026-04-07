@@ -548,6 +548,11 @@ pub(crate) mod supported {
                 "SELECT id FROM vectors WHERE payload_text_any(payload:description, ['good', \
                  'cheap']) ORDER BY id",
             );
+            pub(crate) const NESTED_MATCH: SqlCase = SqlCase::new(
+                "scan.filters.nested_match",
+                "SELECT id FROM vectors WHERE payload_nested_match(payload:metadata, payload:rank \
+                 >= 20 AND payload:tag = 'red') ORDER BY id",
+            );
             pub(crate) const IDS_IN: SqlCase = SqlCase::new(
                 "scan.filters.ids_in",
                 "SELECT id FROM docs WHERE id IN ('1', '3') ORDER BY id",
@@ -632,6 +637,12 @@ pub(crate) mod supported {
                  payload_geo_within_polygon(payload:location, [[-1.0, -1.0], [1.0, -1.0], [1.0, \
                  1.5], [-1.0, 1.5]])) filtered ORDER BY id",
             );
+            pub(crate) const NESTED_MATCH_SUBQUERY: SqlCase = SqlCase::new(
+                "scan.filters.nested_match_subquery",
+                "SELECT id FROM (SELECT id FROM vectors WHERE \
+                 payload_nested_match(payload:metadata, payload:rank >= 20 AND payload:tag = \
+                 'red')) filtered ORDER BY id",
+            );
 
             pub(crate) const ALL: &[SqlCase] = &[
                 RAW_PAYLOAD_ARITHMETIC,
@@ -662,6 +673,7 @@ pub(crate) mod supported {
                 TEXT_MATCH,
                 PHRASE_MATCH,
                 TEXT_ANY,
+                NESTED_MATCH,
                 IDS_IN,
                 VECTOR_IS_NULL,
                 VECTOR_NONNULL_AND_MULTI_NULL,
@@ -680,6 +692,7 @@ pub(crate) mod supported {
                 TEXT_ANY_SUBQUERY,
                 GEO_BBOX_SUBQUERY,
                 GEO_POLYGON_SUBQUERY,
+                NESTED_MATCH_SUBQUERY,
             ];
         }
 
@@ -1754,17 +1767,17 @@ pub(crate) mod unsupported {
                      a projection",
                     "payload_phrase_match",
                 );
-            pub(crate) const NESTED_MATCH: UnsupportedSqlCase = UnsupportedSqlCase::new(
-                "scan.filters.nested_match",
-                "SELECT id FROM vectors WHERE payload_nested_match(payload:metadata, 'rank >= \
-                 10') ORDER BY id",
-                "Q-020",
-                "nested payload predicates are not implemented as an explicit qdrant predicate \
-                 surface yet",
-                "payload_nested_match",
-            );
+            pub(crate) const NESTED_MATCH_PROJECTION: UnsupportedSqlCase =
+                UnsupportedSqlCase::by_design(
+                    "scan.filters.nested_match_projection",
+                    "SELECT payload_nested_match(payload:metadata, payload:rank >= 20 AND \
+                     payload:tag = 'red') AS matched FROM vectors ORDER BY id",
+                    "nested-match currently stays a remote-only predicate and is not locally \
+                     executable as a projection",
+                    "payload_nested_match",
+                );
             pub(crate) const ALL: &[UnsupportedSqlCase] =
-                &[TEXT_MATCH_PROJECTION, PHRASE_MATCH_PROJECTION, NESTED_MATCH];
+                &[TEXT_MATCH_PROJECTION, PHRASE_MATCH_PROJECTION, NESTED_MATCH_PROJECTION];
         }
 
         pub(crate) mod aggregates {

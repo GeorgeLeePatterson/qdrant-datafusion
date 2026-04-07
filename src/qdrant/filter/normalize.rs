@@ -20,11 +20,12 @@ use crate::arrow::schema::{ID_FIELD_NAME, QdrantFieldBinding, field_uses_unnamed
 use crate::expr_fn::{
     PAYLOAD_GEO_DISTANCE_ACCESS_FUNCTION_NAME, PAYLOAD_GEO_WITHIN_BBOX_ACCESS_FUNCTION_NAME,
     PAYLOAD_GEO_WITHIN_POLYGON_ACCESS_FUNCTION_NAME, PAYLOAD_IS_EMPTY_ACCESS_FUNCTION_NAME,
-    PAYLOAD_PHRASE_MATCH_ACCESS_FUNCTION_NAME, PAYLOAD_TEXT_ANY_ACCESS_FUNCTION_NAME,
-    PAYLOAD_TEXT_MATCH_ACCESS_FUNCTION_NAME, PAYLOAD_VALUES_COUNT_ACCESS_FUNCTION_NAME,
-    canonical_geo_polygon, is_payload_geo_distance_function_name,
-    is_payload_geo_within_bbox_function_name, is_payload_geo_within_polygon_function_name,
-    is_payload_is_empty_function_name, is_payload_phrase_match_function_name,
+    PAYLOAD_NESTED_MATCH_FUNCTION_NAME, PAYLOAD_PHRASE_MATCH_ACCESS_FUNCTION_NAME,
+    PAYLOAD_TEXT_ANY_ACCESS_FUNCTION_NAME, PAYLOAD_TEXT_MATCH_ACCESS_FUNCTION_NAME,
+    PAYLOAD_VALUES_COUNT_ACCESS_FUNCTION_NAME, canonical_geo_polygon,
+    is_payload_geo_distance_function_name, is_payload_geo_within_bbox_function_name,
+    is_payload_geo_within_polygon_function_name, is_payload_is_empty_function_name,
+    is_payload_nested_match_function_name, is_payload_phrase_match_function_name,
     is_payload_text_any_function_name, is_payload_text_match_function_name,
     is_payload_values_count_function_name, payload_text_any_query_string,
 };
@@ -56,41 +57,91 @@ impl<'a> QdrantExprNormalizer<'a> {
         Self { base_schema, payload_schema }
     }
 
-    #[expect(clippy::too_many_lines)]
+    fn field_for_path(
+        &self,
+        field: &QdrantPayloadPath,
+        nested_base: Option<&QdrantPayloadPath>,
+    ) -> Option<crate::qdrant::QdrantPayloadField> {
+        scoped_field_type(self.payload_schema, nested_base, field)
+    }
+
     fn exact_expr(&self, expr: &Expr) -> Option<QdrantFilterExpr> {
-        if let Some(field) = payload_is_empty_logical_path(expr) {
+        self.exact_logical_expr(expr, None)
+    }
+
+    #[expect(clippy::too_many_lines)]
+    fn exact_logical_expr(
+        &self,
+        expr: &Expr,
+        nested_base: Option<&QdrantPayloadPath>,
+    ) -> Option<QdrantFilterExpr> {
+        if let Some(field) = unary_payload_logical_path(
+            self.payload_schema,
+            nested_base,
+            expr,
+            is_payload_is_empty_function_name,
+            PAYLOAD_IS_EMPTY_ACCESS_FUNCTION_NAME,
+        ) {
             return Some(QdrantFilterExpr::Predicate(QdrantPredicate::PayloadIsEmpty(field)));
         }
-        if let Some(predicate) = payload_geo_predicate_logical(self.payload_schema, expr) {
+        if let Some(predicate) =
+            payload_geo_predicate_logical(self.payload_schema, nested_base, expr)
+        {
             return Some(QdrantFilterExpr::Predicate(predicate));
         }
-        if let Some(predicate) = payload_text_predicate_logical(self.payload_schema, expr) {
+        if let Some(predicate) =
+            payload_text_predicate_logical(self.payload_schema, nested_base, expr)
+        {
+            return Some(QdrantFilterExpr::Predicate(predicate));
+        }
+        if nested_base.is_none()
+            && let Some(predicate) = self.payload_nested_predicate_logical(expr)
+        {
             return Some(QdrantFilterExpr::Predicate(predicate));
         }
         match expr {
-            Expr::Alias(alias) => self.exact_expr(&alias.expr),
-            Expr::Not(expr) => Some(QdrantFilterExpr::not(self.exact_expr(expr)?)),
+            Expr::Alias(alias) => self.exact_logical_expr(&alias.expr, nested_base),
+            Expr::Not(expr) => {
+                Some(QdrantFilterExpr::not(self.exact_logical_expr(expr, nested_base)?))
+            }
             Expr::BinaryExpr(BinaryExpr { op: Operator::And, .. }) => Some(QdrantFilterExpr::and(
                 split_conjunction(expr)
                     .into_iter()
-                    .map(|expr| self.exact_expr(expr))
+                    .map(|expr| self.exact_logical_expr(expr, nested_base))
                     .collect::<Option<Vec<_>>>()?,
             )),
             Expr::BinaryExpr(BinaryExpr { op: Operator::Or, .. }) => Some(QdrantFilterExpr::or(
                 split_binary(expr, Operator::Or)
                     .into_iter()
-                    .map(|expr| self.exact_expr(expr))
+                    .map(|expr| self.exact_logical_expr(expr, nested_base))
                     .collect::<Option<Vec<_>>>()?,
             )),
             Expr::BinaryExpr(BinaryExpr { left, op, right }) => self.filter_expr_from_refs(
-                QdrantFieldRef::from_logical_expr(self.base_schema, self.payload_schema, left),
-                QdrantFieldRef::from_logical_expr(self.base_schema, self.payload_schema, right),
+                QdrantFieldRef::from_logical_expr(
+                    self.base_schema,
+                    self.payload_schema,
+                    nested_base,
+                    left,
+                ),
+                QdrantFieldRef::from_logical_expr(
+                    self.base_schema,
+                    self.payload_schema,
+                    nested_base,
+                    right,
+                ),
+                nested_base,
                 *op,
                 Self::logical_scalar_literal(left),
                 Self::logical_scalar_literal(right),
             ),
             Expr::InList(InList { expr, list, negated }) => self.in_list_expr_from_refs(
-                QdrantFieldRef::from_logical_expr(self.base_schema, self.payload_schema, expr),
+                QdrantFieldRef::from_logical_expr(
+                    self.base_schema,
+                    self.payload_schema,
+                    nested_base,
+                    expr,
+                ),
+                nested_base,
                 list.iter().map(Self::logical_scalar_literal).collect::<Option<Vec<_>>>(),
                 *negated,
             ),
@@ -98,6 +149,7 @@ impl<'a> QdrantExprNormalizer<'a> {
                 match QdrantFieldRef::from_logical_expr(
                     self.base_schema,
                     self.payload_schema,
+                    nested_base,
                     expr,
                 )? {
                     QdrantFieldRef::Vector(name) => Some(QdrantFilterExpr::not(
@@ -113,6 +165,7 @@ impl<'a> QdrantExprNormalizer<'a> {
                 match QdrantFieldRef::from_logical_expr(
                     self.base_schema,
                     self.payload_schema,
+                    nested_base,
                     expr,
                 )? {
                     QdrantFieldRef::Vector(name) => {
@@ -130,10 +183,11 @@ impl<'a> QdrantExprNormalizer<'a> {
                 match QdrantFieldRef::from_logical_expr(
                     self.base_schema,
                     self.payload_schema,
+                    nested_base,
                     expr,
                 )? {
                     QdrantFieldRef::Payload(field) => {
-                        let field_type = self.payload_schema.field_for_path(field.key())?;
+                        let field_type = self.field_for_path(&field, nested_base)?;
                         let low =
                             field_type.into_filter_value(Self::logical_scalar_literal(low)?)?;
                         let high =
@@ -164,7 +218,7 @@ impl<'a> QdrantExprNormalizer<'a> {
                         }
                     }
                     QdrantFieldRef::PayloadGeoDistance { field, lon, lat } => {
-                        if self.payload_schema.field_for_path(field.key())?
+                        if self.field_for_path(&field, nested_base)?
                             != crate::qdrant::QdrantPayloadField::Geo
                         {
                             return None;
@@ -189,24 +243,49 @@ impl<'a> QdrantExprNormalizer<'a> {
     }
 
     fn exact_physical_expr(&self, expr: &Arc<dyn PhysicalExpr>) -> Option<QdrantFilterExpr> {
-        if let Some(field) = payload_is_empty_physical_path(expr) {
+        self.exact_physical_expr_in_scope(expr, None)
+    }
+
+    #[expect(clippy::too_many_lines)]
+    fn exact_physical_expr_in_scope(
+        &self,
+        expr: &Arc<dyn PhysicalExpr>,
+        nested_base: Option<&QdrantPayloadPath>,
+    ) -> Option<QdrantFilterExpr> {
+        if let Some(field) = unary_payload_physical_path(
+            self.payload_schema,
+            nested_base,
+            expr,
+            PAYLOAD_IS_EMPTY_ACCESS_FUNCTION_NAME,
+        ) {
             return Some(QdrantFilterExpr::Predicate(QdrantPredicate::PayloadIsEmpty(field)));
         }
-        if let Some(predicate) = payload_geo_predicate_physical(self.payload_schema, expr) {
+        if let Some(predicate) =
+            payload_geo_predicate_physical(self.payload_schema, nested_base, expr)
+        {
             return Some(QdrantFilterExpr::Predicate(predicate));
         }
-        if let Some(predicate) = payload_text_predicate_physical(self.payload_schema, expr) {
+        if let Some(predicate) =
+            payload_text_predicate_physical(self.payload_schema, nested_base, expr)
+        {
+            return Some(QdrantFilterExpr::Predicate(predicate));
+        }
+        if nested_base.is_none()
+            && let Some(predicate) = self.payload_nested_predicate_physical(expr)
+        {
             return Some(QdrantFilterExpr::Predicate(predicate));
         }
         if let Some(expr) = expr.as_any().downcast_ref::<NotExpr>() {
-            return Some(QdrantFilterExpr::not(self.exact_physical_expr(expr.arg())?));
+            return Some(QdrantFilterExpr::not(
+                self.exact_physical_expr_in_scope(expr.arg(), nested_base)?,
+            ));
         }
         if let Some(binary) = expr.as_any().downcast_ref::<PhysicalBinaryExpr>() {
             if *binary.op() == Operator::And {
                 return Some(QdrantFilterExpr::and(
                     split_physical_conjunction(expr)
                         .into_iter()
-                        .map(|expr| self.exact_physical_expr(expr))
+                        .map(|expr| self.exact_physical_expr_in_scope(expr, nested_base))
                         .collect::<Option<Vec<_>>>()?,
                 ));
             }
@@ -214,7 +293,7 @@ impl<'a> QdrantExprNormalizer<'a> {
                 return Some(QdrantFilterExpr::or(
                     split_disjunction(expr)
                         .into_iter()
-                        .map(|expr| self.exact_physical_expr(expr))
+                        .map(|expr| self.exact_physical_expr_in_scope(expr, nested_base))
                         .collect::<Option<Vec<_>>>()?,
                 ));
             }
@@ -222,13 +301,16 @@ impl<'a> QdrantExprNormalizer<'a> {
                 QdrantFieldRef::from_physical_expr(
                     self.base_schema,
                     self.payload_schema,
+                    nested_base,
                     binary.left(),
                 ),
                 QdrantFieldRef::from_physical_expr(
                     self.base_schema,
                     self.payload_schema,
+                    nested_base,
                     binary.right(),
                 ),
+                nested_base,
                 *binary.op(),
                 Self::physical_scalar_literal(binary.left()),
                 Self::physical_scalar_literal(binary.right()),
@@ -239,8 +321,10 @@ impl<'a> QdrantExprNormalizer<'a> {
                 QdrantFieldRef::from_physical_expr(
                     self.base_schema,
                     self.payload_schema,
+                    nested_base,
                     in_list.expr(),
                 ),
+                nested_base,
                 in_list
                     .list()
                     .iter()
@@ -253,6 +337,7 @@ impl<'a> QdrantExprNormalizer<'a> {
             return match QdrantFieldRef::from_physical_expr(
                 self.base_schema,
                 self.payload_schema,
+                nested_base,
                 expr.arg(),
             )? {
                 QdrantFieldRef::Vector(name) => Some(QdrantFilterExpr::not(
@@ -268,6 +353,7 @@ impl<'a> QdrantExprNormalizer<'a> {
             return match QdrantFieldRef::from_physical_expr(
                 self.base_schema,
                 self.payload_schema,
+                nested_base,
                 expr.arg(),
             )? {
                 QdrantFieldRef::Vector(name) => {
@@ -288,13 +374,16 @@ impl<'a> QdrantExprNormalizer<'a> {
         &self,
         left_field: Option<QdrantFieldRef>,
         right_field: Option<QdrantFieldRef>,
+        nested_base: Option<&QdrantPayloadPath>,
         op: Operator,
         left_literal: Option<&ScalarValue>,
         right_literal: Option<&ScalarValue>,
     ) -> Option<QdrantFilterExpr> {
         match (left_field, right_field) {
-            (Some(field), None) => self.filter_expr(field, op, right_literal?),
-            (None, Some(field)) => self.filter_expr(field, reverse_operator(op)?, left_literal?),
+            (Some(field), None) => self.filter_expr(field, nested_base, op, right_literal?),
+            (None, Some(field)) => {
+                self.filter_expr(field, nested_base, reverse_operator(op)?, left_literal?)
+            }
             _ => None,
         }
     }
@@ -302,6 +391,7 @@ impl<'a> QdrantExprNormalizer<'a> {
     fn in_list_expr_from_refs(
         &self,
         field: Option<QdrantFieldRef>,
+        nested_base: Option<&QdrantPayloadPath>,
         values: Option<Vec<&ScalarValue>>,
         negated: bool,
     ) -> Option<QdrantFilterExpr> {
@@ -314,7 +404,7 @@ impl<'a> QdrantExprNormalizer<'a> {
                 values.into_iter().map(point_id_scalar).collect::<Option<Vec<_>>>()?,
             ),
             QdrantFieldRef::Payload(field) => {
-                let field_type = self.payload_schema.field_for_path(field.key())?;
+                let field_type = self.field_for_path(&field, nested_base)?;
                 if !field_type.supports_equality() {
                     return None;
                 }
@@ -336,6 +426,7 @@ impl<'a> QdrantExprNormalizer<'a> {
     fn filter_expr(
         &self,
         field: QdrantFieldRef,
+        nested_base: Option<&QdrantPayloadPath>,
         op: Operator,
         literal: &ScalarValue,
     ) -> Option<QdrantFilterExpr> {
@@ -352,7 +443,7 @@ impl<'a> QdrantExprNormalizer<'a> {
                 }
             }
             QdrantFieldRef::Payload(field) => {
-                let field_type = self.payload_schema.field_for_path(field.key())?;
+                let field_type = self.field_for_path(&field, nested_base)?;
                 let value = field_type.into_filter_value(literal)?;
                 match op {
                     Operator::Eq if field_type.supports_equality() => {
@@ -423,7 +514,7 @@ impl<'a> QdrantExprNormalizer<'a> {
                 Some(QdrantFilterExpr::Predicate(predicate))
             }
             QdrantFieldRef::PayloadGeoDistance { field, lon, lat } => {
-                if self.payload_schema.field_for_path(field.key())?
+                if self.field_for_path(&field, nested_base)?
                     != crate::qdrant::QdrantPayloadField::Geo
                 {
                     return None;
@@ -456,26 +547,75 @@ impl<'a> QdrantExprNormalizer<'a> {
     fn physical_scalar_literal(expr: &Arc<dyn PhysicalExpr>) -> Option<&ScalarValue> {
         expr.as_any().downcast_ref::<PhysicalLiteral>().map(PhysicalLiteral::value)
     }
+
+    fn payload_nested_predicate_logical(&self, expr: &Expr) -> Option<QdrantPredicate> {
+        match expr {
+            Expr::Alias(alias) => self.payload_nested_predicate_logical(&alias.expr),
+            Expr::ScalarFunction(function)
+                if is_payload_nested_match_function_name(function.name()) =>
+            {
+                let [accessor, predicate] = function.args.as_slice() else {
+                    return None;
+                };
+                let field = QdrantPayloadAccess::from_logical_expr(accessor)?.path().clone();
+                let filter = self.exact_logical_expr(predicate, Some(&field))?;
+                filter
+                    .supports_nested()
+                    .then_some(QdrantPredicate::PayloadNested { field, filter: Box::new(filter) })
+            }
+            _ => None,
+        }
+    }
+
+    fn payload_nested_predicate_physical(
+        &self,
+        expr: &Arc<dyn PhysicalExpr>,
+    ) -> Option<QdrantPredicate> {
+        let function =
+            expr.as_any().downcast_ref::<datafusion::physical_expr::ScalarFunctionExpr>()?;
+        if function.name() != PAYLOAD_NESTED_MATCH_FUNCTION_NAME {
+            return None;
+        }
+        let [accessor, predicate] = function.args() else {
+            return None;
+        };
+        let field = scoped_payload_physical_path(self.payload_schema, None, accessor)?;
+        let filter = self.exact_physical_expr_in_scope(predicate, Some(&field))?;
+        filter
+            .supports_nested()
+            .then_some(QdrantPredicate::PayloadNested { field, filter: Box::new(filter) })
+    }
 }
 
 impl QdrantFieldRef {
     fn from_logical_expr(
         base_schema: &SchemaRef,
         payload_schema: &QdrantPayloadSchema,
+        nested_base: Option<&QdrantPayloadPath>,
         expr: &Expr,
     ) -> Option<Self> {
-        if let Some(path) = payload_values_count_logical_path(expr) {
+        if let Some(path) = unary_payload_logical_path(
+            payload_schema,
+            nested_base,
+            expr,
+            is_payload_values_count_function_name,
+            PAYLOAD_VALUES_COUNT_ACCESS_FUNCTION_NAME,
+        ) {
             return Some(Self::PayloadValuesCount(path));
         }
-        if let Some((field, lon, lat)) = payload_geo_distance_logical(expr) {
+        if let Some((field, lon, lat)) =
+            payload_geo_distance_logical(payload_schema, nested_base, expr)
+        {
             return Some(Self::PayloadGeoDistance { field, lon, lat });
         }
-        if let Some(path) = payload_schema.path_for_logical_expr(expr) {
+        if let Some(path) = scoped_payload_logical_path(payload_schema, nested_base, expr) {
             return Some(Self::Payload(path));
         }
         match expr {
             Expr::Column(column) => Self::from_column_name(base_schema, &column.name),
-            Expr::Alias(alias) => Self::from_logical_expr(base_schema, payload_schema, &alias.expr),
+            Expr::Alias(alias) => {
+                Self::from_logical_expr(base_schema, payload_schema, nested_base, &alias.expr)
+            }
             _ => None,
         }
     }
@@ -483,15 +623,23 @@ impl QdrantFieldRef {
     fn from_physical_expr(
         base_schema: &SchemaRef,
         payload_schema: &QdrantPayloadSchema,
+        nested_base: Option<&QdrantPayloadPath>,
         expr: &Arc<dyn PhysicalExpr>,
     ) -> Option<Self> {
-        if let Some(path) = payload_values_count_physical_path(expr) {
+        if let Some(path) = unary_payload_physical_path(
+            payload_schema,
+            nested_base,
+            expr,
+            PAYLOAD_VALUES_COUNT_ACCESS_FUNCTION_NAME,
+        ) {
             return Some(Self::PayloadValuesCount(path));
         }
-        if let Some((field, lon, lat)) = payload_geo_distance_physical(expr) {
+        if let Some((field, lon, lat)) =
+            payload_geo_distance_physical(payload_schema, nested_base, expr)
+        {
             return Some(Self::PayloadGeoDistance { field, lon, lat });
         }
-        if let Some(path) = payload_schema.path_for_physical_expr(expr) {
+        if let Some(path) = scoped_payload_physical_path(payload_schema, nested_base, expr) {
             return Some(Self::Payload(path));
         }
         let column = expr.as_any().downcast_ref::<PhysicalColumn>()?;
@@ -513,54 +661,44 @@ impl QdrantFieldRef {
     }
 }
 
-fn payload_is_empty_logical_path(expr: &Expr) -> Option<QdrantPayloadPath> {
-    unary_payload_logical_path(
-        expr,
-        is_payload_is_empty_function_name,
-        PAYLOAD_IS_EMPTY_ACCESS_FUNCTION_NAME,
-    )
-}
-
-fn payload_values_count_logical_path(expr: &Expr) -> Option<QdrantPayloadPath> {
-    unary_payload_logical_path(
-        expr,
-        is_payload_values_count_function_name,
-        PAYLOAD_VALUES_COUNT_ACCESS_FUNCTION_NAME,
-    )
-}
-
 fn unary_payload_logical_path(
+    payload_schema: &QdrantPayloadSchema,
+    nested_base: Option<&QdrantPayloadPath>,
     expr: &Expr,
     public_name: impl Fn(&str) -> bool,
     internal_name: &str,
 ) -> Option<QdrantPayloadPath> {
     match expr {
-        Expr::Alias(alias) => unary_payload_logical_path(&alias.expr, public_name, internal_name),
+        Expr::Alias(alias) => unary_payload_logical_path(
+            payload_schema,
+            nested_base,
+            &alias.expr,
+            public_name,
+            internal_name,
+        ),
         Expr::ScalarFunction(function) if public_name(function.name()) => {
             let [accessor] = function.args.as_slice() else {
                 return None;
             };
-            Some(QdrantPayloadAccess::from_logical_expr(accessor)?.path().clone())
+            scoped_payload_logical_path(payload_schema, nested_base, accessor)
         }
         Expr::ScalarFunction(function) if function.name() == internal_name => {
             let [payload, path] = function.args.as_slice() else {
                 return None;
             };
-            Some(QdrantPayloadAccess::from_logical_parts(payload, path)?.path().clone())
+            scope_payload_path(
+                payload_schema,
+                nested_base,
+                QdrantPayloadAccess::from_logical_parts(payload, path)?.path(),
+            )
         }
         _ => None,
     }
 }
 
-fn payload_is_empty_physical_path(expr: &Arc<dyn PhysicalExpr>) -> Option<QdrantPayloadPath> {
-    unary_payload_physical_path(expr, PAYLOAD_IS_EMPTY_ACCESS_FUNCTION_NAME)
-}
-
-fn payload_values_count_physical_path(expr: &Arc<dyn PhysicalExpr>) -> Option<QdrantPayloadPath> {
-    unary_payload_physical_path(expr, PAYLOAD_VALUES_COUNT_ACCESS_FUNCTION_NAME)
-}
-
 fn unary_payload_physical_path(
+    payload_schema: &QdrantPayloadSchema,
+    nested_base: Option<&QdrantPayloadPath>,
     expr: &Arc<dyn PhysicalExpr>,
     internal_name: &str,
 ) -> Option<QdrantPayloadPath> {
@@ -571,12 +709,22 @@ fn unary_payload_physical_path(
     let [payload, path] = function.args() else {
         return None;
     };
-    Some(QdrantPayloadAccess::from_physical_parts(payload, path)?.path().clone())
+    scope_payload_path(
+        payload_schema,
+        nested_base,
+        QdrantPayloadAccess::from_physical_parts(payload, path)?.path(),
+    )
 }
 
-fn payload_geo_distance_logical(expr: &Expr) -> Option<(QdrantPayloadPath, f64, f64)> {
+fn payload_geo_distance_logical(
+    payload_schema: &QdrantPayloadSchema,
+    nested_base: Option<&QdrantPayloadPath>,
+    expr: &Expr,
+) -> Option<(QdrantPayloadPath, f64, f64)> {
     match expr {
-        Expr::Alias(alias) => payload_geo_distance_logical(&alias.expr),
+        Expr::Alias(alias) => {
+            payload_geo_distance_logical(payload_schema, nested_base, &alias.expr)
+        }
         Expr::ScalarFunction(function)
             if is_payload_geo_distance_function_name(function.name()) =>
         {
@@ -584,7 +732,7 @@ fn payload_geo_distance_logical(expr: &Expr) -> Option<(QdrantPayloadPath, f64, 
                 return None;
             };
             Some((
-                QdrantPayloadAccess::from_logical_expr(accessor)?.path().clone(),
+                scoped_payload_logical_path(payload_schema, nested_base, accessor)?,
                 float_scalar(logical_scalar_literal_value(lon)?)?,
                 float_scalar(logical_scalar_literal_value(lat)?)?,
             ))
@@ -596,7 +744,11 @@ fn payload_geo_distance_logical(expr: &Expr) -> Option<(QdrantPayloadPath, f64, 
                 return None;
             };
             Some((
-                QdrantPayloadAccess::from_logical_parts(payload, path)?.path().clone(),
+                scope_payload_path(
+                    payload_schema,
+                    nested_base,
+                    QdrantPayloadAccess::from_logical_parts(payload, path)?.path(),
+                )?,
                 float_scalar(logical_scalar_literal_value(lon)?)?,
                 float_scalar(logical_scalar_literal_value(lat)?)?,
             ))
@@ -606,6 +758,8 @@ fn payload_geo_distance_logical(expr: &Expr) -> Option<(QdrantPayloadPath, f64, 
 }
 
 fn payload_geo_distance_physical(
+    payload_schema: &QdrantPayloadSchema,
+    nested_base: Option<&QdrantPayloadPath>,
     expr: &Arc<dyn PhysicalExpr>,
 ) -> Option<(QdrantPayloadPath, f64, f64)> {
     let function = expr.as_any().downcast_ref::<datafusion::physical_expr::ScalarFunctionExpr>()?;
@@ -616,7 +770,11 @@ fn payload_geo_distance_physical(
         return None;
     };
     Some((
-        QdrantPayloadAccess::from_physical_parts(payload, path)?.path().clone(),
+        scope_payload_path(
+            payload_schema,
+            nested_base,
+            QdrantPayloadAccess::from_physical_parts(payload, path)?.path(),
+        )?,
         float_scalar(physical_scalar_literal_value(lon)?)?,
         float_scalar(physical_scalar_literal_value(lat)?)?,
     ))
@@ -624,18 +782,22 @@ fn payload_geo_distance_physical(
 
 fn payload_geo_predicate_logical(
     payload_schema: &QdrantPayloadSchema,
+    nested_base: Option<&QdrantPayloadPath>,
     expr: &Expr,
 ) -> Option<QdrantPredicate> {
     match expr {
-        Expr::Alias(alias) => payload_geo_predicate_logical(payload_schema, &alias.expr),
+        Expr::Alias(alias) => {
+            payload_geo_predicate_logical(payload_schema, nested_base, &alias.expr)
+        }
         Expr::ScalarFunction(function)
             if is_payload_geo_within_bbox_function_name(function.name()) =>
         {
             let [accessor, lon1, lat1, lon2, lat2] = function.args.as_slice() else {
                 return None;
             };
-            let field = QdrantPayloadAccess::from_logical_expr(accessor)?.path().clone();
-            if payload_schema.field_for_path(field.key())? != crate::qdrant::QdrantPayloadField::Geo
+            let field = scoped_payload_logical_path(payload_schema, nested_base, accessor)?;
+            if scoped_field_type(payload_schema, nested_base, &field)?
+                != crate::qdrant::QdrantPayloadField::Geo
             {
                 return None;
             }
@@ -648,8 +810,13 @@ fn payload_geo_predicate_logical(
             let [payload, path, lon1, lat1, lon2, lat2] = function.args.as_slice() else {
                 return None;
             };
-            let field = QdrantPayloadAccess::from_logical_parts(payload, path)?.path().clone();
-            if payload_schema.field_for_path(field.key())? != crate::qdrant::QdrantPayloadField::Geo
+            let field = scope_payload_path(
+                payload_schema,
+                nested_base,
+                QdrantPayloadAccess::from_logical_parts(payload, path)?.path(),
+            )?;
+            if scoped_field_type(payload_schema, nested_base, &field)?
+                != crate::qdrant::QdrantPayloadField::Geo
             {
                 return None;
             }
@@ -662,8 +829,9 @@ fn payload_geo_predicate_logical(
             let [accessor, points] = function.args.as_slice() else {
                 return None;
             };
-            let field = QdrantPayloadAccess::from_logical_expr(accessor)?.path().clone();
-            if payload_schema.field_for_path(field.key())? != crate::qdrant::QdrantPayloadField::Geo
+            let field = scoped_payload_logical_path(payload_schema, nested_base, accessor)?;
+            if scoped_field_type(payload_schema, nested_base, &field)?
+                != crate::qdrant::QdrantPayloadField::Geo
             {
                 return None;
             }
@@ -683,8 +851,13 @@ fn payload_geo_predicate_logical(
             let [payload, path, points] = function.args.as_slice() else {
                 return None;
             };
-            let field = QdrantPayloadAccess::from_logical_parts(payload, path)?.path().clone();
-            if payload_schema.field_for_path(field.key())? != crate::qdrant::QdrantPayloadField::Geo
+            let field = scope_payload_path(
+                payload_schema,
+                nested_base,
+                QdrantPayloadAccess::from_logical_parts(payload, path)?.path(),
+            )?;
+            if scoped_field_type(payload_schema, nested_base, &field)?
+                != crate::qdrant::QdrantPayloadField::Geo
             {
                 return None;
             }
@@ -704,6 +877,7 @@ fn payload_geo_predicate_logical(
 
 fn payload_geo_predicate_physical(
     payload_schema: &QdrantPayloadSchema,
+    nested_base: Option<&QdrantPayloadPath>,
     expr: &Arc<dyn PhysicalExpr>,
 ) -> Option<QdrantPredicate> {
     let function = expr.as_any().downcast_ref::<datafusion::physical_expr::ScalarFunctionExpr>()?;
@@ -712,8 +886,13 @@ fn payload_geo_predicate_physical(
             let [payload, path, lon1, lat1, lon2, lat2] = function.args() else {
                 return None;
             };
-            let field = QdrantPayloadAccess::from_physical_parts(payload, path)?.path().clone();
-            if payload_schema.field_for_path(field.key())? != crate::qdrant::QdrantPayloadField::Geo
+            let field = scope_payload_path(
+                payload_schema,
+                nested_base,
+                QdrantPayloadAccess::from_physical_parts(payload, path)?.path(),
+            )?;
+            if scoped_field_type(payload_schema, nested_base, &field)?
+                != crate::qdrant::QdrantPayloadField::Geo
             {
                 return None;
             }
@@ -724,8 +903,13 @@ fn payload_geo_predicate_physical(
             let [payload, path, points] = function.args() else {
                 return None;
             };
-            let field = QdrantPayloadAccess::from_physical_parts(payload, path)?.path().clone();
-            if payload_schema.field_for_path(field.key())? != crate::qdrant::QdrantPayloadField::Geo
+            let field = scope_payload_path(
+                payload_schema,
+                nested_base,
+                QdrantPayloadAccess::from_physical_parts(payload, path)?.path(),
+            )?;
+            if scoped_field_type(payload_schema, nested_base, &field)?
+                != crate::qdrant::QdrantPayloadField::Geo
             {
                 return None;
             }
@@ -769,29 +953,34 @@ impl PayloadTextPredicateKind {
 
 fn text_predicate_from_query(
     payload_schema: &QdrantPayloadSchema,
+    nested_base: Option<&QdrantPayloadPath>,
     kind: PayloadTextPredicateKind,
     field: QdrantPayloadPath,
     query: String,
 ) -> Option<QdrantPredicate> {
-    let field_type = payload_schema.field_for_path(field.key())?;
+    let field_type = scoped_field_type(payload_schema, nested_base, &field)?;
     kind.supported(field_type).then(|| kind.build(field, query))
 }
 
+#[expect(clippy::too_many_lines)]
 fn payload_text_predicate_logical(
     payload_schema: &QdrantPayloadSchema,
+    nested_base: Option<&QdrantPayloadPath>,
     expr: &Expr,
 ) -> Option<QdrantPredicate> {
     match expr {
-        Expr::Alias(alias) => payload_text_predicate_logical(payload_schema, &alias.expr),
+        Expr::Alias(alias) => {
+            payload_text_predicate_logical(payload_schema, nested_base, &alias.expr)
+        }
         Expr::ScalarFunction(function) if is_payload_text_match_function_name(function.name()) => {
             let [accessor, query] = function.args.as_slice() else {
                 return None;
             };
-            let access = QdrantPayloadAccess::from_logical_expr(accessor)?;
             text_predicate_from_query(
                 payload_schema,
+                nested_base,
                 PayloadTextPredicateKind::Match,
-                access.path().clone(),
+                scoped_payload_logical_path(payload_schema, nested_base, accessor)?,
                 string_scalar(logical_scalar_literal_value(query)?)?,
             )
         }
@@ -799,11 +988,11 @@ fn payload_text_predicate_logical(
             let [accessor, terms] = function.args.as_slice() else {
                 return None;
             };
-            let access = QdrantPayloadAccess::from_logical_expr(accessor)?;
             text_predicate_from_query(
                 payload_schema,
+                nested_base,
                 PayloadTextPredicateKind::Any,
-                access.path().clone(),
+                scoped_payload_logical_path(payload_schema, nested_base, accessor)?,
                 payload_text_any_query_string(
                     logical_scalar_literal_value(terms)?,
                     function.name(),
@@ -818,11 +1007,11 @@ fn payload_text_predicate_logical(
             let [accessor, phrase] = function.args.as_slice() else {
                 return None;
             };
-            let access = QdrantPayloadAccess::from_logical_expr(accessor)?;
             text_predicate_from_query(
                 payload_schema,
+                nested_base,
                 PayloadTextPredicateKind::Phrase,
-                access.path().clone(),
+                scoped_payload_logical_path(payload_schema, nested_base, accessor)?,
                 string_scalar(logical_scalar_literal_value(phrase)?)?,
             )
         }
@@ -834,8 +1023,13 @@ fn payload_text_predicate_logical(
             };
             text_predicate_from_query(
                 payload_schema,
+                nested_base,
                 PayloadTextPredicateKind::Match,
-                QdrantPayloadAccess::from_logical_parts(payload, path)?.path().clone(),
+                scope_payload_path(
+                    payload_schema,
+                    nested_base,
+                    QdrantPayloadAccess::from_logical_parts(payload, path)?.path(),
+                )?,
                 string_scalar(logical_scalar_literal_value(query)?)?,
             )
         }
@@ -847,8 +1041,13 @@ fn payload_text_predicate_logical(
             };
             text_predicate_from_query(
                 payload_schema,
+                nested_base,
                 PayloadTextPredicateKind::Any,
-                QdrantPayloadAccess::from_logical_parts(payload, path)?.path().clone(),
+                scope_payload_path(
+                    payload_schema,
+                    nested_base,
+                    QdrantPayloadAccess::from_logical_parts(payload, path)?.path(),
+                )?,
                 payload_text_any_query_string(
                     logical_scalar_literal_value(terms)?,
                     PAYLOAD_TEXT_ANY_ACCESS_FUNCTION_NAME,
@@ -865,8 +1064,13 @@ fn payload_text_predicate_logical(
             };
             text_predicate_from_query(
                 payload_schema,
+                nested_base,
                 PayloadTextPredicateKind::Phrase,
-                QdrantPayloadAccess::from_logical_parts(payload, path)?.path().clone(),
+                scope_payload_path(
+                    payload_schema,
+                    nested_base,
+                    QdrantPayloadAccess::from_logical_parts(payload, path)?.path(),
+                )?,
                 string_scalar(logical_scalar_literal_value(phrase)?)?,
             )
         }
@@ -876,6 +1080,7 @@ fn payload_text_predicate_logical(
 
 fn payload_text_predicate_physical(
     payload_schema: &QdrantPayloadSchema,
+    nested_base: Option<&QdrantPayloadPath>,
     expr: &Arc<dyn PhysicalExpr>,
 ) -> Option<QdrantPredicate> {
     let function = expr.as_any().downcast_ref::<datafusion::physical_expr::ScalarFunctionExpr>()?;
@@ -886,8 +1091,13 @@ fn payload_text_predicate_physical(
             };
             text_predicate_from_query(
                 payload_schema,
+                nested_base,
                 PayloadTextPredicateKind::Match,
-                QdrantPayloadAccess::from_physical_parts(payload, path)?.path().clone(),
+                scope_payload_path(
+                    payload_schema,
+                    nested_base,
+                    QdrantPayloadAccess::from_physical_parts(payload, path)?.path(),
+                )?,
                 string_scalar(physical_scalar_literal_value(query)?)?,
             )
         }
@@ -897,8 +1107,13 @@ fn payload_text_predicate_physical(
             };
             text_predicate_from_query(
                 payload_schema,
+                nested_base,
                 PayloadTextPredicateKind::Any,
-                QdrantPayloadAccess::from_physical_parts(payload, path)?.path().clone(),
+                scope_payload_path(
+                    payload_schema,
+                    nested_base,
+                    QdrantPayloadAccess::from_physical_parts(payload, path)?.path(),
+                )?,
                 payload_text_any_query_string(
                     physical_scalar_literal_value(terms)?,
                     PAYLOAD_TEXT_ANY_ACCESS_FUNCTION_NAME,
@@ -913,13 +1128,75 @@ fn payload_text_predicate_physical(
             };
             text_predicate_from_query(
                 payload_schema,
+                nested_base,
                 PayloadTextPredicateKind::Phrase,
-                QdrantPayloadAccess::from_physical_parts(payload, path)?.path().clone(),
+                scope_payload_path(
+                    payload_schema,
+                    nested_base,
+                    QdrantPayloadAccess::from_physical_parts(payload, path)?.path(),
+                )?,
                 string_scalar(physical_scalar_literal_value(phrase)?)?,
             )
         }
         _ => None,
     }
+}
+
+fn scoped_payload_logical_path(
+    payload_schema: &QdrantPayloadSchema,
+    nested_base: Option<&QdrantPayloadPath>,
+    expr: &Expr,
+) -> Option<QdrantPayloadPath> {
+    let path = if nested_base.is_some() {
+        QdrantPayloadPath::from_logical_expr(expr)
+    } else {
+        payload_schema.path_for_logical_expr(expr)
+    }?;
+    scope_payload_path(payload_schema, nested_base, &path)
+}
+
+fn scoped_payload_physical_path(
+    payload_schema: &QdrantPayloadSchema,
+    nested_base: Option<&QdrantPayloadPath>,
+    expr: &Arc<dyn PhysicalExpr>,
+) -> Option<QdrantPayloadPath> {
+    let path = if nested_base.is_some() {
+        QdrantPayloadPath::from_physical_expr(expr)
+    } else {
+        payload_schema.path_for_physical_expr(expr)
+    }?;
+    scope_payload_path(payload_schema, nested_base, &path)
+}
+
+fn scope_payload_path(
+    payload_schema: &QdrantPayloadSchema,
+    nested_base: Option<&QdrantPayloadPath>,
+    path: &QdrantPayloadPath,
+) -> Option<QdrantPayloadPath> {
+    let Some(base) = nested_base else {
+        return Some(path.clone());
+    };
+    if let Some(relative) = path.strip_prefix(base.key()) {
+        return Some(relative);
+    }
+    let relative = path.clone();
+    payload_schema
+        .field_for_path(&format!("{}.{}", base.key(), relative.key()))
+        .or_else(|| payload_schema.field_for_path(relative.key()))
+        .map(|_| relative)
+}
+
+fn scoped_field_type(
+    payload_schema: &QdrantPayloadSchema,
+    nested_base: Option<&QdrantPayloadPath>,
+    field: &QdrantPayloadPath,
+) -> Option<crate::qdrant::QdrantPayloadField> {
+    if let Some(base) = nested_base {
+        return payload_schema
+            .field_for_path(&format!("{}.{}", base.key(), field.key()))
+            .or_else(|| payload_schema.field_for_path(field.key()));
+    }
+    payload_schema.field_for_path(field.key())
 }
 
 fn logical_scalar_literal_value(expr: &Expr) -> Option<&ScalarValue> {

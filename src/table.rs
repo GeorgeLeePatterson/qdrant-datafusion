@@ -300,8 +300,9 @@ mod tests {
     use futures_util::FutureExt;
     use qdrant_client::Qdrant;
     use qdrant_client::qdrant::{
-        GeoIndexParams, GeoIndexParamsBuilder, IntegerIndexParams, OrderValue, PayloadSchemaInfo,
-        PointId, RetrievedPoint, TextIndexParamsBuilder, TokenizerType, order_value, point_id,
+        GeoIndexParams, GeoIndexParamsBuilder, IntegerIndexParams, IntegerIndexParamsBuilder,
+        KeywordIndexParamsBuilder, OrderValue, PayloadSchemaInfo, PointId, RetrievedPoint,
+        TextIndexParamsBuilder, TokenizerType, order_value, point_id,
     };
 
     use super::*;
@@ -1595,6 +1596,63 @@ mod tests {
             .sql(
                 "SELECT id FROM vectors WHERE payload_geo_within_polygon(payload:location, \
                  [[-1.0, -1.0], [1.0, -1.0], [1.0, 1.5], [-1.0, 1.5]])",
+            )
+            .now_or_never()
+            .expect("sql future is ready")
+            .expect("dataframe");
+        let plan = dataframe
+            .create_physical_plan()
+            .now_or_never()
+            .expect("plan future is ready")
+            .expect("physical plan");
+        let display = displayable(plan.as_ref()).indent(true).to_string();
+        let scan = qdrant_scan(&plan);
+
+        assert_eq!(scan.pushdown.filters.len(), 1);
+        assert!(!display.contains("FilterExec"), "{display}");
+    }
+
+    #[test]
+    fn physical_plan_drops_filter_exec_for_payload_nested_filter() {
+        let mut provider = test_provider(Schema::new(vec![
+            Field::new(ID_FIELD_NAME, DataType::Utf8, false),
+            Field::new(PAYLOAD_FIELD_NAME, DataType::Utf8, true),
+        ]));
+        provider.payload_schema = payload_schema([
+            ("metadata.rank", PayloadSchemaInfo {
+                data_type: qdrant_client::qdrant::PayloadSchemaType::Integer as i32,
+                params:    Some(qdrant_client::qdrant::PayloadIndexParams {
+                    index_params: Some(
+                        qdrant_client::qdrant::payload_index_params::IndexParams::IntegerIndexParams(
+                            IntegerIndexParamsBuilder::new(true, true).build(),
+                        ),
+                    ),
+                }),
+                points:    None,
+            }),
+            ("metadata.tag", PayloadSchemaInfo {
+                data_type: qdrant_client::qdrant::PayloadSchemaType::Keyword as i32,
+                params:    Some(qdrant_client::qdrant::PayloadIndexParams {
+                    index_params: Some(
+                        qdrant_client::qdrant::payload_index_params::IndexParams::KeywordIndexParams(
+                            KeywordIndexParamsBuilder::default().build(),
+                        ),
+                    ),
+                }),
+                points:    None,
+            }),
+        ]);
+        let ctx = QdrantSessionContext::from(SessionContext::new());
+        drop(
+            ctx.session_context()
+                .register_table("vectors", Arc::new(provider.clone()))
+                .expect("register table"),
+        );
+        let dataframe = ctx
+            .session_context()
+            .sql(
+                "SELECT id FROM vectors WHERE payload_nested_match(payload:metadata, payload:rank \
+                 >= 20 AND payload:tag = 'red')",
             )
             .now_or_never()
             .expect("sql future is ready")

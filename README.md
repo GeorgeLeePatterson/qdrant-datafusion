@@ -74,6 +74,7 @@ canonical carrier; missing values are not imputed during scan.
   - projected `ORDER BY score DESC` is redundant and optimizes away, while projected `ORDER BY score ASC` remains a local `DataFusion` sort
   - explicit payload empty/cardinality semantics through `payload_is_empty(payload:<path>)` and `payload_values_count(payload:<path>)`, both with exact scan filter pushdown and local execution
   - explicit geo distance semantics through `payload_geo_distance(payload:<path>, lon, lat)`, with local numeric execution and exact scan filter pushdown for the `<= radius` subset on geo payload fields
+  - explicit nested-array predicates through `payload_nested_match(payload:<path>, <predicate>)`, with exact scan filter pushdown for nested payload-array/object predicates expressed in the existing payload filter algebra
   - explicit text and phrase semantics through `payload_text_match(payload:<path>, 'query')` and `payload_phrase_match(payload:<path>, 'phrase')`, both as exact scan filter pushdown on text-indexed payload fields, with phrase matching requiring a text index that enables phrase support
   - retrieval kernels can now leave benign local projection shells and local residual filter shells above the closed qdrant query kernel instead of requiring fully remote-only projection/filter shapes, including later score projection above those local filter shells
   - projected score columns follow normal `DataFusion` naming and aliasing rules
@@ -106,7 +107,7 @@ canonical carrier; missing values are not imputed during scan.
 ## Not Yet Admitted
 
 - broader write semantics beyond append-only `INSERT INTO` on the canonical provider schema
-- nested and broader count-oriented payload predicates beyond the current explicit `payload_is_empty(...)`, `payload_values_count(...)`, `payload_geo_distance(...) <= radius`, `payload_geo_within_bbox(...)`, `payload_geo_within_polygon(...)`, `payload_text_match(...)`, `payload_text_any(...)`, and `payload_phrase_match(...)` subset
+- broader count-oriented payload predicates beyond the current explicit `payload_is_empty(...)`, `payload_values_count(...)`, `payload_geo_distance(...) <= radius`, `payload_geo_within_bbox(...)`, `payload_geo_within_polygon(...)`, `payload_nested_match(...)`, `payload_text_match(...)`, `payload_text_any(...)`, and `payload_phrase_match(...)` subset
 - broader payload-key SQL `ORDER BY` pushdown beyond the admitted `payload:<path>` subset
 - broader aggregate/grouped SQL beyond the admitted scalar-facet subset
 - fully implicit arithmetic and similar typed SQL over raw `payload:<path>` when `DataFusion` must infer the payload scalar type during SQL planning; use `payload(payload:<path>, 'Type')` or an explicit `CAST(...)` today

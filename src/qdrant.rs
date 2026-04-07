@@ -214,6 +214,15 @@ impl QdrantPayloadPath {
 
     pub(crate) fn key(&self) -> &str { &self.path }
 
+    pub(crate) fn strip_prefix(&self, prefix: &str) -> Option<Self> {
+        let prefix = normalize_payload_schema_key(prefix);
+        let path = normalize_payload_schema_key(self.key());
+        if path == prefix {
+            return None;
+        }
+        path.strip_prefix(&format!("{prefix}.")).and_then(|path| Self::new(path.to_owned()))
+    }
+
     pub(crate) fn from_logical_expr(expr: &Expr) -> Option<Self> {
         QdrantPayloadAccess::from_logical_expr(expr).map(|access| access.path)
     }
@@ -365,7 +374,8 @@ impl QdrantPayloadSchema {
     }
 
     pub(crate) fn field_for_path(&self, path: &str) -> Option<QdrantPayloadField> {
-        self.field(path).or_else(|| path.split('.').next().and_then(|prefix| self.field(prefix)))
+        let path = normalize_payload_schema_key(path);
+        self.field(&path).or_else(|| path.split('.').next().and_then(|prefix| self.field(prefix)))
     }
 
     pub(crate) fn ordering_for(
@@ -389,6 +399,7 @@ impl From<HashMap<String, PayloadSchemaInfo>> for QdrantPayloadSchema {
         let fields = payload_schema
             .into_iter()
             .filter_map(|(field_name, info)| {
+                let field_name = normalize_payload_schema_key(&field_name);
                 let data_type = PayloadSchemaType::try_from(info.data_type).ok()?;
                 let params = info.params.and_then(|params| params.index_params);
                 let field = match data_type {
@@ -455,6 +466,8 @@ impl From<HashMap<String, PayloadSchemaInfo>> for QdrantPayloadSchema {
         Self { fields }
     }
 }
+
+fn normalize_payload_schema_key(path: &str) -> String { path.replace("[]", "") }
 
 fn logical_path_literal(expr: &Expr) -> Option<QdrantPayloadPath> {
     match expr.clone().unalias_nested().data {
@@ -669,6 +682,15 @@ mod tests {
                 }),
                 points:    None,
             }),
+            ("metadata[].rank".to_owned(), PayloadSchemaInfo {
+                data_type: PayloadSchemaType::Integer as i32,
+                params:    Some(qdrant_client::qdrant::PayloadIndexParams {
+                    index_params: Some(payload_index_params::IndexParams::IntegerIndexParams(
+                        IntegerIndexParams { range: Some(true), ..Default::default() },
+                    )),
+                }),
+                points:    None,
+            }),
             ("doc_id".to_owned(), PayloadSchemaInfo {
                 data_type: PayloadSchemaType::Uuid as i32,
                 params:    Some(qdrant_client::qdrant::PayloadIndexParams {
@@ -723,6 +745,17 @@ mod tests {
         assert!(!schema.field("active").is_some_and(QdrantPayloadField::supports_grouping));
         assert_eq!(schema.field("doc_id"), Some(QdrantPayloadField::Uuid));
         assert_eq!(schema.field_for_path("rank.value"), schema.field("rank"));
+        assert_eq!(
+            schema.field_for_path("metadata.rank"),
+            Some(QdrantPayloadField::Integer { lookup: true, range: true }),
+        );
+        assert_eq!(
+            QdrantPayloadPath::new("metadata.rank".to_owned())
+                .and_then(|path| path.strip_prefix("metadata"))
+                .expect("relative nested path")
+                .key(),
+            "rank",
+        );
         assert_eq!(
             QdrantPayloadField::Datetime.projection_data_type(),
             Some(DataType::Timestamp(TimeUnit::Millisecond, None))

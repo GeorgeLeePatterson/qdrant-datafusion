@@ -71,6 +71,14 @@ e2e_test!(
 
 #[cfg(feature = "test-utils")]
 e2e_test!(
+    table_provider_payload_nested_predicate,
+    tests::test_table_provider_payload_nested_predicate,
+    TRACING_DIRECTIVES,
+    None
+);
+
+#[cfg(feature = "test-utils")]
+e2e_test!(
     table_provider_insert_into_appends_rows,
     tests::test_table_provider_insert_into_appends_rows,
     TRACING_DIRECTIVES,
@@ -596,22 +604,58 @@ mod tests {
             GeoIndexParamsBuilder::default().build(),
         )
         .await?;
+        create_payload_index(
+            &client,
+            collection_name,
+            "metadata.rank",
+            FieldType::Integer,
+            qdrant_client::qdrant::IntegerIndexParamsBuilder::new(true, true).build(),
+        )
+        .await?;
+        create_payload_index(
+            &client,
+            collection_name,
+            "metadata.tag",
+            FieldType::Keyword,
+            qdrant_client::qdrant::KeywordIndexParamsBuilder::default().build(),
+        )
+        .await?;
 
         let mut payload1 = qdrant_client::Payload::new();
         payload1.insert("rank", 30_i64);
         payload1.insert("tag", "red");
         payload1.insert("description", "good cheap coffee");
         payload1.insert("location", serde_json::json!({"lon": 0.0, "lat": 0.0}));
+        payload1.insert(
+            "metadata",
+            serde_json::json!([
+                {"rank": 30, "tag": "red"},
+                {"rank": 5, "tag": "blue"}
+            ]),
+        );
         let mut payload2 = qdrant_client::Payload::new();
         payload2.insert("rank", 10_i64);
         payload2.insert("tag", "blue");
         payload2.insert("description", "time is a flat circle");
         payload2.insert("location", serde_json::json!({"lon": 0.0, "lat": 1.0}));
+        payload2.insert(
+            "metadata",
+            serde_json::json!([
+                {"rank": 10, "tag": "blue"}
+            ]),
+        );
         let mut payload3 = qdrant_client::Payload::new();
         payload3.insert("rank", 20_i64);
         payload3.insert("tag", "blue");
         payload3.insert("description", "good food nearby");
         payload3.insert("location", serde_json::json!({"lon": 0.0, "lat": 2.0}));
+        payload3.insert(
+            "metadata",
+            serde_json::json!([
+                {"rank": 20, "tag": "red"},
+                {"rank": 20, "tag": "green"}
+            ]),
+        );
 
         let points = vec![
             PointStruct::new(1, Vector::new_dense(vec![0.0]), payload1),
@@ -1809,6 +1853,18 @@ error: {err}"
             collect_id_rows(&ctx, sql::scan::filters::TEXT_ANY.sql).await?;
         assert_eq!(text_any_ids, vec![1, 3], "{text_any_display}");
         assert!(!text_any_display.contains("FilterExec"), "{text_any_display}");
+
+        Ok(())
+    }
+
+    pub(super) async fn test_table_provider_payload_nested_predicate(
+        c: Arc<QdrantContainer>,
+    ) -> Result<()> {
+        let ctx = create_catalog_scan_context(&c, "test_payload_nested_predicate").await?;
+
+        let (ids, display) = collect_id_rows(&ctx, sql::scan::filters::NESTED_MATCH.sql).await?;
+        assert_eq!(ids, vec![1, 3], "{display}");
+        assert!(!display.contains("FilterExec"), "{display}");
 
         Ok(())
     }

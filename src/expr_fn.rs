@@ -9,6 +9,7 @@ mod order_by;
 mod payload;
 mod payload_access;
 mod payload_geo;
+mod payload_nested;
 mod payload_predicate;
 mod payload_text;
 mod recommend;
@@ -81,6 +82,10 @@ pub use self::payload_geo::{
     PAYLOAD_GEO_WITHIN_POLYGON_FUNCTION_NAME, qdrant_payload_geo_distance,
     qdrant_payload_geo_within_bbox, qdrant_payload_geo_within_polygon,
 };
+pub use self::payload_nested::{PAYLOAD_NESTED_MATCH_FUNCTION_NAME, qdrant_payload_nested_match};
+pub(crate) use self::payload_nested::{
+    is_payload_nested_match_function_name, qdrant_payload_nested_match_udf,
+};
 pub(crate) use self::payload_predicate::{
     PAYLOAD_IS_EMPTY_ACCESS_FUNCTION_NAME, PAYLOAD_VALUES_COUNT_ACCESS_FUNCTION_NAME,
     is_payload_is_empty_function_name, is_payload_values_count_function_name,
@@ -139,6 +144,7 @@ pub(crate) fn register_functions(ctx: &SessionContext) {
     ctx.register_udf(qdrant_payload_geo_distance_udf());
     ctx.register_udf(qdrant_payload_geo_within_bbox_udf());
     ctx.register_udf(qdrant_payload_geo_within_polygon_udf());
+    ctx.register_udf(qdrant_payload_nested_match_udf());
     ctx.register_udf(qdrant_payload_text_access_udf());
     ctx.register_udf(qdrant_payload_int_access_udf());
     ctx.register_udf(qdrant_payload_float_access_udf());

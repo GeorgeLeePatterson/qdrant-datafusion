@@ -64,6 +64,7 @@ Current branch reality:
     - explicit empty/container predicates now use `payload_is_empty(payload:<path>)`
     - explicit cardinality predicates now use `payload_values_count(payload:<path>)`
     - explicit geo distance now uses `payload_geo_distance(payload:<path>, lon, lat)` with local numeric execution and exact `<= radius` scan-filter pushdown on geo payload fields
+    - explicit nested-array predicates now use `payload_nested_match(payload:<path>, <predicate>)` as exact scan-filter pushdown over the same payload predicate algebra in a nested scope
     - explicit text/phrase predicates now use `payload_text_match(payload:<path>, 'query')` and `payload_phrase_match(payload:<path>, 'phrase')` as exact scan-filter pushdown on text-indexed payload fields, with phrase matching requiring phrase support in the text index
     - current runtime tests prove `payload_values_count` matches missing as `NULL`, explicit `null` and `[]` as `0`, and present non-array values as `1`
 26. Planner-layer subtree replacement now uses a unified relation-pushdown analyzer scaffold for the admitted `Qdrant` relation replacements instead of separate analyzer-rule ownership by convention.
