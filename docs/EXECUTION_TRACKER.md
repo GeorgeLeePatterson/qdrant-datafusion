@@ -316,7 +316,7 @@ Use it to resume work without replaying the full repository history.
    - current retrieval kernels now allow omitted SQL `LIMIT`, deferring to Qdrant's native default result count unless SQL specifies one
    - current retrieval kernels now also allow omitted projected `ORDER BY score DESC`, deferring to Qdrant's native result order unless SQL specifies a local re-sort
 4. `Q-020`: Extend the predicate algebra only where the SQL semantics are explicit.
-   - nested, geo bbox/polygon, and broader count-oriented predicates beyond the current explicit `payload_is_empty(...)`, `payload_values_count(...)`, `payload_geo_distance(...) <= radius`, `payload_text_match(...)`, `payload_text_any(...)`, and `payload_phrase_match(...)` subset
+   - nested and broader count-oriented predicates beyond the current explicit `payload_is_empty(...)`, `payload_values_count(...)`, `payload_geo_distance(...) <= radius`, `payload_geo_within_bbox(...)`, `payload_geo_within_polygon(...)`, `payload_text_match(...)`, `payload_text_any(...)`, and `payload_phrase_match(...)` subset
 5. Keep the new admission/fallback catalog current as behavior widens.
    - move shared strictness out of scattered implicit notes and into `docs/ADMISSION_MATRIX.md`
    - when a path is strict-for-now, track the affected consumers and the intended widening there

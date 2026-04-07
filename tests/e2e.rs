@@ -588,19 +588,30 @@ mod tests {
             TextIndexParamsBuilder::new(TokenizerType::Word).phrase_matching(true).build(),
         )
         .await?;
+        create_payload_index(
+            &client,
+            collection_name,
+            "location",
+            FieldType::Geo,
+            GeoIndexParamsBuilder::default().build(),
+        )
+        .await?;
 
         let mut payload1 = qdrant_client::Payload::new();
         payload1.insert("rank", 30_i64);
         payload1.insert("tag", "red");
         payload1.insert("description", "good cheap coffee");
+        payload1.insert("location", serde_json::json!({"lon": 0.0, "lat": 0.0}));
         let mut payload2 = qdrant_client::Payload::new();
         payload2.insert("rank", 10_i64);
         payload2.insert("tag", "blue");
         payload2.insert("description", "time is a flat circle");
+        payload2.insert("location", serde_json::json!({"lon": 0.0, "lat": 1.0}));
         let mut payload3 = qdrant_client::Payload::new();
         payload3.insert("rank", 20_i64);
         payload3.insert("tag", "blue");
         payload3.insert("description", "good food nearby");
+        payload3.insert("location", serde_json::json!({"lon": 0.0, "lat": 2.0}));
 
         let points = vec![
             PointStruct::new(1, Vector::new_dense(vec![0.0]), payload1),
@@ -1465,9 +1476,13 @@ error: {err}"
             sql::scan::filters::PHRASE_MATCH_WRAPPED,
             sql::scan::filters::TEXT_ANY,
             sql::scan::filters::VALUES_COUNT_GE_ONE,
+            sql::scan::filters::GEO_BBOX,
+            sql::scan::filters::GEO_POLYGON,
             sql::scan::filters::SUBQUERY,
             sql::scan::filters::CTE,
             sql::scan::filters::TEXT_ANY_SUBQUERY,
+            sql::scan::filters::GEO_BBOX_SUBQUERY,
+            sql::scan::filters::GEO_POLYGON_SUBQUERY,
         ];
         let aggregate_cases = [
             sql::scan::aggregates::AVG_HINTED_PAYLOAD,
@@ -1730,6 +1745,16 @@ error: {err}"
             collect_id_rows(&ctx, sql::scan::filters::GEO_RESIDUAL.sql).await?;
         assert_eq!(far_ids, vec![2, 3], "{far_display}");
         assert!(far_display.contains("FilterExec"), "{far_display}");
+
+        let (bbox_ids, bbox_display) =
+            collect_id_rows(&ctx, sql::scan::filters::GEO_BBOX.sql).await?;
+        assert_eq!(bbox_ids, vec![1, 2], "{bbox_display}");
+        assert!(!bbox_display.contains("FilterExec"), "{bbox_display}");
+
+        let (polygon_ids, polygon_display) =
+            collect_id_rows(&ctx, sql::scan::filters::GEO_POLYGON.sql).await?;
+        assert_eq!(polygon_ids, vec![1, 2], "{polygon_display}");
+        assert!(!polygon_display.contains("FilterExec"), "{polygon_display}");
 
         Ok(())
     }

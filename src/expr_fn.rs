@@ -68,10 +68,19 @@ pub(crate) use self::payload_access::{
     qdrant_payload_int_access_udf, qdrant_payload_text_access_udf,
 };
 pub(crate) use self::payload_geo::{
-    PAYLOAD_GEO_DISTANCE_ACCESS_FUNCTION_NAME, is_payload_geo_distance_function_name,
-    qdrant_payload_geo_distance_access_udf, qdrant_payload_geo_distance_udf,
+    PAYLOAD_GEO_DISTANCE_ACCESS_FUNCTION_NAME, PAYLOAD_GEO_WITHIN_BBOX_ACCESS_FUNCTION_NAME,
+    PAYLOAD_GEO_WITHIN_POLYGON_ACCESS_FUNCTION_NAME, canonical_geo_polygon,
+    is_payload_geo_distance_function_name, is_payload_geo_within_bbox_function_name,
+    is_payload_geo_within_polygon_function_name, qdrant_payload_geo_distance_access_udf,
+    qdrant_payload_geo_distance_udf, qdrant_payload_geo_within_bbox_access_udf,
+    qdrant_payload_geo_within_bbox_udf, qdrant_payload_geo_within_polygon_access_udf,
+    qdrant_payload_geo_within_polygon_udf,
 };
-pub use self::payload_geo::{PAYLOAD_GEO_DISTANCE_FUNCTION_NAME, qdrant_payload_geo_distance};
+pub use self::payload_geo::{
+    PAYLOAD_GEO_DISTANCE_FUNCTION_NAME, PAYLOAD_GEO_WITHIN_BBOX_FUNCTION_NAME,
+    PAYLOAD_GEO_WITHIN_POLYGON_FUNCTION_NAME, qdrant_payload_geo_distance,
+    qdrant_payload_geo_within_bbox, qdrant_payload_geo_within_polygon,
+};
 pub(crate) use self::payload_predicate::{
     PAYLOAD_IS_EMPTY_ACCESS_FUNCTION_NAME, PAYLOAD_VALUES_COUNT_ACCESS_FUNCTION_NAME,
     is_payload_is_empty_function_name, is_payload_values_count_function_name,
@@ -128,12 +137,16 @@ pub(crate) fn register_functions(ctx: &SessionContext) {
     ctx.register_udf(qdrant_payload_datetime_udf());
     ctx.register_udf(qdrant_payload_udf());
     ctx.register_udf(qdrant_payload_geo_distance_udf());
+    ctx.register_udf(qdrant_payload_geo_within_bbox_udf());
+    ctx.register_udf(qdrant_payload_geo_within_polygon_udf());
     ctx.register_udf(qdrant_payload_text_access_udf());
     ctx.register_udf(qdrant_payload_int_access_udf());
     ctx.register_udf(qdrant_payload_float_access_udf());
     ctx.register_udf(qdrant_payload_bool_access_udf());
     ctx.register_udf(qdrant_payload_datetime_access_udf());
     ctx.register_udf(qdrant_payload_geo_distance_access_udf());
+    ctx.register_udf(qdrant_payload_geo_within_bbox_access_udf());
+    ctx.register_udf(qdrant_payload_geo_within_polygon_access_udf());
     ctx.register_udf(qdrant_payload_is_empty_udf());
     ctx.register_udf(qdrant_payload_values_count_udf());
     ctx.register_udf(qdrant_payload_is_empty_access_udf());

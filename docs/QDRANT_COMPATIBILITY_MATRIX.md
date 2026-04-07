@@ -63,10 +63,10 @@ This matrix is derived from:
 | Row restriction | `values_count` | field condition | cardinality predicates | `Current` | The SQL bridge now exposes explicit cardinality predicates through `payload_values_count(payload:<path>)`. Current runtime tests on the active line show missing fields map to `NULL`, explicit `null` and `[]` map to `0`, and present non-array values map to `1`. Broader typed/container semantics are still deferred. |
 | Row restriction | nested object filter | nested condition | correlated payload-array predicates | `Later` | Important, but it is not equivalent to dotted-path conjunctions. Needs explicit SQL semantics. |
 | Row restriction | geo radius via explicit payload distance | `Condition::geo_radius` | `payload_geo_distance(payload:<path>, lon, lat) <= radius` | `Current` | The public SQL bridge is numeric and locally executable; only the `<= radius` subset is claimed as exact remote pushdown. |
-| Row restriction | geo bbox / polygon | geo conditions | explicit geo predicates / functions | `Later` | Natural fit for explicit SQL functions after the first geo-distance/radius bridge. |
+| Row restriction | geo bbox / polygon | geo conditions | `payload_geo_within_bbox(payload:<path>, lon1, lat1, lon2, lat2)` / `payload_geo_within_polygon(payload:<path>, [[lon, lat], ...])` | `Current` | The SQL bridge now exposes explicit bbox and polygon predicates over geo payload fields. Bbox accepts two opposing corners, polygon currently models one exterior ring and auto-closes an open ring instead of requiring the first point to be repeated. |
 | Row restriction | text match | text condition | `payload_text_match(payload:<path>, 'query')` | `Current` | This stays an explicit remote predicate because exact semantics depend on the configured Qdrant text index rather than SQL `LIKE` or local string functions. |
 | Row restriction | phrase match | phrase condition | `payload_phrase_match(payload:<path>, 'phrase')` | `Current` | Exact pushdown now exists when the payload field is backed by a text index that enables phrase support. |
-| Row restriction | text match any | text condition | explicit text-search predicate | `Later` | A natural next extension after the first text/phrase bridge. |
+| Row restriction | text match any | text condition | `payload_text_any(payload:<path>, ['term', ...])` | `Current` | The SQL bridge now exposes explicit text-any predicates on text-indexed payload fields through the same remote-only exact predicate model as text/phrase. |
 | Row ordering | ID-ordered scan | `scroll` | `ORDER BY id ASC` | `Current` | Already exact. |
 | Row ordering | payload-key ordered scroll | `order_by` on `scroll` | `ORDER BY payload:<path>` | `Current` | Admitted exact subset for indexed integer / float / datetime fields. Exact remote pushdown is now guarded by `collection_cluster_info`: stable single-peer collections stay exact, while distributed or in-flight cluster states fall back to local sorting. |
 | Row ordering | broader payload ordering | `order_by` | richer payload path ordering | `Later` | Only after payload access contract stabilizes further. |
@@ -170,7 +170,7 @@ This remains the strongest next implementation focus.
 The explicit `payload_is_empty(...)` / `payload_values_count(...)` slice is now in place, the first geo bridge now exists through `payload_geo_distance(...) <= radius`, and the first text bridge now exists through `payload_text_match(...)` / `payload_phrase_match(...)`. The remaining work is to widen the predicate family without guessing semantics.
 
 1. keep missing-vs-null-vs-empty semantics explicit instead of guessing
-2. extend nested, geo bbox/polygon, and broader count-oriented predicates only where the SQL contract is explicit
+2. extend nested and broader count-oriented predicates only where the SQL contract is explicit
 3. avoid conflating SQL null with backend-specific container predicates
 
 ### P1: add aggregate-like exploration that composes over filters

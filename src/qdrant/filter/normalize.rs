@@ -18,13 +18,15 @@ use super::value::{float_scalar, point_id_scalar, string_scalar};
 use super::{QdrantFieldRef, QdrantFilterExpr, QdrantPayloadSchema, QdrantPredicate};
 use crate::arrow::schema::{ID_FIELD_NAME, QdrantFieldBinding, field_uses_unnamed_vector_contract};
 use crate::expr_fn::{
-    PAYLOAD_GEO_DISTANCE_ACCESS_FUNCTION_NAME, PAYLOAD_IS_EMPTY_ACCESS_FUNCTION_NAME,
+    PAYLOAD_GEO_DISTANCE_ACCESS_FUNCTION_NAME, PAYLOAD_GEO_WITHIN_BBOX_ACCESS_FUNCTION_NAME,
+    PAYLOAD_GEO_WITHIN_POLYGON_ACCESS_FUNCTION_NAME, PAYLOAD_IS_EMPTY_ACCESS_FUNCTION_NAME,
     PAYLOAD_PHRASE_MATCH_ACCESS_FUNCTION_NAME, PAYLOAD_TEXT_ANY_ACCESS_FUNCTION_NAME,
     PAYLOAD_TEXT_MATCH_ACCESS_FUNCTION_NAME, PAYLOAD_VALUES_COUNT_ACCESS_FUNCTION_NAME,
-    is_payload_geo_distance_function_name, is_payload_is_empty_function_name,
-    is_payload_phrase_match_function_name, is_payload_text_any_function_name,
-    is_payload_text_match_function_name, is_payload_values_count_function_name,
-    payload_text_any_query_string,
+    canonical_geo_polygon, is_payload_geo_distance_function_name,
+    is_payload_geo_within_bbox_function_name, is_payload_geo_within_polygon_function_name,
+    is_payload_is_empty_function_name, is_payload_phrase_match_function_name,
+    is_payload_text_any_function_name, is_payload_text_match_function_name,
+    is_payload_values_count_function_name, payload_text_any_query_string,
 };
 use crate::qdrant::{QdrantPayloadAccess, QdrantPayloadPath};
 
@@ -58,6 +60,9 @@ impl<'a> QdrantExprNormalizer<'a> {
     fn exact_expr(&self, expr: &Expr) -> Option<QdrantFilterExpr> {
         if let Some(field) = payload_is_empty_logical_path(expr) {
             return Some(QdrantFilterExpr::Predicate(QdrantPredicate::PayloadIsEmpty(field)));
+        }
+        if let Some(predicate) = payload_geo_predicate_logical(self.payload_schema, expr) {
+            return Some(QdrantFilterExpr::Predicate(predicate));
         }
         if let Some(predicate) = payload_text_predicate_logical(self.payload_schema, expr) {
             return Some(QdrantFilterExpr::Predicate(predicate));
@@ -186,6 +191,9 @@ impl<'a> QdrantExprNormalizer<'a> {
     fn exact_physical_expr(&self, expr: &Arc<dyn PhysicalExpr>) -> Option<QdrantFilterExpr> {
         if let Some(field) = payload_is_empty_physical_path(expr) {
             return Some(QdrantFilterExpr::Predicate(QdrantPredicate::PayloadIsEmpty(field)));
+        }
+        if let Some(predicate) = payload_geo_predicate_physical(self.payload_schema, expr) {
+            return Some(QdrantFilterExpr::Predicate(predicate));
         }
         if let Some(predicate) = payload_text_predicate_physical(self.payload_schema, expr) {
             return Some(QdrantFilterExpr::Predicate(predicate));
@@ -614,6 +622,127 @@ fn payload_geo_distance_physical(
     ))
 }
 
+fn payload_geo_predicate_logical(
+    payload_schema: &QdrantPayloadSchema,
+    expr: &Expr,
+) -> Option<QdrantPredicate> {
+    match expr {
+        Expr::Alias(alias) => payload_geo_predicate_logical(payload_schema, &alias.expr),
+        Expr::ScalarFunction(function)
+            if is_payload_geo_within_bbox_function_name(function.name()) =>
+        {
+            let [accessor, lon1, lat1, lon2, lat2] = function.args.as_slice() else {
+                return None;
+            };
+            let field = QdrantPayloadAccess::from_logical_expr(accessor)?.path().clone();
+            if payload_schema.field_for_path(field.key())? != crate::qdrant::QdrantPayloadField::Geo
+            {
+                return None;
+            }
+            let (west, south, east, north) = logical_bbox_bounds(lon1, lat1, lon2, lat2)?;
+            Some(QdrantPredicate::PayloadGeoBoundingBox { field, west, south, east, north })
+        }
+        Expr::ScalarFunction(function)
+            if function.name() == PAYLOAD_GEO_WITHIN_BBOX_ACCESS_FUNCTION_NAME =>
+        {
+            let [payload, path, lon1, lat1, lon2, lat2] = function.args.as_slice() else {
+                return None;
+            };
+            let field = QdrantPayloadAccess::from_logical_parts(payload, path)?.path().clone();
+            if payload_schema.field_for_path(field.key())? != crate::qdrant::QdrantPayloadField::Geo
+            {
+                return None;
+            }
+            let (west, south, east, north) = logical_bbox_bounds(lon1, lat1, lon2, lat2)?;
+            Some(QdrantPredicate::PayloadGeoBoundingBox { field, west, south, east, north })
+        }
+        Expr::ScalarFunction(function)
+            if is_payload_geo_within_polygon_function_name(function.name()) =>
+        {
+            let [accessor, points] = function.args.as_slice() else {
+                return None;
+            };
+            let field = QdrantPayloadAccess::from_logical_expr(accessor)?.path().clone();
+            if payload_schema.field_for_path(field.key())? != crate::qdrant::QdrantPayloadField::Geo
+            {
+                return None;
+            }
+            Some(QdrantPredicate::PayloadGeoPolygon {
+                field,
+                points: canonical_geo_polygon(
+                    logical_scalar_literal_value(points)?,
+                    function.name(),
+                    "points",
+                )
+                .ok()?,
+            })
+        }
+        Expr::ScalarFunction(function)
+            if function.name() == PAYLOAD_GEO_WITHIN_POLYGON_ACCESS_FUNCTION_NAME =>
+        {
+            let [payload, path, points] = function.args.as_slice() else {
+                return None;
+            };
+            let field = QdrantPayloadAccess::from_logical_parts(payload, path)?.path().clone();
+            if payload_schema.field_for_path(field.key())? != crate::qdrant::QdrantPayloadField::Geo
+            {
+                return None;
+            }
+            Some(QdrantPredicate::PayloadGeoPolygon {
+                field,
+                points: canonical_geo_polygon(
+                    logical_scalar_literal_value(points)?,
+                    PAYLOAD_GEO_WITHIN_POLYGON_ACCESS_FUNCTION_NAME,
+                    "points",
+                )
+                .ok()?,
+            })
+        }
+        _ => None,
+    }
+}
+
+fn payload_geo_predicate_physical(
+    payload_schema: &QdrantPayloadSchema,
+    expr: &Arc<dyn PhysicalExpr>,
+) -> Option<QdrantPredicate> {
+    let function = expr.as_any().downcast_ref::<datafusion::physical_expr::ScalarFunctionExpr>()?;
+    match function.name() {
+        PAYLOAD_GEO_WITHIN_BBOX_ACCESS_FUNCTION_NAME => {
+            let [payload, path, lon1, lat1, lon2, lat2] = function.args() else {
+                return None;
+            };
+            let field = QdrantPayloadAccess::from_physical_parts(payload, path)?.path().clone();
+            if payload_schema.field_for_path(field.key())? != crate::qdrant::QdrantPayloadField::Geo
+            {
+                return None;
+            }
+            let (west, south, east, north) = physical_bbox_bounds(lon1, lat1, lon2, lat2)?;
+            Some(QdrantPredicate::PayloadGeoBoundingBox { field, west, south, east, north })
+        }
+        PAYLOAD_GEO_WITHIN_POLYGON_ACCESS_FUNCTION_NAME => {
+            let [payload, path, points] = function.args() else {
+                return None;
+            };
+            let field = QdrantPayloadAccess::from_physical_parts(payload, path)?.path().clone();
+            if payload_schema.field_for_path(field.key())? != crate::qdrant::QdrantPayloadField::Geo
+            {
+                return None;
+            }
+            Some(QdrantPredicate::PayloadGeoPolygon {
+                field,
+                points: canonical_geo_polygon(
+                    physical_scalar_literal_value(points)?,
+                    PAYLOAD_GEO_WITHIN_POLYGON_ACCESS_FUNCTION_NAME,
+                    "points",
+                )
+                .ok()?,
+            })
+        }
+        _ => None,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PayloadTextPredicateKind {
     Match,
@@ -808,6 +937,48 @@ fn physical_scalar_literal_value(expr: &Arc<dyn PhysicalExpr>) -> Option<&Scalar
 fn geo_radius_scalar(value: &ScalarValue) -> Option<f64> {
     let value = float_scalar(value)?;
     (value.is_finite() && value >= 0.0).then_some(value)
+}
+
+fn logical_bbox_bounds(
+    lon1: &Expr,
+    lat1: &Expr,
+    lon2: &Expr,
+    lat2: &Expr,
+) -> Option<(f64, f64, f64, f64)> {
+    normalized_bbox_bounds(
+        float_scalar(logical_scalar_literal_value(lon1)?)?,
+        float_scalar(logical_scalar_literal_value(lat1)?)?,
+        float_scalar(logical_scalar_literal_value(lon2)?)?,
+        float_scalar(logical_scalar_literal_value(lat2)?)?,
+    )
+}
+
+fn physical_bbox_bounds(
+    lon1: &Arc<dyn PhysicalExpr>,
+    lat1: &Arc<dyn PhysicalExpr>,
+    lon2: &Arc<dyn PhysicalExpr>,
+    lat2: &Arc<dyn PhysicalExpr>,
+) -> Option<(f64, f64, f64, f64)> {
+    normalized_bbox_bounds(
+        float_scalar(physical_scalar_literal_value(lon1)?)?,
+        float_scalar(physical_scalar_literal_value(lat1)?)?,
+        float_scalar(physical_scalar_literal_value(lon2)?)?,
+        float_scalar(physical_scalar_literal_value(lat2)?)?,
+    )
+}
+
+fn normalized_bbox_bounds(
+    lon1: f64,
+    lat1: f64,
+    lon2: f64,
+    lat2: f64,
+) -> Option<(f64, f64, f64, f64)> {
+    (lon1.is_finite() && lat1.is_finite() && lon2.is_finite() && lat2.is_finite()).then_some((
+        lon1.min(lon2),
+        lat1.min(lat2),
+        lon1.max(lon2),
+        lat1.max(lat2),
+    ))
 }
 
 fn values_count_scalar(value: &ScalarValue) -> Option<u64> {

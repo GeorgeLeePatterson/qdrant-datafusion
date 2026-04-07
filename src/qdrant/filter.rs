@@ -11,7 +11,10 @@ use datafusion::logical_expr::Expr;
 use datafusion::physical_expr::PhysicalExpr;
 use normalize::{exact_expr, exact_physical_expr};
 use prost_types::Timestamp;
-use qdrant_client::qdrant::{Condition, Filter, GeoPoint, GeoRadius, PointId, ValuesCount};
+use qdrant_client::qdrant::{
+    Condition, Filter, GeoBoundingBox, GeoLineString, GeoPoint, GeoPolygon, GeoRadius, PointId,
+    ValuesCount,
+};
 
 use super::{QdrantPayloadPath, QdrantPayloadSchema};
 
@@ -136,6 +139,17 @@ enum QdrantPredicate {
         lat:    f64,
         radius: f64,
     },
+    PayloadGeoBoundingBox {
+        field: QdrantPayloadPath,
+        west:  f64,
+        south: f64,
+        east:  f64,
+        north: f64,
+    },
+    PayloadGeoPolygon {
+        field:  QdrantPayloadPath,
+        points: Vec<(f64, f64)>,
+    },
     PayloadTextMatch {
         field: QdrantPayloadPath,
         query: String,
@@ -250,6 +264,23 @@ impl QdrantPredicate {
                 Condition::geo_radius(field.key(), GeoRadius {
                     center: Some(GeoPoint { lon: *lon, lat: *lat }),
                     radius: qdrant_geo_radius(*radius),
+                })
+            }
+            Self::PayloadGeoBoundingBox { field, west, south, east, north } => {
+                Condition::geo_bounding_box(field.key(), GeoBoundingBox {
+                    top_left:     Some(GeoPoint { lon: *west, lat: *north }),
+                    bottom_right: Some(GeoPoint { lon: *east, lat: *south }),
+                })
+            }
+            Self::PayloadGeoPolygon { field, points } => {
+                Condition::geo_polygon(field.key(), GeoPolygon {
+                    exterior:  Some(GeoLineString {
+                        points: points
+                            .iter()
+                            .map(|(lon, lat)| GeoPoint { lon: *lon, lat: *lat })
+                            .collect(),
+                    }),
+                    interiors: vec![],
                 })
             }
             Self::PayloadTextMatch { field, query } => {

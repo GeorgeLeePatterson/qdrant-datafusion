@@ -18,9 +18,10 @@ pub use crate::expr_fn::{
     qdrant_nearest_id_score, qdrant_nearest_image_score, qdrant_nearest_multi_score,
     qdrant_nearest_object_score, qdrant_nearest_score, qdrant_nearest_sparse_score,
     qdrant_nearest_with_mmr_score, qdrant_order_by_score, qdrant_payload, qdrant_payload_datetime,
-    qdrant_payload_geo_distance, qdrant_payload_is_empty, qdrant_payload_num,
-    qdrant_payload_phrase_match, qdrant_payload_text_any, qdrant_payload_text_match,
-    qdrant_payload_values_count, qdrant_recommend_score, qdrant_recommend_score_with_strategy,
-    qdrant_relevance_feedback_score, qdrant_sample_score,
+    qdrant_payload_geo_distance, qdrant_payload_geo_within_bbox, qdrant_payload_geo_within_polygon,
+    qdrant_payload_is_empty, qdrant_payload_num, qdrant_payload_phrase_match,
+    qdrant_payload_text_any, qdrant_payload_text_match, qdrant_payload_values_count,
+    qdrant_recommend_score, qdrant_recommend_score_with_strategy, qdrant_relevance_feedback_score,
+    qdrant_sample_score,
 };
 pub use crate::table::{QdrantScanExec, QdrantTableProvider};

@@ -523,6 +523,16 @@ pub(crate) mod supported {
                 "SELECT id FROM vectors WHERE payload_geo_distance(payload:location, 0.0, 0.0) > \
                  12000.0 ORDER BY id",
             );
+            pub(crate) const GEO_BBOX: SqlCase = SqlCase::new(
+                "scan.filters.geo_bbox",
+                "SELECT id FROM vectors WHERE payload_geo_within_bbox(payload:location, -1.0, \
+                 -1.0, 1.0, 1.5) ORDER BY id",
+            );
+            pub(crate) const GEO_POLYGON: SqlCase = SqlCase::new(
+                "scan.filters.geo_polygon",
+                "SELECT id FROM vectors WHERE payload_geo_within_polygon(payload:location, \
+                 [[-1.0, -1.0], [1.0, -1.0], [1.0, 1.5], [-1.0, 1.5]]) ORDER BY id",
+            );
             pub(crate) const TEXT_MATCH: SqlCase = SqlCase::new(
                 "scan.filters.text_match",
                 "SELECT id FROM vectors WHERE payload_text_match(payload:description, 'good \
@@ -610,6 +620,18 @@ pub(crate) mod supported {
                 "SELECT id FROM (SELECT id FROM vectors WHERE \
                  payload_text_any(payload:description, ['good', 'cheap'])) filtered ORDER BY id",
             );
+            pub(crate) const GEO_BBOX_SUBQUERY: SqlCase = SqlCase::new(
+                "scan.filters.geo_bbox_subquery",
+                "SELECT id FROM (SELECT id FROM vectors WHERE \
+                 payload_geo_within_bbox(payload:location, -1.0, -1.0, 1.0, 1.5)) filtered ORDER \
+                 BY id",
+            );
+            pub(crate) const GEO_POLYGON_SUBQUERY: SqlCase = SqlCase::new(
+                "scan.filters.geo_polygon_subquery",
+                "SELECT id FROM (SELECT id FROM vectors WHERE \
+                 payload_geo_within_polygon(payload:location, [[-1.0, -1.0], [1.0, -1.0], [1.0, \
+                 1.5], [-1.0, 1.5]])) filtered ORDER BY id",
+            );
 
             pub(crate) const ALL: &[SqlCase] = &[
                 RAW_PAYLOAD_ARITHMETIC,
@@ -635,6 +657,8 @@ pub(crate) mod supported {
                 VALUES_COUNT_GE_ONE,
                 GEO_RADIUS,
                 GEO_RESIDUAL,
+                GEO_BBOX,
+                GEO_POLYGON,
                 TEXT_MATCH,
                 PHRASE_MATCH,
                 TEXT_ANY,
@@ -654,6 +678,8 @@ pub(crate) mod supported {
                 SUBQUERY,
                 CTE,
                 TEXT_ANY_SUBQUERY,
+                GEO_BBOX_SUBQUERY,
+                GEO_POLYGON_SUBQUERY,
             ];
         }
 
@@ -1737,31 +1763,8 @@ pub(crate) mod unsupported {
                  surface yet",
                 "payload_nested_match",
             );
-            pub(crate) const GEO_BBOX: UnsupportedSqlCase = UnsupportedSqlCase::new(
-                "scan.filters.geo_bbox",
-                "SELECT id FROM vectors WHERE payload_geo_within_bbox(payload:location, -1.0, \
-                 -1.0, 1.0, 1.0) ORDER BY id",
-                "Q-020",
-                "geo bbox predicates are not implemented as an explicit qdrant predicate surface \
-                 yet",
-                "payload_geo_within_bbox",
-            );
-            pub(crate) const GEO_POLYGON: UnsupportedSqlCase = UnsupportedSqlCase::new(
-                "scan.filters.geo_polygon",
-                "SELECT id FROM vectors WHERE payload_geo_within_polygon(payload:location, [[0.0, \
-                 0.0], [1.0, 0.0], [1.0, 1.0]]) ORDER BY id",
-                "Q-020",
-                "geo polygon predicates are not implemented as an explicit qdrant predicate \
-                 surface yet",
-                "payload_geo_within_polygon",
-            );
-            pub(crate) const ALL: &[UnsupportedSqlCase] = &[
-                TEXT_MATCH_PROJECTION,
-                PHRASE_MATCH_PROJECTION,
-                NESTED_MATCH,
-                GEO_BBOX,
-                GEO_POLYGON,
-            ];
+            pub(crate) const ALL: &[UnsupportedSqlCase] =
+                &[TEXT_MATCH_PROJECTION, PHRASE_MATCH_PROJECTION, NESTED_MATCH];
         }
 
         pub(crate) mod aggregates {
