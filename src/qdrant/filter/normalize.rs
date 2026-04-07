@@ -19,10 +19,12 @@ use super::{QdrantFieldRef, QdrantFilterExpr, QdrantPayloadSchema, QdrantPredica
 use crate::arrow::schema::{ID_FIELD_NAME, QdrantFieldBinding, field_uses_unnamed_vector_contract};
 use crate::expr_fn::{
     PAYLOAD_GEO_DISTANCE_ACCESS_FUNCTION_NAME, PAYLOAD_IS_EMPTY_ACCESS_FUNCTION_NAME,
-    PAYLOAD_PHRASE_MATCH_ACCESS_FUNCTION_NAME, PAYLOAD_TEXT_MATCH_ACCESS_FUNCTION_NAME,
-    PAYLOAD_VALUES_COUNT_ACCESS_FUNCTION_NAME, is_payload_geo_distance_function_name,
-    is_payload_is_empty_function_name, is_payload_phrase_match_function_name,
+    PAYLOAD_PHRASE_MATCH_ACCESS_FUNCTION_NAME, PAYLOAD_TEXT_ANY_ACCESS_FUNCTION_NAME,
+    PAYLOAD_TEXT_MATCH_ACCESS_FUNCTION_NAME, PAYLOAD_VALUES_COUNT_ACCESS_FUNCTION_NAME,
+    is_payload_geo_distance_function_name, is_payload_is_empty_function_name,
+    is_payload_phrase_match_function_name, is_payload_text_any_function_name,
     is_payload_text_match_function_name, is_payload_values_count_function_name,
+    payload_text_any_query_string,
 };
 use crate::qdrant::{QdrantPayloadAccess, QdrantPayloadPath};
 
@@ -612,6 +614,40 @@ fn payload_geo_distance_physical(
     ))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PayloadTextPredicateKind {
+    Match,
+    Any,
+    Phrase,
+}
+
+impl PayloadTextPredicateKind {
+    fn supported(self, field_type: crate::qdrant::QdrantPayloadField) -> bool {
+        match self {
+            Self::Match | Self::Any => field_type.supports_text_match(),
+            Self::Phrase => field_type.supports_phrase_match(),
+        }
+    }
+
+    fn build(self, field: QdrantPayloadPath, query: String) -> QdrantPredicate {
+        match self {
+            Self::Match => QdrantPredicate::PayloadTextMatch { field, query },
+            Self::Any => QdrantPredicate::PayloadTextAny { field, query },
+            Self::Phrase => QdrantPredicate::PayloadPhraseMatch { field, phrase: query },
+        }
+    }
+}
+
+fn text_predicate_from_query(
+    payload_schema: &QdrantPayloadSchema,
+    kind: PayloadTextPredicateKind,
+    field: QdrantPayloadPath,
+    query: String,
+) -> Option<QdrantPredicate> {
+    let field_type = payload_schema.field_for_path(field.key())?;
+    kind.supported(field_type).then(|| kind.build(field, query))
+}
+
 fn payload_text_predicate_logical(
     payload_schema: &QdrantPayloadSchema,
     expr: &Expr,
@@ -623,15 +659,29 @@ fn payload_text_predicate_logical(
                 return None;
             };
             let access = QdrantPayloadAccess::from_logical_expr(accessor)?;
-            let field = access.path().clone();
-            let field_type = payload_schema.field_for_path(field.key())?;
-            if !field_type.supports_text_match() {
+            text_predicate_from_query(
+                payload_schema,
+                PayloadTextPredicateKind::Match,
+                access.path().clone(),
+                string_scalar(logical_scalar_literal_value(query)?)?,
+            )
+        }
+        Expr::ScalarFunction(function) if is_payload_text_any_function_name(function.name()) => {
+            let [accessor, terms] = function.args.as_slice() else {
                 return None;
-            }
-            Some(QdrantPredicate::PayloadTextMatch {
-                field,
-                query: string_scalar(logical_scalar_literal_value(query)?)?,
-            })
+            };
+            let access = QdrantPayloadAccess::from_logical_expr(accessor)?;
+            text_predicate_from_query(
+                payload_schema,
+                PayloadTextPredicateKind::Any,
+                access.path().clone(),
+                payload_text_any_query_string(
+                    logical_scalar_literal_value(terms)?,
+                    function.name(),
+                    "terms",
+                )
+                .ok()?,
+            )
         }
         Expr::ScalarFunction(function)
             if is_payload_phrase_match_function_name(function.name()) =>
@@ -640,15 +690,12 @@ fn payload_text_predicate_logical(
                 return None;
             };
             let access = QdrantPayloadAccess::from_logical_expr(accessor)?;
-            let field = access.path().clone();
-            let field_type = payload_schema.field_for_path(field.key())?;
-            if !field_type.supports_phrase_match() {
-                return None;
-            }
-            Some(QdrantPredicate::PayloadPhraseMatch {
-                field,
-                phrase: string_scalar(logical_scalar_literal_value(phrase)?)?,
-            })
+            text_predicate_from_query(
+                payload_schema,
+                PayloadTextPredicateKind::Phrase,
+                access.path().clone(),
+                string_scalar(logical_scalar_literal_value(phrase)?)?,
+            )
         }
         Expr::ScalarFunction(function)
             if function.name() == PAYLOAD_TEXT_MATCH_ACCESS_FUNCTION_NAME =>
@@ -656,15 +703,30 @@ fn payload_text_predicate_logical(
             let [payload, path, query] = function.args.as_slice() else {
                 return None;
             };
-            let field = QdrantPayloadAccess::from_logical_parts(payload, path)?.path().clone();
-            let field_type = payload_schema.field_for_path(field.key())?;
-            if !field_type.supports_text_match() {
+            text_predicate_from_query(
+                payload_schema,
+                PayloadTextPredicateKind::Match,
+                QdrantPayloadAccess::from_logical_parts(payload, path)?.path().clone(),
+                string_scalar(logical_scalar_literal_value(query)?)?,
+            )
+        }
+        Expr::ScalarFunction(function)
+            if function.name() == PAYLOAD_TEXT_ANY_ACCESS_FUNCTION_NAME =>
+        {
+            let [payload, path, terms] = function.args.as_slice() else {
                 return None;
-            }
-            Some(QdrantPredicate::PayloadTextMatch {
-                field,
-                query: string_scalar(logical_scalar_literal_value(query)?)?,
-            })
+            };
+            text_predicate_from_query(
+                payload_schema,
+                PayloadTextPredicateKind::Any,
+                QdrantPayloadAccess::from_logical_parts(payload, path)?.path().clone(),
+                payload_text_any_query_string(
+                    logical_scalar_literal_value(terms)?,
+                    PAYLOAD_TEXT_ANY_ACCESS_FUNCTION_NAME,
+                    "terms",
+                )
+                .ok()?,
+            )
         }
         Expr::ScalarFunction(function)
             if function.name() == PAYLOAD_PHRASE_MATCH_ACCESS_FUNCTION_NAME =>
@@ -672,15 +734,12 @@ fn payload_text_predicate_logical(
             let [payload, path, phrase] = function.args.as_slice() else {
                 return None;
             };
-            let field = QdrantPayloadAccess::from_logical_parts(payload, path)?.path().clone();
-            let field_type = payload_schema.field_for_path(field.key())?;
-            if !field_type.supports_phrase_match() {
-                return None;
-            }
-            Some(QdrantPredicate::PayloadPhraseMatch {
-                field,
-                phrase: string_scalar(logical_scalar_literal_value(phrase)?)?,
-            })
+            text_predicate_from_query(
+                payload_schema,
+                PayloadTextPredicateKind::Phrase,
+                QdrantPayloadAccess::from_logical_parts(payload, path)?.path().clone(),
+                string_scalar(logical_scalar_literal_value(phrase)?)?,
+            )
         }
         _ => None,
     }
@@ -696,29 +755,39 @@ fn payload_text_predicate_physical(
             let [payload, path, query] = function.args() else {
                 return None;
             };
-            let field = QdrantPayloadAccess::from_physical_parts(payload, path)?.path().clone();
-            let field_type = payload_schema.field_for_path(field.key())?;
-            if !field_type.supports_text_match() {
+            text_predicate_from_query(
+                payload_schema,
+                PayloadTextPredicateKind::Match,
+                QdrantPayloadAccess::from_physical_parts(payload, path)?.path().clone(),
+                string_scalar(physical_scalar_literal_value(query)?)?,
+            )
+        }
+        PAYLOAD_TEXT_ANY_ACCESS_FUNCTION_NAME => {
+            let [payload, path, terms] = function.args() else {
                 return None;
-            }
-            Some(QdrantPredicate::PayloadTextMatch {
-                field,
-                query: string_scalar(physical_scalar_literal_value(query)?)?,
-            })
+            };
+            text_predicate_from_query(
+                payload_schema,
+                PayloadTextPredicateKind::Any,
+                QdrantPayloadAccess::from_physical_parts(payload, path)?.path().clone(),
+                payload_text_any_query_string(
+                    physical_scalar_literal_value(terms)?,
+                    PAYLOAD_TEXT_ANY_ACCESS_FUNCTION_NAME,
+                    "terms",
+                )
+                .ok()?,
+            )
         }
         PAYLOAD_PHRASE_MATCH_ACCESS_FUNCTION_NAME => {
             let [payload, path, phrase] = function.args() else {
                 return None;
             };
-            let field = QdrantPayloadAccess::from_physical_parts(payload, path)?.path().clone();
-            let field_type = payload_schema.field_for_path(field.key())?;
-            if !field_type.supports_phrase_match() {
-                return None;
-            }
-            Some(QdrantPredicate::PayloadPhraseMatch {
-                field,
-                phrase: string_scalar(physical_scalar_literal_value(phrase)?)?,
-            })
+            text_predicate_from_query(
+                payload_schema,
+                PayloadTextPredicateKind::Phrase,
+                QdrantPayloadAccess::from_physical_parts(payload, path)?.path().clone(),
+                string_scalar(physical_scalar_literal_value(phrase)?)?,
+            )
         }
         _ => None,
     }

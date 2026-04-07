@@ -106,7 +106,7 @@ canonical carrier; missing values are not imputed during scan.
 ## Not Yet Admitted
 
 - broader write semantics beyond append-only `INSERT INTO` on the canonical provider schema
-- nested, geo bbox/polygon, text-any, and broader count-oriented payload predicates beyond the current explicit `payload_is_empty(...)`, `payload_values_count(...)`, `payload_geo_distance(...) <= radius`, `payload_text_match(...)`, and `payload_phrase_match(...)` subset
+- nested, geo bbox/polygon, and broader count-oriented payload predicates beyond the current explicit `payload_is_empty(...)`, `payload_values_count(...)`, `payload_geo_distance(...) <= radius`, `payload_text_match(...)`, `payload_text_any(...)`, and `payload_phrase_match(...)` subset
 - broader payload-key SQL `ORDER BY` pushdown beyond the admitted `payload:<path>` subset
 - broader aggregate/grouped SQL beyond the admitted scalar-facet subset
 - fully implicit arithmetic and similar typed SQL over raw `payload:<path>` when `DataFusion` must infer the payload scalar type during SQL planning; use `payload(payload:<path>, 'Type')` or an explicit `CAST(...)` today

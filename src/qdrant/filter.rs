@@ -140,6 +140,10 @@ enum QdrantPredicate {
         field: QdrantPayloadPath,
         query: String,
     },
+    PayloadTextAny {
+        field: QdrantPayloadPath,
+        query: String,
+    },
     PayloadPhraseMatch {
         field:  QdrantPayloadPath,
         phrase: String,
@@ -250,6 +254,9 @@ impl QdrantPredicate {
             }
             Self::PayloadTextMatch { field, query } => {
                 Condition::matches_text(field.key(), query.clone())
+            }
+            Self::PayloadTextAny { field, query } => {
+                Condition::matches_text_any(field.key(), query.clone())
             }
             Self::PayloadPhraseMatch { field, phrase } => {
                 Condition::matches_phrase(field.key(), phrase.clone())

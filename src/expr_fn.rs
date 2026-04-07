@@ -83,14 +83,18 @@ pub use self::payload_predicate::{
     qdrant_payload_values_count,
 };
 pub(crate) use self::payload_text::{
-    PAYLOAD_PHRASE_MATCH_ACCESS_FUNCTION_NAME, PAYLOAD_TEXT_MATCH_ACCESS_FUNCTION_NAME,
-    is_payload_phrase_match_function_name, is_payload_text_match_function_name,
-    qdrant_payload_phrase_match_access_udf, qdrant_payload_phrase_match_udf,
-    qdrant_payload_text_match_access_udf, qdrant_payload_text_match_udf,
+    PAYLOAD_PHRASE_MATCH_ACCESS_FUNCTION_NAME, PAYLOAD_TEXT_ANY_ACCESS_FUNCTION_NAME,
+    PAYLOAD_TEXT_MATCH_ACCESS_FUNCTION_NAME, is_payload_phrase_match_function_name,
+    is_payload_text_any_function_name, is_payload_text_match_function_name,
+    payload_text_any_query_string, qdrant_payload_phrase_match_access_udf,
+    qdrant_payload_phrase_match_udf, qdrant_payload_text_any_access_udf,
+    qdrant_payload_text_any_udf, qdrant_payload_text_match_access_udf,
+    qdrant_payload_text_match_udf,
 };
 pub use self::payload_text::{
-    PAYLOAD_PHRASE_MATCH_FUNCTION_NAME, PAYLOAD_TEXT_MATCH_FUNCTION_NAME,
-    qdrant_payload_phrase_match, qdrant_payload_text_match,
+    PAYLOAD_PHRASE_MATCH_FUNCTION_NAME, PAYLOAD_TEXT_ANY_FUNCTION_NAME,
+    PAYLOAD_TEXT_MATCH_FUNCTION_NAME, qdrant_payload_phrase_match, qdrant_payload_text_any,
+    qdrant_payload_text_match,
 };
 pub use self::recommend::{
     RECOMMEND_SCORE_FUNCTION_NAME, qdrant_recommend_score, qdrant_recommend_score_with_strategy,
@@ -135,8 +139,10 @@ pub(crate) fn register_functions(ctx: &SessionContext) {
     ctx.register_udf(qdrant_payload_is_empty_access_udf());
     ctx.register_udf(qdrant_payload_values_count_access_udf());
     ctx.register_udf(qdrant_payload_text_match_udf());
+    ctx.register_udf(qdrant_payload_text_any_udf());
     ctx.register_udf(qdrant_payload_phrase_match_udf());
     ctx.register_udf(qdrant_payload_text_match_access_udf());
+    ctx.register_udf(qdrant_payload_text_any_access_udf());
     ctx.register_udf(qdrant_payload_phrase_match_access_udf());
     ctx.register_udf(qdrant_datetime_value_udf());
     ctx.register_udf(qdrant_condition_udf());

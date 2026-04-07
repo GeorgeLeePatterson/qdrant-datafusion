@@ -414,6 +414,33 @@ pub(crate) mod supported {
         pub(crate) mod filters {
             use super::SqlCase;
 
+            pub(crate) const RAW_PAYLOAD_ARITHMETIC: SqlCase = SqlCase::new(
+                "scan.filters.raw_payload_arithmetic",
+                "SELECT id FROM vectors WHERE payload:rank + 5 > 20 ORDER BY id",
+            );
+            pub(crate) const SUBQUERY_RAW_PAYLOAD_ARITHMETIC: SqlCase = SqlCase::new(
+                "scan.filters.subquery_raw_payload_arithmetic",
+                "SELECT id FROM (SELECT id FROM vectors WHERE payload:rank + 5 > 20) filtered \
+                 ORDER BY id",
+            );
+            pub(crate) const CTE_RAW_PAYLOAD_ARITHMETIC: SqlCase = SqlCase::new(
+                "scan.filters.cte_raw_payload_arithmetic",
+                "WITH filtered AS (SELECT id FROM vectors WHERE payload:rank + 5 > 20) SELECT id \
+                 FROM filtered ORDER BY id",
+            );
+            pub(crate) const UNION_ALL_RAW_PAYLOAD_ARITHMETIC: SqlCase = SqlCase::new(
+                "scan.filters.union_all_raw_payload_arithmetic",
+                "SELECT id FROM (SELECT id FROM vectors WHERE payload:rank + 5 > 20 UNION ALL \
+                 SELECT id FROM vectors WHERE payload:rank + 5 > 20) filtered ORDER BY id",
+            );
+            pub(crate) const RAW_PAYLOAD_FUNCTION: SqlCase = SqlCase::new(
+                "scan.filters.raw_payload_function",
+                "SELECT id FROM vectors WHERE ABS(payload:rank) > 10 ORDER BY id",
+            );
+            pub(crate) const RAW_PAYLOAD_DIVISION: SqlCase = SqlCase::new(
+                "scan.filters.raw_payload_division",
+                "SELECT id FROM vectors WHERE payload:rank / 2 > 10 ORDER BY id",
+            );
             pub(crate) const PAYLOAD_HINTED_GTE: SqlCase = SqlCase::new(
                 "scan.filters.payload_hinted_gte",
                 "SELECT id FROM vectors WHERE payload(payload:rank, 'Integer') >= 15 ORDER BY id",
@@ -506,6 +533,11 @@ pub(crate) mod supported {
                 "SELECT id FROM vectors WHERE payload_phrase_match(payload:description, 'time is \
                  a flat circle') ORDER BY id",
             );
+            pub(crate) const TEXT_ANY: SqlCase = SqlCase::new(
+                "scan.filters.text_any",
+                "SELECT id FROM vectors WHERE payload_text_any(payload:description, ['good', \
+                 'cheap']) ORDER BY id",
+            );
             pub(crate) const IDS_IN: SqlCase = SqlCase::new(
                 "scan.filters.ids_in",
                 "SELECT id FROM docs WHERE id IN ('1', '3') ORDER BY id",
@@ -573,8 +605,19 @@ pub(crate) mod supported {
                 "WITH filtered AS (SELECT id FROM vectors WHERE payload:rank >= 20) SELECT id \
                  FROM filtered ORDER BY id",
             );
+            pub(crate) const TEXT_ANY_SUBQUERY: SqlCase = SqlCase::new(
+                "scan.filters.text_any_subquery",
+                "SELECT id FROM (SELECT id FROM vectors WHERE \
+                 payload_text_any(payload:description, ['good', 'cheap'])) filtered ORDER BY id",
+            );
 
             pub(crate) const ALL: &[SqlCase] = &[
+                RAW_PAYLOAD_ARITHMETIC,
+                SUBQUERY_RAW_PAYLOAD_ARITHMETIC,
+                CTE_RAW_PAYLOAD_ARITHMETIC,
+                UNION_ALL_RAW_PAYLOAD_ARITHMETIC,
+                RAW_PAYLOAD_FUNCTION,
+                RAW_PAYLOAD_DIVISION,
                 PAYLOAD_HINTED_GTE,
                 PAYLOAD_CAST_GTE,
                 HINTED_PAYLOAD_ARITHMETIC,
@@ -594,6 +637,7 @@ pub(crate) mod supported {
                 GEO_RESIDUAL,
                 TEXT_MATCH,
                 PHRASE_MATCH,
+                TEXT_ANY,
                 IDS_IN,
                 VECTOR_IS_NULL,
                 VECTOR_NONNULL_AND_MULTI_NULL,
@@ -609,6 +653,7 @@ pub(crate) mod supported {
                 EMPTY_STRING_IS_NOT_NULL,
                 SUBQUERY,
                 CTE,
+                TEXT_ANY_SUBQUERY,
             ];
         }
 
@@ -1665,15 +1710,6 @@ pub(crate) mod unsupported {
 
         pub(crate) mod filters {
             use super::UnsupportedSqlCase;
-
-            pub(crate) const RAW_PAYLOAD_ARITHMETIC: UnsupportedSqlCase = UnsupportedSqlCase::new(
-                "scan.filters.raw_payload_arithmetic",
-                "SELECT id FROM vectors WHERE payload:rank + 5 > 20 ORDER BY id",
-                "Q-040",
-                "raw payload arithmetic in predicates still fails before qdrant-specific rewrites \
-                 run",
-                "Cannot coerce arithmetic expression",
-            );
             pub(crate) const TEXT_MATCH_PROJECTION: UnsupportedSqlCase =
                 UnsupportedSqlCase::by_design(
                     "scan.filters.text_match_projection",
@@ -1692,60 +1728,6 @@ pub(crate) mod unsupported {
                      a projection",
                     "payload_phrase_match",
                 );
-            pub(crate) const SUBQUERY_RAW_PAYLOAD_ARITHMETIC: UnsupportedSqlCase =
-                UnsupportedSqlCase::new(
-                    "scan.filters.subquery_raw_payload_arithmetic",
-                    "SELECT id FROM (SELECT id FROM vectors WHERE payload:rank + 5 > 20) filtered \
-                     ORDER BY id",
-                    "Q-040",
-                    "raw payload arithmetic in predicates still fails before qdrant-specific \
-                     rewrites run",
-                    "Cannot coerce arithmetic expression",
-                );
-            pub(crate) const CTE_RAW_PAYLOAD_ARITHMETIC: UnsupportedSqlCase =
-                UnsupportedSqlCase::new(
-                    "scan.filters.cte_raw_payload_arithmetic",
-                    "WITH filtered AS (SELECT id FROM vectors WHERE payload:rank + 5 > 20) SELECT \
-                     id FROM filtered ORDER BY id",
-                    "Q-040",
-                    "raw payload arithmetic in predicates still fails before qdrant-specific \
-                     rewrites run",
-                    "Cannot coerce arithmetic expression",
-                );
-            pub(crate) const UNION_ALL_RAW_PAYLOAD_ARITHMETIC: UnsupportedSqlCase =
-                UnsupportedSqlCase::new(
-                    "scan.filters.union_all_raw_payload_arithmetic",
-                    "SELECT id FROM (SELECT id FROM vectors WHERE payload:rank + 5 > 20 UNION ALL \
-                     SELECT id FROM vectors WHERE payload:rank + 5 > 20) filtered ORDER BY id",
-                    "Q-040",
-                    "raw payload arithmetic in predicates still fails before qdrant-specific \
-                     rewrites run",
-                    "Cannot coerce arithmetic expression",
-                );
-            pub(crate) const RAW_PAYLOAD_FUNCTION: UnsupportedSqlCase = UnsupportedSqlCase::new(
-                "scan.filters.raw_payload_function",
-                "SELECT id FROM vectors WHERE ABS(payload:rank) > 10 ORDER BY id",
-                "Q-040",
-                "raw payload scalar functions in predicates still fail before qdrant-specific \
-                 payload typing rewrites run",
-                "No function matches the given name and argument types 'abs(Utf8)'",
-            );
-            pub(crate) const RAW_PAYLOAD_DIVISION: UnsupportedSqlCase = UnsupportedSqlCase::new(
-                "scan.filters.raw_payload_division",
-                "SELECT id FROM vectors WHERE payload:rank / 2 > 10 ORDER BY id",
-                "Q-040",
-                "raw payload arithmetic in predicates still fails before qdrant-specific rewrites \
-                 run",
-                "Cannot coerce arithmetic expression",
-            );
-            pub(crate) const TEXT_ANY: UnsupportedSqlCase = UnsupportedSqlCase::new(
-                "scan.filters.text_any",
-                "SELECT id FROM vectors WHERE payload_text_any(payload:description, ['good', \
-                 'cheap']) ORDER BY id",
-                "Q-020",
-                "text-any is not implemented as an explicit qdrant predicate surface yet",
-                "payload_text_any",
-            );
             pub(crate) const NESTED_MATCH: UnsupportedSqlCase = UnsupportedSqlCase::new(
                 "scan.filters.nested_match",
                 "SELECT id FROM vectors WHERE payload_nested_match(payload:metadata, 'rank >= \
@@ -1773,29 +1755,12 @@ pub(crate) mod unsupported {
                  surface yet",
                 "payload_geo_within_polygon",
             );
-            pub(crate) const TEXT_ANY_SUBQUERY: UnsupportedSqlCase = UnsupportedSqlCase::new(
-                "scan.filters.text_any_subquery",
-                "SELECT id FROM (SELECT id FROM vectors WHERE \
-                 payload_text_any(payload:description, ['good', 'cheap'])) filtered ORDER BY id",
-                "Q-020",
-                "text-any is not implemented as an explicit qdrant predicate surface yet, \
-                 including subquery shells",
-                "payload_text_any",
-            );
             pub(crate) const ALL: &[UnsupportedSqlCase] = &[
-                RAW_PAYLOAD_ARITHMETIC,
-                SUBQUERY_RAW_PAYLOAD_ARITHMETIC,
-                CTE_RAW_PAYLOAD_ARITHMETIC,
-                UNION_ALL_RAW_PAYLOAD_ARITHMETIC,
-                RAW_PAYLOAD_FUNCTION,
-                RAW_PAYLOAD_DIVISION,
                 TEXT_MATCH_PROJECTION,
                 PHRASE_MATCH_PROJECTION,
-                TEXT_ANY,
                 NESTED_MATCH,
                 GEO_BBOX,
                 GEO_POLYGON,
-                TEXT_ANY_SUBQUERY,
             ];
         }
 

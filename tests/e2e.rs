@@ -1447,6 +1447,12 @@ error: {err}"
             sql::scan::ordering::CTE_DESC,
         ];
         let filter_cases = [
+            sql::scan::filters::RAW_PAYLOAD_ARITHMETIC,
+            sql::scan::filters::SUBQUERY_RAW_PAYLOAD_ARITHMETIC,
+            sql::scan::filters::CTE_RAW_PAYLOAD_ARITHMETIC,
+            sql::scan::filters::UNION_ALL_RAW_PAYLOAD_ARITHMETIC,
+            sql::scan::filters::RAW_PAYLOAD_FUNCTION,
+            sql::scan::filters::RAW_PAYLOAD_DIVISION,
             sql::scan::filters::HINTED_PAYLOAD_ARITHMETIC,
             sql::scan::filters::HINTED_PAYLOAD_FUNCTION,
             sql::scan::filters::CASE_HINTED_PAYLOAD,
@@ -1457,9 +1463,11 @@ error: {err}"
             sql::scan::filters::TEXT_MATCH_WRAPPED,
             sql::scan::filters::TEXT_MATCH_CASE,
             sql::scan::filters::PHRASE_MATCH_WRAPPED,
+            sql::scan::filters::TEXT_ANY,
             sql::scan::filters::VALUES_COUNT_GE_ONE,
             sql::scan::filters::SUBQUERY,
             sql::scan::filters::CTE,
+            sql::scan::filters::TEXT_ANY_SUBQUERY,
         ];
         let aggregate_cases = [
             sql::scan::aggregates::AVG_HINTED_PAYLOAD,
@@ -1771,6 +1779,11 @@ error: {err}"
             collect_id_rows(&ctx, sql::scan::filters::PHRASE_MATCH.sql).await?;
         assert_eq!(phrase_ids, vec![2], "{phrase_display}");
         assert!(!phrase_display.contains("FilterExec"), "{phrase_display}");
+
+        let (text_any_ids, text_any_display) =
+            collect_id_rows(&ctx, sql::scan::filters::TEXT_ANY.sql).await?;
+        assert_eq!(text_any_ids, vec![1, 3], "{text_any_display}");
+        assert!(!text_any_display.contains("FilterExec"), "{text_any_display}");
 
         Ok(())
     }

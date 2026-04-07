@@ -170,7 +170,7 @@ This remains the strongest next implementation focus.
 The explicit `payload_is_empty(...)` / `payload_values_count(...)` slice is now in place, the first geo bridge now exists through `payload_geo_distance(...) <= radius`, and the first text bridge now exists through `payload_text_match(...)` / `payload_phrase_match(...)`. The remaining work is to widen the predicate family without guessing semantics.
 
 1. keep missing-vs-null-vs-empty semantics explicit instead of guessing
-2. extend nested, geo bbox/polygon, text-any, and broader count-oriented predicates only where the SQL contract is explicit
+2. extend nested, geo bbox/polygon, and broader count-oriented predicates only where the SQL contract is explicit
 3. avoid conflating SQL null with backend-specific container predicates
 
 ### P1: add aggregate-like exploration that composes over filters
