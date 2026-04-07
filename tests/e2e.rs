@@ -364,8 +364,8 @@ mod tests {
 
     use datafusion::arrow::array::types::Float32Type;
     use datafusion::arrow::array::{
-        Array, ArrayRef, BooleanArray, FixedSizeListArray, Float32Array, Int64Array, StringArray,
-        StructArray,
+        Array, ArrayRef, BooleanArray, FixedSizeListArray, Float32Array, Float64Array, Int64Array,
+        StringArray, StructArray,
     };
     use datafusion::arrow::datatypes::DataType;
     use datafusion::arrow::record_batch::RecordBatch;
@@ -779,6 +779,17 @@ error: {err}"
         Ok((rows, display))
     }
 
+    async fn assert_pushed_id_rows(
+        ctx: &QdrantSessionContext,
+        sql: &str,
+        expected_ids: &[u64],
+    ) -> Result<()> {
+        let (actual_ids, display) = collect_id_rows(ctx, sql).await?;
+        assert_eq!(actual_ids, expected_ids, "{display}");
+        assert!(!display.contains("FilterExec"), "{display}");
+        Ok(())
+    }
+
     async fn collect_i64_rows(
         ctx: &QdrantSessionContext,
         sql: &str,
@@ -844,6 +855,17 @@ error: {err}"
             .downcast_ref::<Int64Array>()
             .expect("int64 array")
             .iter()
+            .collect()
+    }
+
+    fn batch_f64_values(batch: &RecordBatch, column: &str) -> Vec<f64> {
+        batch
+            .column(batch.schema().index_of(column).expect("float64 column"))
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .expect("float64 array")
+            .iter()
+            .map(|value| value.expect("non-null float64 value"))
             .collect()
     }
 
@@ -1697,11 +1719,16 @@ error: {err}"
         values.insert("kind", "value");
         values.insert("list", serde_json::json!([1]));
 
+        let mut multi = qdrant_client::Payload::new();
+        multi.insert("kind", "multi");
+        multi.insert("list", serde_json::json!([1, 2]));
+
         let points = vec![
             PointStruct::new(1, Vector::new_dense(vec![0.0]), missing),
             PointStruct::new(2, Vector::new_dense(vec![0.0]), nulls),
             PointStruct::new(3, Vector::new_dense(vec![0.0]), empties),
             PointStruct::new(4, Vector::new_dense(vec![0.0]), values),
+            PointStruct::new(5, Vector::new_dense(vec![0.0]), multi),
         ];
         drop(client.upsert_points(UpsertPointsBuilder::new(collection_name, points)).await?);
 
@@ -1712,39 +1739,56 @@ error: {err}"
         let projection =
             ctx.sql(sql::scan::projection::EMPTY_AND_COUNT_VALUES.sql).await?.collect().await?;
         let projection_batch = projection.into_iter().next().expect("projection batch");
-        assert_eq!(batch_u64_ids(&projection_batch, "id"), vec![1, 2, 3, 4]);
+        assert_eq!(batch_u64_ids(&projection_batch, "id"), vec![1, 2, 3, 4, 5]);
         assert_eq!(batch_bool_values(&projection_batch, "list_exists"), vec![
-            false, true, true, true
+            false, true, true, true, true
+        ]);
+        assert_eq!(batch_bool_values(&projection_batch, "list_missing"), vec![
+            true, false, false, false, false
+        ]);
+        assert_eq!(batch_bool_values(&projection_batch, "list_null"), vec![
+            false, true, false, false, false
         ]);
         assert_eq!(batch_bool_values(&projection_batch, "list_empty"), vec![
-            true, true, true, false
+            true, true, true, false, false
+        ]);
+        assert_eq!(batch_bool_values(&projection_batch, "list_has_values"), vec![
+            false, false, false, true, true
         ]);
         assert_eq!(batch_optional_i64_values(&projection_batch, "list_count"), vec![
             None,
             Some(0),
             Some(0),
-            Some(1)
+            Some(1),
+            Some(2)
         ]);
 
-        let (empty_ids, empty_display) =
-            collect_id_rows(&ctx, sql::scan::filters::EMPTY.sql).await?;
-        assert_eq!(empty_ids, vec![1, 2, 3], "{empty_display}");
-        assert!(!empty_display.contains("FilterExec"), "{empty_display}");
+        assert_pushed_id_rows(&ctx, sql::scan::filters::EMPTY.sql, &[1, 2, 3]).await?;
+        assert_pushed_id_rows(&ctx, sql::scan::filters::EXISTS.sql, &[2, 3, 4, 5]).await?;
+        assert_pushed_id_rows(&ctx, sql::scan::filters::NOT_EXISTS.sql, &[1]).await?;
+        assert_pushed_id_rows(&ctx, sql::scan::filters::IS_MISSING.sql, &[1]).await?;
+        assert_pushed_id_rows(&ctx, sql::scan::filters::IS_NULL_EXPLICIT.sql, &[2]).await?;
+        assert_pushed_id_rows(&ctx, sql::scan::filters::VALUES_COUNT_ZERO.sql, &[2, 3]).await?;
+        assert_pushed_id_rows(&ctx, sql::scan::filters::VALUES_COUNT_GE_ONE.sql, &[4, 5]).await?;
+        assert_pushed_id_rows(&ctx, sql::scan::filters::HAS_VALUES.sql, &[4, 5]).await?;
+        assert_pushed_id_rows(&ctx, sql::scan::filters::VALUES_COUNT_NOT_ZERO.sql, &[4, 5]).await?;
+        assert_pushed_id_rows(&ctx, sql::scan::filters::VALUES_COUNT_LT_ONE.sql, &[2, 3]).await?;
+        assert_pushed_id_rows(&ctx, sql::scan::filters::VALUES_COUNT_GT_ONE.sql, &[5]).await?;
+        assert_pushed_id_rows(&ctx, sql::scan::filters::VALUES_COUNT_BETWEEN.sql, &[2, 3, 4])
+            .await?;
+        assert_pushed_id_rows(&ctx, sql::scan::filters::VALUES_COUNT_NOT_BETWEEN.sql, &[5]).await?;
 
-        let (exists_ids, exists_display) =
-            collect_id_rows(&ctx, sql::scan::filters::EXISTS.sql).await?;
-        assert_eq!(exists_ids, vec![2, 3, 4], "{exists_display}");
-        assert!(!exists_display.contains("FilterExec"), "{exists_display}");
+        let count_aggregate =
+            ctx.sql(sql::scan::aggregates::AVG_VALUES_COUNT.sql).await?.collect().await?;
+        let count_aggregate_batch = count_aggregate.into_iter().next().expect("aggregate batch");
+        let avg_count = batch_f64_values(&count_aggregate_batch, "avg_list_count");
+        assert_eq!(avg_count, vec![0.75]);
 
-        let (missing_ids, missing_display) =
-            collect_id_rows(&ctx, sql::scan::filters::NOT_EXISTS.sql).await?;
-        assert_eq!(missing_ids, vec![1], "{missing_display}");
-        assert!(!missing_display.contains("FilterExec"), "{missing_display}");
-
-        let (count_ids, count_display) =
-            collect_id_rows(&ctx, sql::scan::filters::VALUES_COUNT_ZERO.sql).await?;
-        assert_eq!(count_ids, vec![2, 3], "{count_display}");
-        assert!(!count_display.contains("FilterExec"), "{count_display}");
+        let null_missing =
+            ctx.sql(sql::scan::aggregates::SUM_NULL_AND_MISSING_FLAGS.sql).await?.collect().await?;
+        let null_missing_batch = null_missing.into_iter().next().expect("aggregate batch");
+        assert_eq!(batch_i64_values(&null_missing_batch, "null_total"), vec![1]);
+        assert_eq!(batch_i64_values(&null_missing_batch, "missing_total"), vec![1]);
 
         Ok(())
     }

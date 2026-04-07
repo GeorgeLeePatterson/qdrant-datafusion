@@ -87,16 +87,24 @@ pub(crate) use self::payload_nested::{
     is_payload_nested_match_function_name, qdrant_payload_nested_match_udf,
 };
 pub(crate) use self::payload_predicate::{
-    PAYLOAD_EXISTS_ACCESS_FUNCTION_NAME, PAYLOAD_IS_EMPTY_ACCESS_FUNCTION_NAME,
-    PAYLOAD_VALUES_COUNT_ACCESS_FUNCTION_NAME, is_payload_exists_function_name,
-    is_payload_is_empty_function_name, is_payload_values_count_function_name,
+    PAYLOAD_EXISTS_ACCESS_FUNCTION_NAME, PAYLOAD_HAS_VALUES_ACCESS_FUNCTION_NAME,
+    PAYLOAD_IS_EMPTY_ACCESS_FUNCTION_NAME, PAYLOAD_IS_MISSING_ACCESS_FUNCTION_NAME,
+    PAYLOAD_IS_NULL_ACCESS_FUNCTION_NAME, PAYLOAD_VALUES_COUNT_ACCESS_FUNCTION_NAME,
+    is_payload_exists_function_name, is_payload_has_values_function_name,
+    is_payload_is_empty_function_name, is_payload_is_missing_function_name,
+    is_payload_is_null_function_name, is_payload_values_count_function_name,
     qdrant_payload_exists_access_udf, qdrant_payload_exists_udf,
+    qdrant_payload_has_values_access_udf, qdrant_payload_has_values_udf,
     qdrant_payload_is_empty_access_udf, qdrant_payload_is_empty_udf,
+    qdrant_payload_is_missing_access_udf, qdrant_payload_is_missing_udf,
+    qdrant_payload_is_null_access_udf, qdrant_payload_is_null_udf,
     qdrant_payload_values_count_access_udf, qdrant_payload_values_count_udf,
 };
 pub use self::payload_predicate::{
-    PAYLOAD_EXISTS_FUNCTION_NAME, PAYLOAD_IS_EMPTY_FUNCTION_NAME,
-    PAYLOAD_VALUES_COUNT_FUNCTION_NAME, qdrant_payload_exists, qdrant_payload_is_empty,
+    PAYLOAD_EXISTS_FUNCTION_NAME, PAYLOAD_HAS_VALUES_FUNCTION_NAME, PAYLOAD_IS_EMPTY_FUNCTION_NAME,
+    PAYLOAD_IS_MISSING_FUNCTION_NAME, PAYLOAD_IS_NULL_FUNCTION_NAME,
+    PAYLOAD_VALUES_COUNT_FUNCTION_NAME, qdrant_payload_exists, qdrant_payload_has_values,
+    qdrant_payload_is_empty, qdrant_payload_is_missing, qdrant_payload_is_null,
     qdrant_payload_values_count,
 };
 pub(crate) use self::payload_text::{
@@ -157,10 +165,16 @@ pub(crate) fn register_functions(ctx: &SessionContext) {
     ctx.register_udf(qdrant_payload_geo_within_bbox_access_udf());
     ctx.register_udf(qdrant_payload_geo_within_polygon_access_udf());
     ctx.register_udf(qdrant_payload_exists_udf());
+    ctx.register_udf(qdrant_payload_is_missing_udf());
+    ctx.register_udf(qdrant_payload_is_null_udf());
     ctx.register_udf(qdrant_payload_is_empty_udf());
+    ctx.register_udf(qdrant_payload_has_values_udf());
     ctx.register_udf(qdrant_payload_values_count_udf());
     ctx.register_udf(qdrant_payload_exists_access_udf());
+    ctx.register_udf(qdrant_payload_is_missing_access_udf());
+    ctx.register_udf(qdrant_payload_is_null_access_udf());
     ctx.register_udf(qdrant_payload_is_empty_access_udf());
+    ctx.register_udf(qdrant_payload_has_values_access_udf());
     ctx.register_udf(qdrant_payload_values_count_access_udf());
     ctx.register_udf(qdrant_payload_text_match_udf());
     ctx.register_udf(qdrant_payload_text_any_udf());

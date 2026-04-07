@@ -312,6 +312,11 @@ Use it to resume work without replaying the full repository history.
     - `payload_exists(payload:<path>)` now executes locally and lowers exactly to Qdrant field-presence predicates on scan filters
     - the contract is explicit: present explicit `null` and empty arrays still count as existing fields
     - catalog coverage now tracks direct and subquery existence-filter SQL in the supported inventory
+55. `Q-020`: the explicit payload presence/null/missing/empty/non-empty/count family is now closed on the current contract.
+    - `payload_is_missing(payload:<path>)` now executes locally and lowers exactly to the missing-field subset through the existing presence predicate contract
+    - `payload_is_null(payload:<path>)` now executes locally and lowers exactly to Qdrant explicit-null predicates, separately from SQL `payload:<path> IS NULL`
+    - `payload_has_values(payload:<path>)` now executes locally and lowers exactly to the positive-`values_count` subset
+    - catalog and runtime coverage now prove the surrounding family together: missing, explicit null, empty, positive cardinality, and broader `payload_values_count(...)` comparison shapes
 
 ## Next
 
@@ -323,8 +328,6 @@ Use it to resume work without replaying the full repository history.
    - retrieval: broader `query`-family relations and modifiers such as grouped retrieval beyond the current grouped query-family `DISTINCT ON` subset now that nearest / sample / recommend / discover / context / nearest-with-MMR / relevance feedback are all fully absorbed
    - current retrieval kernels now allow omitted SQL `LIMIT`, deferring to Qdrant's native default result count unless SQL specifies one
    - current retrieval kernels now also allow omitted projected `ORDER BY score DESC`, deferring to Qdrant's native result order unless SQL specifies a local re-sort
-4. `Q-020`: Extend the predicate algebra only where the SQL semantics are explicit.
-   - broader count-oriented predicates beyond the current explicit `payload_exists(...)`, `payload_is_empty(...)`, `payload_values_count(...)`, `payload_geo_distance(...) <= radius`, `payload_geo_within_bbox(...)`, `payload_geo_within_polygon(...)`, `payload_nested_match(...)`, `payload_text_match(...)`, `payload_text_any(...)`, and `payload_phrase_match(...)` subset
 5. Keep the new admission/fallback catalog current as behavior widens.
    - move shared strictness out of scattered implicit notes and into `docs/ADMISSION_MATRIX.md`
    - when a path is strict-for-now, track the affected consumers and the intended widening there

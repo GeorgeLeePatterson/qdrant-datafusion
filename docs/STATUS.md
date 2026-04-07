@@ -59,15 +59,18 @@ Current branch reality:
     - `IS NULL` means missing or explicit null
     - `IS NOT NULL` means present and non-null
     - the current lowering excludes empty arrays from SQL null by composing `is_null`, `is_empty`, and `values_count`
-25. Payload-empty/cardinality semantics plus the first explicit geo and text predicates are now admitted without overloading ordinary SQL semantics.
+25. Payload presence/null/missing/empty/non-empty/count semantics plus the first explicit geo and text predicates are now admitted without overloading ordinary SQL semantics.
     - empty strings remain ordinary non-null values and are expressed through normal equality, for example `payload:<path> = ''`
     - explicit presence predicates now use `payload_exists(payload:<path>)`
+    - explicit missing predicates now use `payload_is_missing(payload:<path>)`
+    - explicit null predicates now use `payload_is_null(payload:<path>)`
     - explicit empty/container predicates now use `payload_is_empty(payload:<path>)`
+    - explicit non-empty/container predicates now use `payload_has_values(payload:<path>)`
     - explicit cardinality predicates now use `payload_values_count(payload:<path>)`
     - explicit geo distance now uses `payload_geo_distance(payload:<path>, lon, lat)` with local numeric execution and exact `<= radius` scan-filter pushdown on geo payload fields
     - explicit nested-array predicates now use `payload_nested_match(payload:<path>, <predicate>)` as exact scan-filter pushdown over the same payload predicate algebra in a nested scope
     - explicit text/phrase predicates now use `payload_text_match(payload:<path>, 'query')` and `payload_phrase_match(payload:<path>, 'phrase')` as exact scan-filter pushdown on text-indexed payload fields, with phrase matching requiring phrase support in the text index
-    - current runtime tests prove `payload_values_count` matches missing as `NULL`, explicit `null` and `[]` as `0`, and present non-array values as `1`
+    - current runtime tests prove `payload_values_count` matches missing as `NULL`, explicit `null` and `[]` as `0`, and present non-array values as `1`, while `payload_exists` / `payload_is_missing` / `payload_is_null` / `payload_is_empty` / `payload_has_values` expose the surrounding boolean contracts directly
 26. Planner-layer subtree replacement now uses a unified relation-pushdown analyzer scaffold for the admitted `Qdrant` relation replacements instead of separate analyzer-rule ownership by convention.
 27. The planner scaffold now derives broader subtree classes explicitly before relation recognition.
     - source class: `none`, `single-source Qdrant`, `multi-source Qdrant`, `mixed`

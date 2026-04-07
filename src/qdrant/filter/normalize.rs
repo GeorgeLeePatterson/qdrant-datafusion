@@ -20,15 +20,18 @@ use crate::arrow::schema::{ID_FIELD_NAME, QdrantFieldBinding, field_uses_unnamed
 use crate::expr_fn::{
     PAYLOAD_EXISTS_ACCESS_FUNCTION_NAME, PAYLOAD_GEO_DISTANCE_ACCESS_FUNCTION_NAME,
     PAYLOAD_GEO_WITHIN_BBOX_ACCESS_FUNCTION_NAME, PAYLOAD_GEO_WITHIN_POLYGON_ACCESS_FUNCTION_NAME,
-    PAYLOAD_IS_EMPTY_ACCESS_FUNCTION_NAME, PAYLOAD_NESTED_MATCH_FUNCTION_NAME,
-    PAYLOAD_PHRASE_MATCH_ACCESS_FUNCTION_NAME, PAYLOAD_TEXT_ANY_ACCESS_FUNCTION_NAME,
-    PAYLOAD_TEXT_MATCH_ACCESS_FUNCTION_NAME, PAYLOAD_VALUES_COUNT_ACCESS_FUNCTION_NAME,
-    canonical_geo_polygon, is_payload_exists_function_name, is_payload_geo_distance_function_name,
+    PAYLOAD_HAS_VALUES_ACCESS_FUNCTION_NAME, PAYLOAD_IS_EMPTY_ACCESS_FUNCTION_NAME,
+    PAYLOAD_IS_MISSING_ACCESS_FUNCTION_NAME, PAYLOAD_IS_NULL_ACCESS_FUNCTION_NAME,
+    PAYLOAD_NESTED_MATCH_FUNCTION_NAME, PAYLOAD_PHRASE_MATCH_ACCESS_FUNCTION_NAME,
+    PAYLOAD_TEXT_ANY_ACCESS_FUNCTION_NAME, PAYLOAD_TEXT_MATCH_ACCESS_FUNCTION_NAME,
+    PAYLOAD_VALUES_COUNT_ACCESS_FUNCTION_NAME, canonical_geo_polygon,
+    is_payload_exists_function_name, is_payload_geo_distance_function_name,
     is_payload_geo_within_bbox_function_name, is_payload_geo_within_polygon_function_name,
-    is_payload_is_empty_function_name, is_payload_nested_match_function_name,
-    is_payload_phrase_match_function_name, is_payload_text_any_function_name,
-    is_payload_text_match_function_name, is_payload_values_count_function_name,
-    payload_text_any_query_string,
+    is_payload_has_values_function_name, is_payload_is_empty_function_name,
+    is_payload_is_missing_function_name, is_payload_is_null_function_name,
+    is_payload_nested_match_function_name, is_payload_phrase_match_function_name,
+    is_payload_text_any_function_name, is_payload_text_match_function_name,
+    is_payload_values_count_function_name, payload_text_any_query_string,
 };
 use crate::qdrant::{QdrantPayloadAccess, QdrantPayloadPath};
 
@@ -89,10 +92,43 @@ impl<'a> QdrantExprNormalizer<'a> {
             self.payload_schema,
             nested_base,
             expr,
+            is_payload_is_missing_function_name,
+            PAYLOAD_IS_MISSING_ACCESS_FUNCTION_NAME,
+        ) {
+            return Some(QdrantFilterExpr::not(QdrantFilterExpr::Predicate(
+                QdrantPredicate::PayloadExists(field),
+            )));
+        }
+        if let Some(field) = unary_payload_logical_path(
+            self.payload_schema,
+            nested_base,
+            expr,
+            is_payload_is_null_function_name,
+            PAYLOAD_IS_NULL_ACCESS_FUNCTION_NAME,
+        ) {
+            return Some(QdrantFilterExpr::Predicate(QdrantPredicate::PayloadIsNull(field)));
+        }
+        if let Some(field) = unary_payload_logical_path(
+            self.payload_schema,
+            nested_base,
+            expr,
             is_payload_is_empty_function_name,
             PAYLOAD_IS_EMPTY_ACCESS_FUNCTION_NAME,
         ) {
             return Some(QdrantFilterExpr::Predicate(QdrantPredicate::PayloadIsEmpty(field)));
+        }
+        if let Some(field) = unary_payload_logical_path(
+            self.payload_schema,
+            nested_base,
+            expr,
+            is_payload_has_values_function_name,
+            PAYLOAD_HAS_VALUES_ACCESS_FUNCTION_NAME,
+        ) {
+            return Some(QdrantFilterExpr::Predicate(QdrantPredicate::PayloadValuesCount {
+                field,
+                lower: Some((1, true)),
+                upper: None,
+            }));
         }
         if let Some(predicate) =
             payload_geo_predicate_logical(self.payload_schema, nested_base, expr)
@@ -203,12 +239,15 @@ impl<'a> QdrantExprNormalizer<'a> {
                         let high =
                             field_type.into_filter_value(Self::logical_scalar_literal(high)?)?;
                         let range = field_type.into_range_predicate(
-                            field,
+                            field.clone(),
                             Some((low, true)),
                             Some((high, true)),
                         )?;
                         if *negated {
-                            Some(QdrantFilterExpr::not(QdrantFilterExpr::Predicate(range)))
+                            Some(QdrantFilterExpr::and([
+                                QdrantFilterExpr::not(field.sql_null_filter_expr()),
+                                QdrantFilterExpr::not(QdrantFilterExpr::Predicate(range)),
+                            ]))
                         } else {
                             Some(QdrantFilterExpr::Predicate(range))
                         }
@@ -217,12 +256,17 @@ impl<'a> QdrantExprNormalizer<'a> {
                         let low = values_count_scalar(Self::logical_scalar_literal(low)?)?;
                         let high = values_count_scalar(Self::logical_scalar_literal(high)?)?;
                         let range = QdrantPredicate::PayloadValuesCount {
-                            field,
+                            field: field.clone(),
                             lower: Some((low, true)),
                             upper: Some((high, true)),
                         };
                         if *negated {
-                            Some(QdrantFilterExpr::not(QdrantFilterExpr::Predicate(range)))
+                            Some(QdrantFilterExpr::and([
+                                QdrantFilterExpr::Predicate(QdrantPredicate::PayloadExists(
+                                    field.clone(),
+                                )),
+                                QdrantFilterExpr::not(QdrantFilterExpr::Predicate(range)),
+                            ]))
                         } else {
                             Some(QdrantFilterExpr::Predicate(range))
                         }
@@ -274,9 +318,39 @@ impl<'a> QdrantExprNormalizer<'a> {
             self.payload_schema,
             nested_base,
             expr,
+            PAYLOAD_IS_MISSING_ACCESS_FUNCTION_NAME,
+        ) {
+            return Some(QdrantFilterExpr::not(QdrantFilterExpr::Predicate(
+                QdrantPredicate::PayloadExists(field),
+            )));
+        }
+        if let Some(field) = unary_payload_physical_path(
+            self.payload_schema,
+            nested_base,
+            expr,
+            PAYLOAD_IS_NULL_ACCESS_FUNCTION_NAME,
+        ) {
+            return Some(QdrantFilterExpr::Predicate(QdrantPredicate::PayloadIsNull(field)));
+        }
+        if let Some(field) = unary_payload_physical_path(
+            self.payload_schema,
+            nested_base,
+            expr,
             PAYLOAD_IS_EMPTY_ACCESS_FUNCTION_NAME,
         ) {
             return Some(QdrantFilterExpr::Predicate(QdrantPredicate::PayloadIsEmpty(field)));
+        }
+        if let Some(field) = unary_payload_physical_path(
+            self.payload_schema,
+            nested_base,
+            expr,
+            PAYLOAD_HAS_VALUES_ACCESS_FUNCTION_NAME,
+        ) {
+            return Some(QdrantFilterExpr::Predicate(QdrantPredicate::PayloadValuesCount {
+                field,
+                lower: Some((1, true)),
+                upper: None,
+            }));
         }
         if let Some(predicate) =
             payload_geo_predicate_physical(self.payload_schema, nested_base, expr)
@@ -430,7 +504,18 @@ impl<'a> QdrantExprNormalizer<'a> {
                     .into_iter()
                     .map(|value| field_type.into_filter_value(value))
                     .collect::<Option<Vec<_>>>()?;
-                QdrantPredicate::PayloadIn { field, values }
+                let expr = QdrantFilterExpr::Predicate(QdrantPredicate::PayloadIn {
+                    field: field.clone(),
+                    values,
+                });
+                return Some(if negated {
+                    QdrantFilterExpr::and([
+                        QdrantFilterExpr::not(field.sql_null_filter_expr()),
+                        QdrantFilterExpr::not(expr),
+                    ])
+                } else {
+                    expr
+                });
             }
             QdrantFieldRef::PayloadValuesCount(_)
             | QdrantFieldRef::PayloadGeoDistance { .. }
@@ -471,9 +556,12 @@ impl<'a> QdrantExprNormalizer<'a> {
                         }))
                     }
                     Operator::NotEq if field_type.supports_equality() => {
-                        Some(QdrantFilterExpr::not(QdrantFilterExpr::Predicate(
-                            QdrantPredicate::PayloadEq { field, value },
-                        )))
+                        Some(QdrantFilterExpr::and([
+                            QdrantFilterExpr::not(field.clone().sql_null_filter_expr()),
+                            QdrantFilterExpr::not(QdrantFilterExpr::Predicate(
+                                QdrantPredicate::PayloadEq { field, value },
+                            )),
+                        ]))
                     }
                     Operator::Lt => Some(QdrantFilterExpr::Predicate(
                         field_type.into_range_predicate(field, None, Some((value, false)))?,
@@ -499,13 +587,18 @@ impl<'a> QdrantExprNormalizer<'a> {
                         upper: Some((value, true)),
                     },
                     Operator::NotEq => {
-                        return Some(QdrantFilterExpr::not(QdrantFilterExpr::Predicate(
-                            QdrantPredicate::PayloadValuesCount {
-                                field,
-                                lower: Some((value, true)),
-                                upper: Some((value, true)),
-                            },
-                        )));
+                        return Some(QdrantFilterExpr::and([
+                            QdrantFilterExpr::Predicate(QdrantPredicate::PayloadExists(
+                                field.clone(),
+                            )),
+                            QdrantFilterExpr::not(QdrantFilterExpr::Predicate(
+                                QdrantPredicate::PayloadValuesCount {
+                                    field,
+                                    lower: Some((value, true)),
+                                    upper: Some((value, true)),
+                                },
+                            )),
+                        ]));
                     }
                     Operator::Lt => QdrantPredicate::PayloadValuesCount {
                         field,

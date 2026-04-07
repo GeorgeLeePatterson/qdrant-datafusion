@@ -59,14 +59,17 @@ Last updated: 2026-04-07
     - scalar empty values use ordinary SQL semantics rather than a dedicated backend-shaped empty predicate
       - for the current admitted bridge, `payload:<path> = ''` is the canonical empty-string case
       - empty strings remain distinct from `IS NULL`
-    - explicit payload presence/empty/cardinality semantics now use dedicated functions instead of overloading SQL nulls:
+    - explicit payload presence/null/missing/empty/non-empty/count semantics now use dedicated functions instead of overloading SQL nulls:
       - `payload_exists(payload:<path>)`
+      - `payload_is_missing(payload:<path>)`
+      - `payload_is_null(payload:<path>)`
       - `payload_is_empty(payload:<path>)`
+      - `payload_has_values(payload:<path>)`
       - `payload_values_count(payload:<path>)`
     - explicit geo predicates now use `payload_geo_distance(payload:<path>, lon, lat)` as a local numeric bridge, `payload_geo_within_bbox(payload:<path>, lon1, lat1, lon2, lat2)` as an explicit bbox predicate over two opposing corners, and `payload_geo_within_polygon(payload:<path>, [[lon, lat], ...])` as an explicit polygon predicate over one exterior ring, with exact remote lowering only for the admitted geo subset on geo payload fields
     - explicit nested predicates now use `payload_nested_match(payload:<path>, <predicate>)`, where the nested predicate reuses the existing payload filter algebra inside a nested array/object scope instead of introducing a string mini-language
     - explicit text predicates now use `payload_text_match(payload:<path>, 'query')`, `payload_text_any(payload:<path>, ['term', ...])`, and `payload_phrase_match(payload:<path>, 'phrase')`, with exact remote lowering only when the payload field is backed by a text index and phrase support exists for phrase matching
-    - broader count-oriented predicates beyond that explicit subset remain deferred until those SQL contracts are explicit
+    - broader array/object-only container distinctions beyond that explicit subset remain deferred until those SQL contracts are explicit
 21. Physical filter pushdown must absorb the admitted exact subset, not just logical filter pushdown declarations.
     - `supports_filters_pushdown` alone is not sufficient on the current `DataFusion` revision
     - `QdrantScanExec` must absorb supported physical predicates so `FilterExec` disappears from the final plan

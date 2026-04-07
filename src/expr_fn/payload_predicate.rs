@@ -13,23 +13,46 @@ use super::payload_access::{array_string_value, payload_json_value};
 use crate::qdrant::QdrantPayloadAccess;
 
 pub const PAYLOAD_EXISTS_FUNCTION_NAME: &str = "payload_exists";
+pub const PAYLOAD_IS_MISSING_FUNCTION_NAME: &str = "payload_is_missing";
+pub const PAYLOAD_IS_NULL_FUNCTION_NAME: &str = "payload_is_null";
 pub const PAYLOAD_IS_EMPTY_FUNCTION_NAME: &str = "payload_is_empty";
+pub const PAYLOAD_HAS_VALUES_FUNCTION_NAME: &str = "payload_has_values";
 pub const PAYLOAD_VALUES_COUNT_FUNCTION_NAME: &str = "payload_values_count";
 pub(crate) const PAYLOAD_EXISTS_ACCESS_FUNCTION_NAME: &str = "__qdrant_payload_exists_access";
+pub(crate) const PAYLOAD_IS_MISSING_ACCESS_FUNCTION_NAME: &str =
+    "__qdrant_payload_is_missing_access";
+pub(crate) const PAYLOAD_IS_NULL_ACCESS_FUNCTION_NAME: &str = "__qdrant_payload_is_null_access";
 pub(crate) const PAYLOAD_IS_EMPTY_ACCESS_FUNCTION_NAME: &str = "__qdrant_payload_is_empty_access";
+pub(crate) const PAYLOAD_HAS_VALUES_ACCESS_FUNCTION_NAME: &str =
+    "__qdrant_payload_has_values_access";
 pub(crate) const PAYLOAD_VALUES_COUNT_ACCESS_FUNCTION_NAME: &str =
     "__qdrant_payload_values_count_access";
 
 const PAYLOAD_EXISTS_ALIASES: &[&str] = &["qdrant_payload_exists"];
+const PAYLOAD_IS_MISSING_ALIASES: &[&str] = &["qdrant_payload_is_missing"];
+const PAYLOAD_IS_NULL_ALIASES: &[&str] = &["qdrant_payload_is_null"];
 const PAYLOAD_IS_EMPTY_ALIASES: &[&str] = &["qdrant_payload_is_empty"];
+const PAYLOAD_HAS_VALUES_ALIASES: &[&str] = &["qdrant_payload_has_values"];
 const PAYLOAD_VALUES_COUNT_ALIASES: &[&str] = &["qdrant_payload_values_count"];
 
 pub(crate) fn is_payload_exists_function_name(name: &str) -> bool {
     name == PAYLOAD_EXISTS_FUNCTION_NAME || PAYLOAD_EXISTS_ALIASES.contains(&name)
 }
 
+pub(crate) fn is_payload_is_missing_function_name(name: &str) -> bool {
+    name == PAYLOAD_IS_MISSING_FUNCTION_NAME || PAYLOAD_IS_MISSING_ALIASES.contains(&name)
+}
+
+pub(crate) fn is_payload_is_null_function_name(name: &str) -> bool {
+    name == PAYLOAD_IS_NULL_FUNCTION_NAME || PAYLOAD_IS_NULL_ALIASES.contains(&name)
+}
+
 pub(crate) fn is_payload_is_empty_function_name(name: &str) -> bool {
     name == PAYLOAD_IS_EMPTY_FUNCTION_NAME || PAYLOAD_IS_EMPTY_ALIASES.contains(&name)
+}
+
+pub(crate) fn is_payload_has_values_function_name(name: &str) -> bool {
+    name == PAYLOAD_HAS_VALUES_FUNCTION_NAME || PAYLOAD_HAS_VALUES_ALIASES.contains(&name)
 }
 
 pub(crate) fn is_payload_values_count_function_name(name: &str) -> bool {
@@ -42,8 +65,23 @@ pub fn qdrant_payload_exists(accessor: Expr) -> Expr {
 }
 
 #[must_use]
+pub fn qdrant_payload_is_missing(accessor: Expr) -> Expr {
+    qdrant_payload_is_missing_udf().call(vec![accessor])
+}
+
+#[must_use]
+pub fn qdrant_payload_is_null(accessor: Expr) -> Expr {
+    qdrant_payload_is_null_udf().call(vec![accessor])
+}
+
+#[must_use]
 pub fn qdrant_payload_is_empty(accessor: Expr) -> Expr {
     qdrant_payload_is_empty_udf().call(vec![accessor])
+}
+
+#[must_use]
+pub fn qdrant_payload_has_values(accessor: Expr) -> Expr {
+    qdrant_payload_has_values_udf().call(vec![accessor])
 }
 
 #[must_use]
@@ -59,6 +97,21 @@ pub(crate) fn qdrant_payload_exists_udf() -> ScalarUDF {
 pub(crate) fn qdrant_payload_is_empty_udf() -> ScalarUDF {
     static UDF: OnceLock<ScalarUDF> = OnceLock::new();
     UDF.get_or_init(|| ScalarUDF::new_from_impl(PayloadPredicateUdf::is_empty())).clone()
+}
+
+pub(crate) fn qdrant_payload_is_missing_udf() -> ScalarUDF {
+    static UDF: OnceLock<ScalarUDF> = OnceLock::new();
+    UDF.get_or_init(|| ScalarUDF::new_from_impl(PayloadPredicateUdf::is_missing())).clone()
+}
+
+pub(crate) fn qdrant_payload_is_null_udf() -> ScalarUDF {
+    static UDF: OnceLock<ScalarUDF> = OnceLock::new();
+    UDF.get_or_init(|| ScalarUDF::new_from_impl(PayloadPredicateUdf::is_null())).clone()
+}
+
+pub(crate) fn qdrant_payload_has_values_udf() -> ScalarUDF {
+    static UDF: OnceLock<ScalarUDF> = OnceLock::new();
+    UDF.get_or_init(|| ScalarUDF::new_from_impl(PayloadPredicateUdf::has_values())).clone()
 }
 
 pub(crate) fn qdrant_payload_values_count_udf() -> ScalarUDF {
@@ -82,6 +135,30 @@ pub(crate) fn qdrant_payload_is_empty_access_udf() -> ScalarUDF {
     .clone()
 }
 
+pub(crate) fn qdrant_payload_is_missing_access_udf() -> ScalarUDF {
+    static UDF: OnceLock<ScalarUDF> = OnceLock::new();
+    UDF.get_or_init(|| {
+        ScalarUDF::new_from_impl(PayloadPredicateAccessUdf::new(PayloadPredicateKind::IsMissing))
+    })
+    .clone()
+}
+
+pub(crate) fn qdrant_payload_is_null_access_udf() -> ScalarUDF {
+    static UDF: OnceLock<ScalarUDF> = OnceLock::new();
+    UDF.get_or_init(|| {
+        ScalarUDF::new_from_impl(PayloadPredicateAccessUdf::new(PayloadPredicateKind::IsNull))
+    })
+    .clone()
+}
+
+pub(crate) fn qdrant_payload_has_values_access_udf() -> ScalarUDF {
+    static UDF: OnceLock<ScalarUDF> = OnceLock::new();
+    UDF.get_or_init(|| {
+        ScalarUDF::new_from_impl(PayloadPredicateAccessUdf::new(PayloadPredicateKind::HasValues))
+    })
+    .clone()
+}
+
 pub(crate) fn qdrant_payload_values_count_access_udf() -> ScalarUDF {
     static UDF: OnceLock<ScalarUDF> = OnceLock::new();
     UDF.get_or_init(|| {
@@ -93,7 +170,10 @@ pub(crate) fn qdrant_payload_values_count_access_udf() -> ScalarUDF {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum PayloadPredicateKind {
     Exists,
+    IsMissing,
+    IsNull,
     IsEmpty,
+    HasValues,
     ValuesCount,
 }
 
@@ -101,7 +181,10 @@ impl PayloadPredicateKind {
     fn function_name(self) -> &'static str {
         match self {
             Self::Exists => PAYLOAD_EXISTS_FUNCTION_NAME,
+            Self::IsMissing => PAYLOAD_IS_MISSING_FUNCTION_NAME,
+            Self::IsNull => PAYLOAD_IS_NULL_FUNCTION_NAME,
             Self::IsEmpty => PAYLOAD_IS_EMPTY_FUNCTION_NAME,
+            Self::HasValues => PAYLOAD_HAS_VALUES_FUNCTION_NAME,
             Self::ValuesCount => PAYLOAD_VALUES_COUNT_FUNCTION_NAME,
         }
     }
@@ -109,7 +192,10 @@ impl PayloadPredicateKind {
     fn aliases(self) -> &'static [&'static str] {
         match self {
             Self::Exists => PAYLOAD_EXISTS_ALIASES,
+            Self::IsMissing => PAYLOAD_IS_MISSING_ALIASES,
+            Self::IsNull => PAYLOAD_IS_NULL_ALIASES,
             Self::IsEmpty => PAYLOAD_IS_EMPTY_ALIASES,
+            Self::HasValues => PAYLOAD_HAS_VALUES_ALIASES,
             Self::ValuesCount => PAYLOAD_VALUES_COUNT_ALIASES,
         }
     }
@@ -117,14 +203,19 @@ impl PayloadPredicateKind {
     fn internal_function_name(self) -> &'static str {
         match self {
             Self::Exists => PAYLOAD_EXISTS_ACCESS_FUNCTION_NAME,
+            Self::IsMissing => PAYLOAD_IS_MISSING_ACCESS_FUNCTION_NAME,
+            Self::IsNull => PAYLOAD_IS_NULL_ACCESS_FUNCTION_NAME,
             Self::IsEmpty => PAYLOAD_IS_EMPTY_ACCESS_FUNCTION_NAME,
+            Self::HasValues => PAYLOAD_HAS_VALUES_ACCESS_FUNCTION_NAME,
             Self::ValuesCount => PAYLOAD_VALUES_COUNT_ACCESS_FUNCTION_NAME,
         }
     }
 
     fn return_type(self) -> DataType {
         match self {
-            Self::Exists | Self::IsEmpty => DataType::Boolean,
+            Self::Exists | Self::IsMissing | Self::IsNull | Self::IsEmpty | Self::HasValues => {
+                DataType::Boolean
+            }
             Self::ValuesCount => DataType::Int64,
         }
     }
@@ -150,7 +241,13 @@ impl PayloadPredicateUdf {
 
     fn exists() -> Self { Self::new(PayloadPredicateKind::Exists) }
 
+    fn is_missing() -> Self { Self::new(PayloadPredicateKind::IsMissing) }
+
+    fn is_null() -> Self { Self::new(PayloadPredicateKind::IsNull) }
+
     fn is_empty() -> Self { Self::new(PayloadPredicateKind::IsEmpty) }
+
+    fn has_values() -> Self { Self::new(PayloadPredicateKind::HasValues) }
 
     fn values_count() -> Self { Self::new(PayloadPredicateKind::ValuesCount) }
 }
@@ -187,8 +284,17 @@ impl ScalarUDFImpl for PayloadPredicateUdf {
             PayloadPredicateKind::Exists => {
                 qdrant_payload_exists_access_udf().call(vec![payload, lit(path)])
             }
+            PayloadPredicateKind::IsMissing => {
+                qdrant_payload_is_missing_access_udf().call(vec![payload, lit(path)])
+            }
+            PayloadPredicateKind::IsNull => {
+                qdrant_payload_is_null_access_udf().call(vec![payload, lit(path)])
+            }
             PayloadPredicateKind::IsEmpty => {
                 qdrant_payload_is_empty_access_udf().call(vec![payload, lit(path)])
+            }
+            PayloadPredicateKind::HasValues => {
+                qdrant_payload_has_values_access_udf().call(vec![payload, lit(path)])
             }
             PayloadPredicateKind::ValuesCount => {
                 qdrant_payload_values_count_access_udf().call(vec![payload, lit(path)])
@@ -259,7 +365,14 @@ fn payload_predicate_scalar(
     let value = payload_json_value(payload_json, path, kind.internal_function_name())?;
     Ok(match kind {
         PayloadPredicateKind::Exists => ScalarValue::Boolean(Some(value.is_some())),
+        PayloadPredicateKind::IsMissing => ScalarValue::Boolean(Some(value.is_none())),
+        PayloadPredicateKind::IsNull => {
+            ScalarValue::Boolean(Some(matches!(value, Some(serde_json::Value::Null))))
+        }
         PayloadPredicateKind::IsEmpty => ScalarValue::Boolean(Some(payload_is_empty_value(value))),
+        PayloadPredicateKind::HasValues => {
+            ScalarValue::Boolean(Some(payload_has_values_value(value)))
+        }
         PayloadPredicateKind::ValuesCount => ScalarValue::Int64(
             payload_values_count_value(value)
                 .map(|value| i64::try_from(value).expect("payload values count should fit in i64")),
@@ -282,6 +395,10 @@ fn payload_values_count_value(value: Option<serde_json::Value>) -> Option<u64> {
         Some(serde_json::Value::Array(values)) => Some(values.len() as u64),
         Some(_) => Some(1),
     }
+}
+
+fn payload_has_values_value(value: Option<serde_json::Value>) -> bool {
+    payload_values_count_value(value).is_some_and(|count| count > 0)
 }
 
 #[cfg(test)]
@@ -364,6 +481,117 @@ mod tests {
                 Some("text")
             )
             .expect("empty string"),
+            ScalarValue::Boolean(Some(false))
+        );
+    }
+
+    #[test]
+    fn payload_is_missing_matches_missing_only() {
+        assert_eq!(
+            payload_predicate_scalar(
+                PayloadPredicateKind::IsMissing,
+                Some(r#"{"list": []}"#),
+                Some("list")
+            )
+            .expect("empty array"),
+            ScalarValue::Boolean(Some(false))
+        );
+        assert_eq!(
+            payload_predicate_scalar(
+                PayloadPredicateKind::IsMissing,
+                Some(r#"{"list": null}"#),
+                Some("list")
+            )
+            .expect("null"),
+            ScalarValue::Boolean(Some(false))
+        );
+        assert_eq!(
+            payload_predicate_scalar(
+                PayloadPredicateKind::IsMissing,
+                Some(r#"{"other": 1}"#),
+                Some("list")
+            )
+            .expect("missing"),
+            ScalarValue::Boolean(Some(true))
+        );
+    }
+
+    #[test]
+    fn payload_is_null_matches_explicit_null_only() {
+        assert_eq!(
+            payload_predicate_scalar(
+                PayloadPredicateKind::IsNull,
+                Some(r#"{"list": []}"#),
+                Some("list")
+            )
+            .expect("empty array"),
+            ScalarValue::Boolean(Some(false))
+        );
+        assert_eq!(
+            payload_predicate_scalar(
+                PayloadPredicateKind::IsNull,
+                Some(r#"{"list": null}"#),
+                Some("list")
+            )
+            .expect("null"),
+            ScalarValue::Boolean(Some(true))
+        );
+        assert_eq!(
+            payload_predicate_scalar(
+                PayloadPredicateKind::IsNull,
+                Some(r#"{"other": 1}"#),
+                Some("list")
+            )
+            .expect("missing"),
+            ScalarValue::Boolean(Some(false))
+        );
+    }
+
+    #[test]
+    fn payload_has_values_matches_positive_cardinality_only() {
+        assert_eq!(
+            payload_predicate_scalar(
+                PayloadPredicateKind::HasValues,
+                Some(r#"{"list": []}"#),
+                Some("list")
+            )
+            .expect("empty array"),
+            ScalarValue::Boolean(Some(false))
+        );
+        assert_eq!(
+            payload_predicate_scalar(
+                PayloadPredicateKind::HasValues,
+                Some(r#"{"list": null}"#),
+                Some("list")
+            )
+            .expect("null"),
+            ScalarValue::Boolean(Some(false))
+        );
+        assert_eq!(
+            payload_predicate_scalar(
+                PayloadPredicateKind::HasValues,
+                Some(r#"{"obj": {}}"#),
+                Some("obj")
+            )
+            .expect("object"),
+            ScalarValue::Boolean(Some(true))
+        );
+        assert_eq!(
+            payload_predicate_scalar(
+                PayloadPredicateKind::HasValues,
+                Some(r#"{"list": [1, 2]}"#),
+                Some("list")
+            )
+            .expect("array"),
+            ScalarValue::Boolean(Some(true))
+        );
+        assert_eq!(
+            payload_predicate_scalar(
+                PayloadPredicateKind::HasValues,
+                Some(r#"{"other": 1}"#),
+                Some("list")
+            )
+            .expect("missing"),
             ScalarValue::Boolean(Some(false))
         );
     }

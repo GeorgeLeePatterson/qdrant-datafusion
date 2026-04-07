@@ -242,7 +242,10 @@ pub(crate) mod supported {
                 "scan.projection.empty_and_count_values",
                 concat!(
                     "SELECT id, payload_exists(payload:list) AS list_exists, \
-                     payload_is_empty(payload:list) AS list_empty, ",
+                     payload_is_missing(payload:list) AS list_missing, ",
+                    "payload_is_null(payload:list) AS list_null, payload_is_empty(payload:list) \
+                     AS list_empty, ",
+                    "payload_has_values(payload:list) AS list_has_values, ",
                     "payload_values_count(payload:list) AS list_count FROM vectors ORDER BY id"
                 ),
             );
@@ -514,6 +517,14 @@ pub(crate) mod supported {
                 "scan.filters.not_exists",
                 "SELECT id FROM vectors WHERE NOT payload_exists(payload:list) ORDER BY id",
             );
+            pub(crate) const IS_MISSING: SqlCase = SqlCase::new(
+                "scan.filters.is_missing",
+                "SELECT id FROM vectors WHERE payload_is_missing(payload:list) ORDER BY id",
+            );
+            pub(crate) const IS_NULL_EXPLICIT: SqlCase = SqlCase::new(
+                "scan.filters.is_null_explicit",
+                "SELECT id FROM vectors WHERE payload_is_null(payload:list) ORDER BY id",
+            );
             pub(crate) const VALUES_COUNT_ZERO: SqlCase = SqlCase::new(
                 "scan.filters.values_count_zero",
                 "SELECT id FROM vectors WHERE payload_values_count(payload:list) = 0 ORDER BY id",
@@ -521,6 +532,32 @@ pub(crate) mod supported {
             pub(crate) const VALUES_COUNT_GE_ONE: SqlCase = SqlCase::new(
                 "scan.filters.values_count_ge_one",
                 "SELECT id FROM vectors WHERE payload_values_count(payload:list) >= 1 ORDER BY id",
+            );
+            pub(crate) const HAS_VALUES: SqlCase = SqlCase::new(
+                "scan.filters.has_values",
+                "SELECT id FROM vectors WHERE payload_has_values(payload:list) ORDER BY id",
+            );
+            pub(crate) const VALUES_COUNT_NOT_ZERO: SqlCase = SqlCase::new(
+                "scan.filters.values_count_not_zero",
+                "SELECT id FROM vectors WHERE payload_values_count(payload:list) != 0 ORDER BY id",
+            );
+            pub(crate) const VALUES_COUNT_LT_ONE: SqlCase = SqlCase::new(
+                "scan.filters.values_count_lt_one",
+                "SELECT id FROM vectors WHERE payload_values_count(payload:list) < 1 ORDER BY id",
+            );
+            pub(crate) const VALUES_COUNT_GT_ONE: SqlCase = SqlCase::new(
+                "scan.filters.values_count_gt_one",
+                "SELECT id FROM vectors WHERE payload_values_count(payload:list) > 1 ORDER BY id",
+            );
+            pub(crate) const VALUES_COUNT_BETWEEN: SqlCase = SqlCase::new(
+                "scan.filters.values_count_between",
+                "SELECT id FROM vectors WHERE payload_values_count(payload:list) BETWEEN 0 AND 1 \
+                 ORDER BY id",
+            );
+            pub(crate) const VALUES_COUNT_NOT_BETWEEN: SqlCase = SqlCase::new(
+                "scan.filters.values_count_not_between",
+                "SELECT id FROM vectors WHERE payload_values_count(payload:list) NOT BETWEEN 0 \
+                 AND 1 ORDER BY id",
             );
             pub(crate) const GEO_RADIUS: SqlCase = SqlCase::new(
                 "scan.filters.geo_radius",
@@ -639,6 +676,16 @@ pub(crate) mod supported {
                 "SELECT id FROM (SELECT id FROM vectors WHERE payload_exists(payload:list)) \
                  filtered ORDER BY id",
             );
+            pub(crate) const IS_MISSING_SUBQUERY: SqlCase = SqlCase::new(
+                "scan.filters.is_missing_subquery",
+                "SELECT id FROM (SELECT id FROM vectors WHERE payload_is_missing(payload:list)) \
+                 filtered ORDER BY id",
+            );
+            pub(crate) const VALUES_COUNT_BETWEEN_SUBQUERY: SqlCase = SqlCase::new(
+                "scan.filters.values_count_between_subquery",
+                "SELECT id FROM (SELECT id FROM vectors WHERE payload_values_count(payload:list) \
+                 BETWEEN 0 AND 1) filtered ORDER BY id",
+            );
             pub(crate) const GEO_BBOX_SUBQUERY: SqlCase = SqlCase::new(
                 "scan.filters.geo_bbox_subquery",
                 "SELECT id FROM (SELECT id FROM vectors WHERE \
@@ -680,8 +727,16 @@ pub(crate) mod supported {
                 EMPTY,
                 EXISTS,
                 NOT_EXISTS,
+                IS_MISSING,
+                IS_NULL_EXPLICIT,
                 VALUES_COUNT_ZERO,
                 VALUES_COUNT_GE_ONE,
+                HAS_VALUES,
+                VALUES_COUNT_NOT_ZERO,
+                VALUES_COUNT_LT_ONE,
+                VALUES_COUNT_GT_ONE,
+                VALUES_COUNT_BETWEEN,
+                VALUES_COUNT_NOT_BETWEEN,
                 GEO_RADIUS,
                 GEO_RESIDUAL,
                 GEO_BBOX,
@@ -707,6 +762,8 @@ pub(crate) mod supported {
                 CTE,
                 TEXT_ANY_SUBQUERY,
                 EXISTS_SUBQUERY,
+                IS_MISSING_SUBQUERY,
+                VALUES_COUNT_BETWEEN_SUBQUERY,
                 GEO_BBOX_SUBQUERY,
                 GEO_POLYGON_SUBQUERY,
                 NESTED_MATCH_SUBQUERY,
@@ -742,6 +799,17 @@ pub(crate) mod supported {
                 "scan.aggregates.case_hinted_payload",
                 "SELECT SUM(CASE WHEN payload(payload:rank, 'Integer') >= 20 THEN 1 ELSE 0 END) \
                  AS total FROM vectors",
+            );
+            pub(crate) const AVG_VALUES_COUNT: SqlCase = SqlCase::new(
+                "scan.aggregates.avg_values_count",
+                "SELECT AVG(list_count) AS avg_list_count FROM (SELECT \
+                 payload_values_count(payload:list) AS list_count FROM vectors) counted",
+            );
+            pub(crate) const SUM_NULL_AND_MISSING_FLAGS: SqlCase = SqlCase::new(
+                "scan.aggregates.sum_null_and_missing_flags",
+                "SELECT SUM(CASE WHEN payload_is_null(payload:list) THEN 1 ELSE 0 END) AS \
+                 null_total, SUM(CASE WHEN payload_is_missing(payload:list) THEN 1 ELSE 0 END) AS \
+                 missing_total FROM vectors",
             );
             pub(crate) const HAVING_LOCAL_TYPED: SqlCase = SqlCase::new(
                 "scan.aggregates.having_local_typed",
@@ -783,6 +851,8 @@ pub(crate) mod supported {
                 AVG_HINTED_PAYLOAD,
                 SUM_HINTED_PAYLOAD_ARITHMETIC,
                 CASE_HINTED_PAYLOAD,
+                AVG_VALUES_COUNT,
+                SUM_NULL_AND_MISSING_FLAGS,
                 HAVING_LOCAL_TYPED,
                 TAG_FACET_WITH_FILTER,
                 HAVING_FACET,
