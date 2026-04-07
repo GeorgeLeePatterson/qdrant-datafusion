@@ -1,6 +1,6 @@
 # Status Snapshot
 
-Last updated: 2026-04-06
+Last updated: 2026-04-07
 
 ## Summary
 
@@ -177,6 +177,12 @@ Current branch reality:
     - `QdrantTableProvider::try_new` now consults `collection_cluster_info`
     - exact payload-key sort pushdown remains enabled only for stable single-peer collections
     - distributed, transferring, or resharding collection states now fall back to local `DataFusion` sorting instead of claiming exact remote order
+44. Admission-mode tracking and SQL-inventory tracking are now explicit and separate from feature tracking.
+    - `docs/ADMISSION_MATRIX.md` now records which major semantic families are exact-only, exact-plus-residual, local-fallback, remote-only, or still strict-for-now
+    - `tests/catalog/mod.rs` now mirrors supported / unsupported SQL catalogs consumed by `tests/e2e.rs` and `tests/unsupported_e2e.rs`, so capability movement is reviewable as queries, not only prose
+    - the mirrored catalogs now also carry explicit subquery coverage per namespace plus broader `CTE`, `UNION ALL`, `UNNEST`, `WINDOW`, and non-`FULL OUTER JOIN` SQL inventory where those forms materially interact with qdrant admission behavior
+    - unsupported catalog entries now distinguish `Deferred`, `ByDesign`, `Upstream`, and `InvalidInput` so the current public boundary is readable without code inspection
+    - catalog expansion is now explicitly SQL-space-first rather than code-gap-first, so the unsupported inventory can expose real library limits directly as SQL
 
 ## Current Code Ownership
 

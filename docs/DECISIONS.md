@@ -1,6 +1,6 @@
 # Locked Decisions
 
-Last updated: 2026-04-06
+Last updated: 2026-04-07
 
 ## Core Constraints
 
@@ -172,6 +172,20 @@ Last updated: 2026-04-06
     - retrieval-specific shapes such as nearest-neighbor search should live inside the `query`
       family rather than as separate top-level kernel nodes
     - later admitted grouped / batch retrieval should extend that same request-family structure
+33. Feature tracking and admission-mode tracking are separate concerns and both must be explicit.
+    - `docs/CAPABILITY_MATRIX.md` tracks whether a capability exists
+    - `docs/ADMISSION_MATRIX.md` tracks whether the current path is exact-only, exact-plus-residual,
+      local-fallback, remote-only, or strict-for-now
+    - when a shared recognizer or helper is intentionally strict, its downstream consumers must be
+      visible in the admission matrix rather than discovered only by later audit
+34. Integration-test SQL inventories must be reviewable as catalogs, not only as inline strings inside test bodies.
+    - SQL-bearing integration tests in `tests/` should consume shared supported / unsupported query catalogs from `tests/catalog/mod.rs`
+    - `tests/e2e.rs` should consume the supported side and `tests/unsupported_e2e.rs` should consume the unsupported side
+    - supported and unsupported catalogs should mirror the same semantic grouping structure so capability movement is visible as queries migrate from one side to the other
+    - catalog growth should be SQL-space-first: expand by stretching syntax families, nesting, and expression permutations broadly enough to reveal the unsupported surface, not primarily by enumerating already-known code gaps
+    - each major namespace should carry explicit subquery-shaped inventory on both the supported and unsupported sides, so locality-sensitive gaps are reviewable as SQL rather than rediscovered by analyzer audit
+    - broader SQL syntax families such as `CTE`, `UNION ALL`, `UNNEST`, `WINDOW`, and non-`FULL OUTER JOIN` composition should appear in the catalogs whenever they materially interact with qdrant admission behavior
+    - unsupported catalog entries should be explicitly classified as `Deferred`, `ByDesign`, `Upstream`, or `InvalidInput`, so “not yet”, “not intended”, and “not our limitation” are visible without code inspection
 
 ## Execution Ordering
 

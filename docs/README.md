@@ -26,9 +26,11 @@ This folder is the compaction-safe planning and execution source of truth for `q
 
 1. `docs/DECISIONS.md`: locked constraints and surface-shaping rules.
 2. `docs/CAPABILITY_MATRIX.md`: scope, current capability inventory, and sufficiency verdict.
-3. `docs/QDRANT_COMPATIBILITY_MATRIX.md`: detailed inventory of the broader `Qdrant` feature surface, organized by semantic family and release fit.
-4. `docs/EXECUTION_TRACKER.md`: canonical `Done / Next / Needed` tracker for compaction-safe continuation.
-5. `docs/STATUS.md`: current repository snapshot and active branch reality.
+3. `docs/ADMISSION_MATRIX.md`: explicit inventory of where behavior is exact-only, residual-capable, local-fallback, or remote-only.
+4. `tests/catalog/mod.rs`: mirrored supported / unsupported SQL inventories consumed by the integration suites, including explicit subquery coverage per namespace, broader SQL syntax-family inventory, and explicit unsupported classifications (`Deferred`, `ByDesign`, `Upstream`, `InvalidInput`). The catalog should be expanded from the SQL space outward, not only from already-known code gaps.
+5. `docs/QDRANT_COMPATIBILITY_MATRIX.md`: detailed inventory of the broader `Qdrant` feature surface, organized by semantic family and release fit.
+6. `docs/EXECUTION_TRACKER.md`: canonical `Done / Next / Needed` tracker for compaction-safe continuation.
+7. `docs/STATUS.md`: current repository snapshot and active branch reality.
 
 ## Context Resume Protocol
 
@@ -37,9 +39,10 @@ When resuming from compacted context, read in this order:
 1. `docs/README.md`
 2. `docs/DECISIONS.md`
 3. `docs/CAPABILITY_MATRIX.md`
-4. `docs/QDRANT_COMPATIBILITY_MATRIX.md`
-5. `docs/EXECUTION_TRACKER.md`
-6. `docs/STATUS.md`
+4. `docs/ADMISSION_MATRIX.md`
+5. `docs/QDRANT_COMPATIBILITY_MATRIX.md`
+6. `docs/EXECUTION_TRACKER.md`
+7. `docs/STATUS.md`
 
 Then verify repository state quickly:
 

@@ -1,6 +1,8 @@
 #![allow(unused_crate_dependencies)]
 
 mod common;
+#[path = "catalog/mod.rs"]
+mod sql_catalog;
 
 const TRACING_DIRECTIVES: &[(&str, &str)] =
     &[("testcontainers", "debug"), ("hyper", "error"), ("tonic", "error")];
@@ -71,6 +73,22 @@ e2e_test!(
 e2e_test!(
     table_provider_insert_into_appends_rows,
     tests::test_table_provider_insert_into_appends_rows,
+    TRACING_DIRECTIVES,
+    None
+);
+
+#[cfg(feature = "test-utils")]
+e2e_test!(
+    table_provider_supported_scan_catalog_queries,
+    tests::test_table_provider_supported_scan_catalog_queries,
+    TRACING_DIRECTIVES,
+    None
+);
+
+#[cfg(feature = "test-utils")]
+e2e_test!(
+    table_provider_supported_write_catalog_queries,
+    tests::test_table_provider_supported_write_catalog_queries,
     TRACING_DIRECTIVES,
     None
 );
@@ -221,6 +239,22 @@ e2e_test!(
 
 #[cfg(feature = "test-utils")]
 e2e_test!(
+    prepared_session_sql_supported_nearest_catalog_queries,
+    tests::test_prepared_session_sql_supported_nearest_catalog_queries,
+    TRACING_DIRECTIVES,
+    None
+);
+
+#[cfg(feature = "test-utils")]
+e2e_test!(
+    prepared_session_sql_supported_query_family_catalog_queries,
+    tests::test_prepared_session_sql_supported_query_family_catalog_queries,
+    TRACING_DIRECTIVES,
+    None
+);
+
+#[cfg(feature = "test-utils")]
+e2e_test!(
     prepared_session_sql_grouped_nearest_query,
     tests::test_prepared_session_sql_grouped_nearest_query,
     TRACING_DIRECTIVES,
@@ -349,6 +383,8 @@ mod tests {
     use qdrant_datafusion::table::QdrantTableProvider;
     use qdrant_datafusion::test_utils::QdrantContainer;
 
+    use crate::sql_catalog::supported as sql;
+
     fn create_qdrant_client(c: &Arc<QdrantContainer>) -> Result<Qdrant> {
         Qdrant::from_url(&c.get_url()).api_key(c.get_api_key()).build().map_err(Into::into)
     }
@@ -419,6 +455,45 @@ mod tests {
         Ok(ctx)
     }
 
+    async fn create_vector_query_context(
+        c: &Arc<QdrantContainer>,
+        collection_name: &str,
+    ) -> Result<QdrantSessionContext> {
+        let client = create_qdrant_client(c)?;
+
+        let mut vectors_config = VectorsConfigBuilder::default();
+        let _ = vectors_config
+            .add_named_vector_params("vector", VectorParamsBuilder::new(2, Distance::Dot).build());
+        let _ = client
+            .create_collection(
+                CreateCollectionBuilder::new(collection_name).vectors_config(vectors_config),
+            )
+            .await?;
+        let points = vec![
+            PointStruct::new(
+                1,
+                NamedVectors::default().add_vector("vector", vec![1.0, 0.0]),
+                qdrant_client::Payload::default(),
+            ),
+            PointStruct::new(
+                2,
+                NamedVectors::default().add_vector("vector", vec![0.5, 0.5]),
+                qdrant_client::Payload::default(),
+            ),
+            PointStruct::new(
+                3,
+                NamedVectors::default().add_vector("vector", vec![0.0, 1.0]),
+                qdrant_client::Payload::default(),
+            ),
+        ];
+        drop(client.upsert_points(UpsertPointsBuilder::new(collection_name, points)).await?);
+
+        let table_provider = QdrantTableProvider::try_new(client.clone(), collection_name).await?;
+        let ctx = QdrantSessionContext::from(SessionContext::new());
+        drop(ctx.session_context().register_table("vectors", Arc::new(table_provider))?);
+        Ok(ctx)
+    }
+
     async fn create_grouped_nearest_query_context(
         c: &Arc<QdrantContainer>,
         collection_name: &str,
@@ -474,6 +549,63 @@ mod tests {
                 NamedVectors::default().add_vector("embedding", vec![0.1, 0.0]),
                 payload4,
             ),
+        ];
+        drop(client.upsert_points(UpsertPointsBuilder::new(collection_name, points)).await?);
+
+        let table_provider = QdrantTableProvider::try_new(client.clone(), collection_name).await?;
+        let ctx = QdrantSessionContext::from(SessionContext::new());
+        drop(ctx.session_context().register_table("vectors", Arc::new(table_provider))?);
+        Ok(ctx)
+    }
+
+    async fn create_catalog_scan_context(
+        c: &Arc<QdrantContainer>,
+        collection_name: &str,
+    ) -> Result<QdrantSessionContext> {
+        let client = create_qdrant_client(c)?;
+        create_scalar_collection(&client, collection_name).await?;
+        create_payload_index(
+            &client,
+            collection_name,
+            "rank",
+            FieldType::Integer,
+            qdrant_client::qdrant::IntegerIndexParamsBuilder::new(true, true).build(),
+        )
+        .await?;
+        create_payload_index(
+            &client,
+            collection_name,
+            "tag",
+            FieldType::Keyword,
+            qdrant_client::qdrant::KeywordIndexParamsBuilder::default().build(),
+        )
+        .await?;
+        create_payload_index(
+            &client,
+            collection_name,
+            "description",
+            FieldType::Text,
+            TextIndexParamsBuilder::new(TokenizerType::Word).phrase_matching(true).build(),
+        )
+        .await?;
+
+        let mut payload1 = qdrant_client::Payload::new();
+        payload1.insert("rank", 30_i64);
+        payload1.insert("tag", "red");
+        payload1.insert("description", "good cheap coffee");
+        let mut payload2 = qdrant_client::Payload::new();
+        payload2.insert("rank", 10_i64);
+        payload2.insert("tag", "blue");
+        payload2.insert("description", "time is a flat circle");
+        let mut payload3 = qdrant_client::Payload::new();
+        payload3.insert("rank", 20_i64);
+        payload3.insert("tag", "blue");
+        payload3.insert("description", "good food nearby");
+
+        let points = vec![
+            PointStruct::new(1, Vector::new_dense(vec![0.0]), payload1),
+            PointStruct::new(2, Vector::new_dense(vec![0.0]), payload2),
+            PointStruct::new(3, Vector::new_dense(vec![0.0]), payload3),
         ];
         drop(client.upsert_points(UpsertPointsBuilder::new(collection_name, points)).await?);
 
@@ -609,6 +741,23 @@ error: {err}"
         let rows =
             batches.iter().flat_map(|batch| batch_i64_values(batch, column)).collect::<Vec<_>>();
         Ok((rows, display))
+    }
+
+    async fn assert_supported_query_collects(
+        ctx: &QdrantSessionContext,
+        sql: &str,
+    ) -> Result<(Vec<RecordBatch>, String)> {
+        let dataframe = ctx.sql(sql).await?;
+        let plan = dataframe.clone().create_physical_plan().await?;
+        let display =
+            datafusion::physical_plan::displayable(plan.as_ref()).indent(true).to_string();
+        let batches = dataframe.collect().await.map_err(|err| {
+            datafusion::error::DataFusionError::Execution(format!(
+                "failed to collect supported SQL `{sql}` with physical plan:\n{display}\nerror: \
+                 {err}"
+            ))
+        })?;
+        Ok((batches, display))
     }
 
     fn batch_u64_ids(batch: &RecordBatch, column: &str) -> Vec<u64> {
@@ -960,14 +1109,7 @@ error: {err}"
         let ctx = SessionContext::new();
         drop(ctx.register_table("docs", Arc::new(table_provider))?);
 
-        let batches = ctx
-            .sql(
-                "SELECT id, payload, text_embedding, multi_embedding, keywords FROM docs ORDER BY \
-                 id",
-            )
-            .await?
-            .collect()
-            .await?;
+        let batches = ctx.sql(sql::scan::projection::DOCS_FULL.sql).await?.collect().await?;
         let batch = batches.into_iter().next().expect("single batch");
         let schema = batch.schema();
 
@@ -1034,11 +1176,8 @@ error: {err}"
         assert!(sparse_array.is_null(1));
         assert!(!sparse_array.is_null(2));
 
-        let dense_batches = ctx
-            .sql("SELECT text_embedding FROM docs WHERE text_embedding IS NOT NULL ORDER BY id")
-            .await?
-            .collect()
-            .await?;
+        let dense_batches =
+            ctx.sql(sql::scan::projection::DOCS_TEXT_NONNULL.sql).await?.collect().await?;
         let dense_batch = dense_batches.into_iter().next().expect("dense batch");
         let dense_array = dense_batch
             .column(0)
@@ -1051,11 +1190,8 @@ error: {err}"
         assert_f32_eq(dense_view[[0, 0]], 0.1);
         assert_f32_eq(dense_view[[1, 2]], 0.6);
 
-        let multi_batches = ctx
-            .sql("SELECT multi_embedding FROM docs WHERE multi_embedding IS NOT NULL ORDER BY id")
-            .await?
-            .collect()
-            .await?;
+        let multi_batches =
+            ctx.sql(sql::scan::projection::DOCS_MULTI_NONNULL.sql).await?.collect().await?;
         let multi_batch = multi_batches.into_iter().next().expect("multivector batch");
         let multi_field = multi_batch.schema().field(0).clone();
         let multi_array = multi_batch
@@ -1072,11 +1208,8 @@ error: {err}"
         assert_eq!(multi_rows[1].1.shape(), &[1, 2]);
         assert_f32_eq(multi_rows[1].1[[0, 1]], 8.0);
 
-        let sparse_batches = ctx
-            .sql("SELECT keywords FROM docs WHERE keywords IS NOT NULL ORDER BY id")
-            .await?
-            .collect()
-            .await?;
+        let sparse_batches =
+            ctx.sql(sql::scan::projection::DOCS_KEYWORDS_NONNULL.sql).await?.collect().await?;
         let sparse_batch = sparse_batches.into_iter().next().expect("sparse batch");
         let sparse_field = sparse_batch.schema().field(0).clone();
         let sparse_array = sparse_batch
@@ -1132,7 +1265,7 @@ error: {err}"
         let ctx = SessionContext::new();
         drop(ctx.register_table("vectors", Arc::new(table_provider))?);
 
-        let batches = ctx.sql("SELECT id FROM vectors").await?.collect().await?;
+        let batches = ctx.sql(sql::scan::projection::VECTORS_ALL_IDS.sql).await?.collect().await?;
         let mut ids = batches
             .iter()
             .flat_map(|batch| {
@@ -1178,8 +1311,7 @@ error: {err}"
         let ctx = SessionContext::new();
         drop(ctx.register_table("vectors", Arc::new(table_provider))?);
 
-        let batches =
-            ctx.sql("SELECT id FROM vectors ORDER BY payload:rank").await?.collect().await?;
+        let batches = ctx.sql(sql::scan::ordering::PAYLOAD.sql).await?.collect().await?;
         let ids = batches
             .iter()
             .flat_map(|batch| {
@@ -1225,8 +1357,7 @@ error: {err}"
         drop(ctx.session_context().register_table("vectors", Arc::new(table_provider))?);
 
         let (ids, display) =
-            collect_id_rows(&ctx, "SELECT id, payload:rank AS rank FROM vectors ORDER BY rank")
-                .await?;
+            collect_id_rows(&ctx, sql::scan::ordering::ALIASED_PAYLOAD.sql).await?;
 
         assert_eq!(ids, vec![2, 3, 1]);
         assert!(display.contains("QdrantScanExec"), "{display}");
@@ -1257,11 +1388,8 @@ error: {err}"
         drop(ctx.session_context().register_table("vectors", Arc::new(table_provider))?);
         drop(ctx.session_context().register_table("staging", Arc::new(staging))?);
 
-        let insert_batches = ctx
-            .sql("INSERT INTO vectors SELECT id, payload, vector FROM staging")
-            .await?
-            .collect()
-            .await?;
+        let insert_batches =
+            ctx.sql(sql::writes::append::INSERT_SELECT.sql).await?.collect().await?;
         let insert_batch = insert_batches.into_iter().next().expect("insert result batch");
         let inserted = insert_batch
             .column(insert_batch.schema().index_of("count").expect("count column"))
@@ -1270,23 +1398,134 @@ error: {err}"
             .expect("count array");
         assert_eq!(inserted.value(0), 2);
 
-        let ranks = ctx
-            .sql("SELECT id, payload:rank AS rank FROM vectors ORDER BY id")
-            .await?
-            .collect()
-            .await?;
+        let ranks = ctx.sql(sql::scan::projection::INSERT_VERIFY.sql).await?.collect().await?;
         let rank_batch = ranks.into_iter().next().expect("rank batch");
         assert_eq!(batch_u64_ids(&rank_batch, "id"), vec![1, 2]);
         assert_eq!(batch_i64_values(&rank_batch, "rank"), vec![10, 20]);
 
-        let (ids, display) = collect_id_rows(
-            &ctx,
-            "SELECT id, qdrant_nearest_score(vector, 1.0) AS score FROM vectors ORDER BY score \
-             DESC LIMIT 2",
-        )
-        .await?;
+        let nearest_sql = "SELECT id, qdrant_nearest_score(vector, 1.0) AS score FROM vectors \
+                           ORDER BY score DESC LIMIT 2";
+        let (ids, display) = collect_id_rows(&ctx, nearest_sql).await?;
         assert_eq!(ids, vec![2, 1], "{display}");
         assert!(display.contains("QdrantQueryExec"), "{display}");
+
+        Ok(())
+    }
+
+    pub(super) async fn test_table_provider_supported_scan_catalog_queries(
+        c: Arc<QdrantContainer>,
+    ) -> Result<()> {
+        let ctx = create_catalog_scan_context(&c, "test_supported_scan_catalog_queries").await?;
+        let projection_cases = [
+            sql::scan::projection::HINTED_PAYLOAD_ARITHMETIC,
+            sql::scan::projection::HINTED_PAYLOAD_FUNCTION,
+            sql::scan::projection::CASE_HINTED_PAYLOAD,
+            sql::scan::projection::COALESCE_HINTED_PAYLOAD,
+            sql::scan::projection::RAW_PAYLOAD_CASE,
+            sql::scan::projection::UNION_ALL_HINTED_PAYLOAD,
+            sql::scan::projection::UNION_DISTINCT_HINTED_PAYLOAD,
+            sql::scan::projection::INTERSECT_HINTED_PAYLOAD,
+            sql::scan::projection::EXCEPT_HINTED_PAYLOAD,
+            sql::scan::projection::WINDOW_OVER_TYPED_SUBQUERY,
+            sql::scan::projection::SCALAR_SUBQUERY_TYPED,
+            sql::scan::projection::SELF_JOIN_TYPED,
+            sql::scan::projection::LEFT_JOIN_TYPED,
+            sql::scan::projection::SUBQUERY,
+            sql::scan::projection::CTE,
+            sql::scan::projection::UNNEST,
+            sql::scan::projection::WINDOW,
+        ];
+        let ordering_cases = [
+            sql::scan::ordering::HINTED_PAYLOAD_ARITHMETIC_DESC,
+            sql::scan::ordering::HINTED_PAYLOAD_FUNCTION,
+            sql::scan::ordering::CASE_HINTED_PAYLOAD,
+            sql::scan::ordering::ORDINAL_TYPED,
+            sql::scan::ordering::NULLS_LAST_TYPED,
+            sql::scan::ordering::NULLS_FIRST_TYPED,
+            sql::scan::ordering::MULTI_KEY_LOCAL,
+            sql::scan::ordering::SUBQUERY,
+            sql::scan::ordering::CTE_DESC,
+        ];
+        let filter_cases = [
+            sql::scan::filters::HINTED_PAYLOAD_ARITHMETIC,
+            sql::scan::filters::HINTED_PAYLOAD_FUNCTION,
+            sql::scan::filters::CASE_HINTED_PAYLOAD,
+            sql::scan::filters::IN_SUBQUERY,
+            sql::scan::filters::EXISTS_CORRELATED,
+            sql::scan::filters::SCALAR_SUBQUERY,
+            sql::scan::filters::PAYLOAD_CAST_BETWEEN,
+            sql::scan::filters::TEXT_MATCH_WRAPPED,
+            sql::scan::filters::TEXT_MATCH_CASE,
+            sql::scan::filters::PHRASE_MATCH_WRAPPED,
+            sql::scan::filters::VALUES_COUNT_GE_ONE,
+            sql::scan::filters::SUBQUERY,
+            sql::scan::filters::CTE,
+        ];
+        let aggregate_cases = [
+            sql::scan::aggregates::AVG_HINTED_PAYLOAD,
+            sql::scan::aggregates::SUM_HINTED_PAYLOAD_ARITHMETIC,
+            sql::scan::aggregates::CASE_HINTED_PAYLOAD,
+            sql::scan::aggregates::HAVING_LOCAL_TYPED,
+            sql::scan::aggregates::SUBQUERY,
+            sql::scan::aggregates::CTE,
+        ];
+
+        for case in projection_cases
+            .into_iter()
+            .chain(ordering_cases)
+            .chain(filter_cases)
+            .chain(aggregate_cases)
+        {
+            let (_batches, display) =
+                assert_supported_query_collects(&ctx, case.sql).await.map_err(|error| {
+                    datafusion::error::DataFusionError::Execution(format!(
+                        "supported scan catalog case={} sql={} error={error}",
+                        case.id, case.sql
+                    ))
+                })?;
+            assert!(
+                display.contains("QdrantScanExec")
+                    || display.contains("QdrantCountExec")
+                    || display.contains("QdrantFacetExec")
+                    || display.contains("ProjectionExec")
+                    || display.contains("AggregateExec")
+                    || display.contains("SortExec")
+                    || display.contains("UnnestExec")
+                    || display.contains("WindowAggExec")
+                    || display.contains("CrossJoinExec")
+                    || display.contains("NestedLoopJoinExec"),
+                "case={} sql={} display={display}",
+                case.id,
+                case.sql,
+            );
+        }
+
+        Ok(())
+    }
+
+    pub(super) async fn test_table_provider_supported_write_catalog_queries(
+        c: Arc<QdrantContainer>,
+    ) -> Result<()> {
+        let client = create_qdrant_client(&c)?;
+        let collection_name = "test_supported_write_catalog_queries";
+        create_scalar_collection(&client, collection_name).await?;
+        let table_provider = QdrantTableProvider::try_new(client.clone(), collection_name).await?;
+        let staging =
+            MemTable::try_new(dense_insert_batch().schema(), vec![vec![dense_insert_batch()]])?;
+        let ctx = QdrantSessionContext::from(SessionContext::new());
+        drop(ctx.session_context().register_table("vectors", Arc::new(table_provider))?);
+        drop(ctx.session_context().register_table("staging", Arc::new(staging))?);
+
+        for case in sql::writes::append::ALL {
+            let (_batches, display) =
+                assert_supported_query_collects(&ctx, case.sql).await.map_err(|error| {
+                    datafusion::error::DataFusionError::Execution(format!(
+                        "supported write catalog case={} sql={} error={error}",
+                        case.id, case.sql
+                    ))
+                })?;
+            assert!(display.contains("DataSinkExec"), "case={} display={display}", case.id);
+        }
 
         Ok(())
     }
@@ -1341,51 +1580,27 @@ error: {err}"
         let ctx = QdrantSessionContext::from(SessionContext::new());
         drop(ctx.session_context().register_table("vectors", Arc::new(table_provider))?);
 
-        let dataframe = ctx
-            .sql(
-                "SELECT id, payload:rank AS rank, payload:active AS active, payload:tag AS tag, \
-                 CAST(payload:rank AS BIGINT) + 1 AS next_rank, payload(payload:rank, 'Int64') AS \
-                 hinted_rank, payload(payload:rank, 'Integer') + 1 AS hinted_next_rank FROM \
-                 vectors ORDER BY id",
-            )
-            .await?;
+        let dataframe = ctx.sql(sql::scan::projection::TYPED_PAYLOAD_FIELDS.sql).await?;
         let batches = dataframe.collect().await?;
         let batch = batches.into_iter().next().expect("typed payload batch");
         assert_typed_payload_projection_batch(&batch);
 
-        let filtered = ctx
-            .sql("SELECT id FROM vectors WHERE payload(payload:rank, 'Integer') >= 15 ORDER BY id")
-            .await?
-            .collect()
-            .await?;
+        let filtered = ctx.sql(sql::scan::filters::PAYLOAD_HINTED_GTE.sql).await?.collect().await?;
         let filtered_batch = filtered.into_iter().next().expect("filtered typed payload batch");
         assert_eq!(batch_u64_ids(&filtered_batch, "id"), vec![2]);
 
-        let cast_filtered = ctx
-            .sql(
-                "SELECT id FROM vectors WHERE CAST(payload:rank AS BIGINT) >= 15 ORDER BY \
-                 CAST(payload:rank AS BIGINT)",
-            )
-            .await?
-            .collect()
-            .await?;
+        let cast_filtered =
+            ctx.sql(sql::scan::filters::PAYLOAD_CAST_GTE.sql).await?.collect().await?;
         let cast_filtered_batch =
             cast_filtered.into_iter().next().expect("filtered exact-cast payload batch");
         assert_eq!(batch_u64_ids(&cast_filtered_batch, "id"), vec![2]);
 
-        let (cast_sorted_ids, cast_sorted_display) = collect_id_rows(
-            &ctx,
-            "SELECT id FROM vectors ORDER BY CAST(payload:rank AS DOUBLE) DESC",
-        )
-        .await?;
+        let (cast_sorted_ids, cast_sorted_display) =
+            collect_id_rows(&ctx, sql::scan::ordering::CAST_PAYLOAD_DESC.sql).await?;
         assert_eq!(cast_sorted_ids, vec![2, 1], "{cast_sorted_display}");
 
-        let (query_sorted_ids, query_sorted_display) = collect_id_rows(
-            &ctx,
-            "SELECT id, qdrant_order_by_score(CAST(payload:rank AS DOUBLE), true) AS score FROM \
-             vectors ORDER BY score DESC LIMIT 2",
-        )
-        .await?;
+        let (query_sorted_ids, query_sorted_display) =
+            collect_id_rows(&ctx, sql::scan::ordering::ORDER_BY_SCORE_CAST.sql).await?;
         assert_eq!(query_sorted_ids, vec![2, 1], "{query_sorted_display}");
 
         Ok(())
@@ -1425,14 +1640,8 @@ error: {err}"
         let ctx = QdrantSessionContext::from(SessionContext::new());
         drop(ctx.session_context().register_table("vectors", Arc::new(table_provider))?);
 
-        let projection = ctx
-            .sql(
-                "SELECT id, payload_is_empty(payload:list) AS list_empty,                  \
-                 payload_values_count(payload:list) AS list_count FROM vectors ORDER BY id",
-            )
-            .await?
-            .collect()
-            .await?;
+        let projection =
+            ctx.sql(sql::scan::projection::EMPTY_AND_COUNT_VALUES.sql).await?.collect().await?;
         let projection_batch = projection.into_iter().next().expect("projection batch");
         assert_eq!(batch_u64_ids(&projection_batch, "id"), vec![1, 2, 3, 4]);
         assert_eq!(batch_bool_values(&projection_batch, "list_empty"), vec![
@@ -1445,19 +1654,13 @@ error: {err}"
             Some(1)
         ]);
 
-        let (empty_ids, empty_display) = collect_id_rows(
-            &ctx,
-            "SELECT id FROM vectors WHERE payload_is_empty(payload:list) ORDER BY id",
-        )
-        .await?;
+        let (empty_ids, empty_display) =
+            collect_id_rows(&ctx, sql::scan::filters::EMPTY.sql).await?;
         assert_eq!(empty_ids, vec![1, 2, 3], "{empty_display}");
         assert!(!empty_display.contains("FilterExec"), "{empty_display}");
 
-        let (count_ids, count_display) = collect_id_rows(
-            &ctx,
-            "SELECT id FROM vectors WHERE payload_values_count(payload:list) = 0 ORDER BY id",
-        )
-        .await?;
+        let (count_ids, count_display) =
+            collect_id_rows(&ctx, sql::scan::filters::VALUES_COUNT_ZERO.sql).await?;
         assert_eq!(count_ids, vec![2, 3], "{count_display}");
         assert!(!count_display.contains("FilterExec"), "{count_display}");
 
@@ -1499,37 +1702,23 @@ error: {err}"
         let ctx = QdrantSessionContext::from(SessionContext::new());
         drop(ctx.session_context().register_table("vectors", Arc::new(table_provider))?);
 
-        let projection = ctx
-            .sql(
-                "SELECT id, CAST(payload_geo_distance(payload:location, 0.0, 0.0) AS BIGINT) AS \
-                 dist FROM vectors ORDER BY id",
-            )
-            .await?
-            .collect()
-            .await?;
+        let projection =
+            ctx.sql(sql::scan::projection::GEO_DISTANCE_VALUES.sql).await?.collect().await?;
         let projection_batch = projection.into_iter().next().expect("projection batch");
         assert_eq!(batch_u64_ids(&projection_batch, "id"), vec![1, 2, 3]);
-        let distances = batch_i64_values(&projection_batch, "dist");
+        let distances = batch_i64_values(&projection_batch, "distance");
         assert_eq!(distances[0], 0);
         assert!((110_000..=112_500).contains(&distances[1]), "{distances:?}");
         assert!((220_000..=223_000).contains(&distances[2]), "{distances:?}");
 
-        let (near_ids, near_display) = collect_id_rows(
-            &ctx,
-            "SELECT id FROM vectors WHERE payload_geo_distance(payload:location, 0.0, 0.0) <= \
-             150000.0 ORDER BY id",
-        )
-        .await?;
-        assert_eq!(near_ids, vec![1, 2], "{near_display}");
+        let (near_ids, near_display) =
+            collect_id_rows(&ctx, sql::scan::filters::GEO_RADIUS.sql).await?;
+        assert_eq!(near_ids, vec![1], "{near_display}");
         assert!(!near_display.contains("FilterExec"), "{near_display}");
 
-        let (far_ids, far_display) = collect_id_rows(
-            &ctx,
-            "SELECT id FROM vectors WHERE payload_geo_distance(payload:location, 0.0, 0.0) > \
-             150000.0 ORDER BY id",
-        )
-        .await?;
-        assert_eq!(far_ids, vec![3], "{far_display}");
+        let (far_ids, far_display) =
+            collect_id_rows(&ctx, sql::scan::filters::GEO_RESIDUAL.sql).await?;
+        assert_eq!(far_ids, vec![2, 3], "{far_display}");
         assert!(far_display.contains("FilterExec"), "{far_display}");
 
         Ok(())
@@ -1553,9 +1742,9 @@ error: {err}"
         let mut first = qdrant_client::Payload::new();
         first.insert("description", "good cheap coffee");
         let mut second = qdrant_client::Payload::new();
-        second.insert("description", "good expensive coffee");
+        second.insert("description", "time is a flat circle");
         let mut third = qdrant_client::Payload::new();
-        third.insert("description", "time machine novel");
+        third.insert("description", "good food nearby");
         let mut fourth = qdrant_client::Payload::new();
         fourth.insert("description", "machine time notes");
 
@@ -1571,22 +1760,14 @@ error: {err}"
         let ctx = QdrantSessionContext::from(SessionContext::new());
         drop(ctx.session_context().register_table("vectors", Arc::new(table_provider))?);
 
-        let (text_ids, text_display) = collect_id_rows(
-            &ctx,
-            "SELECT id FROM vectors WHERE payload_text_match(payload:description, 'good cheap') \
-             ORDER BY id",
-        )
-        .await?;
+        let (text_ids, text_display) =
+            collect_id_rows(&ctx, sql::scan::filters::TEXT_MATCH.sql).await?;
         assert_eq!(text_ids, vec![1], "{text_display}");
         assert!(!text_display.contains("FilterExec"), "{text_display}");
 
-        let (phrase_ids, phrase_display) = collect_id_rows(
-            &ctx,
-            "SELECT id FROM vectors WHERE payload_phrase_match(payload:description, 'time \
-             machine') ORDER BY id",
-        )
-        .await?;
-        assert_eq!(phrase_ids, vec![3], "{phrase_display}");
+        let (phrase_ids, phrase_display) =
+            collect_id_rows(&ctx, sql::scan::filters::PHRASE_MATCH.sql).await?;
+        assert_eq!(phrase_ids, vec![2], "{phrase_display}");
         assert!(!phrase_display.contains("FilterExec"), "{phrase_display}");
 
         Ok(())
@@ -1628,12 +1809,7 @@ error: {err}"
         let ctx = QdrantSessionContext::from(SessionContext::new());
         drop(ctx.session_context().register_table("vectors", Arc::new(table_provider))?);
 
-        let dataframe = ctx
-            .sql(
-                "SELECT payload:active AS active, COUNT(*) AS total FROM vectors GROUP BY \
-                 payload:active ORDER BY total DESC LIMIT 2",
-            )
-            .await?;
+        let dataframe = ctx.sql(sql::scan::aggregates::BOOL_FACET.sql).await?;
         let plan = dataframe.clone().create_physical_plan().await?;
         let display =
             datafusion::physical_plan::displayable(plan.as_ref()).indent(true).to_string();
@@ -1704,7 +1880,7 @@ error: {err}"
         let ctx = QdrantSessionContext::from(SessionContext::new());
         drop(ctx.session_context().register_table("vectors", Arc::new(table_provider))?);
 
-        let sql = "SELECT id, qdrant_nearest_score(vector, 1.0, 0.0) AS score FROM vectors";
+        let sql = sql::query::nearest::WITHOUT_LIMIT.sql;
         let (rows, display) = collect_scored_rows(&ctx, sql).await?;
 
         assert_eq!(rows.iter().map(|(id, _)| *id).collect::<Vec<_>>(), vec![1, 2, 3]);
@@ -1752,8 +1928,7 @@ error: {err}"
         let ctx = QdrantSessionContext::from(SessionContext::new());
         drop(ctx.session_context().register_table("vectors", Arc::new(table_provider))?);
 
-        let sql = "SELECT id, qdrant_nearest_score(vector, 1.0, 0.0) + CAST(1.0 AS FLOAT) AS \
-                   score FROM vectors";
+        let sql = sql::query::nearest::LOCAL_PROJECTION.sql;
         let (rows, display) = collect_scored_rows(&ctx, sql).await?;
 
         assert_eq!(rows.iter().map(|(id, _)| *id).collect::<Vec<_>>(), vec![1, 2, 3]);
@@ -1803,7 +1978,7 @@ error: {err}"
         let ctx = QdrantSessionContext::from(SessionContext::new());
         drop(ctx.session_context().register_table("vectors", Arc::new(table_provider))?);
 
-        let sql = "SELECT id FROM vectors WHERE qdrant_nearest_score(vector, 1.0, 0.0) <= 0.5";
+        let sql = sql::query::nearest::LOCAL_FILTER.sql;
         let (ids, display) = collect_id_rows(&ctx, sql).await?;
 
         assert_eq!(ids, vec![2, 3]);
@@ -1851,8 +2026,7 @@ error: {err}"
         let ctx = QdrantSessionContext::from(SessionContext::new());
         drop(ctx.session_context().register_table("vectors", Arc::new(table_provider))?);
 
-        let sql = "SELECT id, qdrant_nearest_score(vector, 1.0, 0.0) AS score FROM vectors WHERE \
-                   qdrant_nearest_score(vector, 1.0, 0.0) <= 0.5";
+        let sql = sql::query::nearest::LOCAL_FILTER_AND_PROJECTION.sql;
         let (rows, display) = collect_scored_rows(&ctx, sql).await?;
 
         assert_eq!(rows.iter().map(|(id, _)| *id).collect::<Vec<_>>(), vec![2, 3]);
@@ -1913,13 +2087,7 @@ error: {err}"
         let ctx = QdrantSessionContext::from(SessionContext::new());
         drop(ctx.session_context().register_table("vectors", Arc::new(table_provider))?);
 
-        let dataframe = ctx
-            .sql(
-                "SELECT id, payload, embedding, aux, qdrant_nearest_score(embedding, 1.0, 0.0) AS \
-                 score FROM vectors WHERE id <> '3' AND qdrant_nearest_score(embedding, 1.0, 0.0) \
-                 >= 0.3 ORDER BY score DESC LIMIT 3",
-            )
-            .await?;
+        let dataframe = ctx.sql(sql::query::nearest::PAYLOAD_PROJECTION.sql).await?;
         let plan = dataframe.clone().create_physical_plan().await?;
         let display =
             datafusion::physical_plan::displayable(plan.as_ref()).indent(true).to_string();
@@ -1979,11 +2147,7 @@ error: {err}"
         let ctx = QdrantSessionContext::from(SessionContext::new());
         drop(ctx.session_context().register_table("vectors", Arc::new(table_provider))?);
 
-        let sql_variants = [
-            "SELECT id, qdrant_sample_score('random') AS score FROM vectors ORDER BY score DESC \
-             LIMIT 2",
-            "SELECT id, qdrant_sample_score() AS score FROM vectors ORDER BY score DESC LIMIT 2",
-        ];
+        let sql_variants = [sql::query::sample::EXPLICIT.sql, sql::query::sample::DEFAULT.sql];
 
         for sql in sql_variants {
             let (rows, display) = collect_scored_rows(&ctx, sql).await?;
@@ -2003,10 +2167,8 @@ error: {err}"
         let ctx =
             create_dual_vector_query_context(&c, "test_session_context_recommend_query").await?;
 
-        let default_sql = "SELECT id, qdrant_recommend_score(embedding, [[1.0, 0.0]], [[0.0, \
-                           1.0]]) AS score FROM vectors ORDER BY score DESC LIMIT 2";
-        let strategy_sql = "SELECT id, qdrant_recommend_score(embedding, 'average_vector', [[1.0, \
-                            0.0]], [[0.0, 1.0]]) AS score FROM vectors ORDER BY score DESC LIMIT 2";
+        let default_sql = sql::query::recommend::DEFAULT.sql;
+        let strategy_sql = sql::query::recommend::STRATEGY.sql;
 
         let (default_rows, default_display) = collect_scored_rows(&ctx, default_sql).await?;
         let (strategy_rows, strategy_display) = collect_scored_rows(&ctx, strategy_sql).await?;
@@ -2025,8 +2187,7 @@ error: {err}"
         let ctx =
             create_dual_vector_query_context(&c, "test_session_context_discover_query").await?;
 
-        let sql = "SELECT id, qdrant_discover_score(embedding, [1.0, 0.0], [[[1.0, 0.0], [0.0, \
-                   1.0]]]) AS score FROM vectors ORDER BY score DESC LIMIT 2";
+        let sql = sql::query::discover::CANONICAL.sql;
         let (rows, display) = collect_scored_rows(&ctx, sql).await?;
 
         assert_eq!(rows.len(), 2, "rows={rows:?}");
@@ -2043,8 +2204,7 @@ error: {err}"
         let ctx =
             create_dual_vector_query_context(&c, "test_session_context_context_query").await?;
 
-        let sql = "SELECT id, qdrant_context_score(embedding, [[[1.0, 0.0], [0.0, 1.0]]]) AS \
-                   score FROM vectors ORDER BY score DESC LIMIT 2";
+        let sql = sql::query::context::CANONICAL.sql;
         let (rows, display) = collect_scored_rows(&ctx, sql).await?;
 
         assert_eq!(rows.len(), 2, "rows={rows:?}");
@@ -2062,7 +2222,7 @@ error: {err}"
             create_dual_vector_query_context(&c, "test_session_context_nearest_with_mmr_query")
                 .await?;
 
-        let sql = "SELECT id, qdrant_nearest_with_mmr_score(embedding, 0.9, 8, 1.0, 0.0) AS                    score FROM vectors ORDER BY score DESC LIMIT 2";
+        let sql = sql::query::mmr::CANONICAL.sql;
         let (rows, display) = collect_scored_rows(&ctx, sql).await?;
 
         assert_eq!(rows.len(), 2, "rows={rows:?}");
@@ -2085,7 +2245,7 @@ error: {err}"
             create_dual_vector_query_context(&c, "test_session_context_relevance_feedback_query")
                 .await?;
 
-        let sql = "SELECT id, qdrant_relevance_feedback_score(embedding, [1.0, 0.0],                    [struct([1.0, 0.0], 1.0), struct([0.0, 1.0], -0.5)], 1.0, 0.5, 0.25) AS                    score FROM vectors ORDER BY score DESC LIMIT 2";
+        let sql = sql::query::relevance::CANONICAL.sql;
         let (rows, display) = collect_scored_rows(&ctx, sql).await?;
 
         assert_eq!(rows.len(), 2, "rows={rows:?}");
@@ -2101,6 +2261,98 @@ error: {err}"
         Ok(())
     }
 
+    pub(super) async fn test_prepared_session_sql_supported_nearest_catalog_queries(
+        c: Arc<QdrantContainer>,
+    ) -> Result<()> {
+        let ctx = create_vector_query_context(&c, "test_supported_nearest_catalog_queries").await?;
+        for case in sql::query::nearest::ALL {
+            let (_batches, display) =
+                assert_supported_query_collects(&ctx, case.sql).await.map_err(|error| {
+                    datafusion::error::DataFusionError::Execution(format!(
+                        "supported nearest catalog case={} sql={} error={error}",
+                        case.id, case.sql
+                    ))
+                })?;
+            assert!(
+                display.contains("QdrantQueryExec")
+                    || display.contains("QdrantQueryBatchExec")
+                    || display.contains("ProjectionExec")
+                    || display.contains("FilterExec")
+                    || display.contains("WindowAggExec")
+                    || display.contains("HashJoinExec")
+                    || display.contains("JoinExec"),
+                "case={} sql={} display={display}",
+                case.id,
+                case.sql,
+            );
+        }
+
+        Ok(())
+    }
+
+    pub(super) async fn test_prepared_session_sql_supported_query_family_catalog_queries(
+        c: Arc<QdrantContainer>,
+    ) -> Result<()> {
+        let vector_ctx =
+            create_vector_query_context(&c, "test_supported_query_family_sample_queries").await?;
+        let dual_ctx =
+            create_dual_vector_query_context(&c, "test_supported_query_family_dual_queries")
+                .await?;
+        let grouped_ctx =
+            create_grouped_nearest_query_context(&c, "test_supported_query_family_grouped_queries")
+                .await?;
+
+        for case in sql::query::sample::ALL {
+            let (_batches, display) =
+                assert_supported_query_collects(&vector_ctx, case.sql).await.map_err(|error| {
+                    datafusion::error::DataFusionError::Execution(format!(
+                        "supported query-family sample case={} sql={} error={error}",
+                        case.id, case.sql
+                    ))
+                })?;
+            assert!(
+                display.contains("QdrantQueryExec")
+                    || display.contains("SortExec")
+                    || display.contains("WindowAggExec"),
+                "{display}"
+            );
+        }
+        for case in sql::query::recommend::ALL
+            .iter()
+            .chain(sql::query::discover::ALL.iter())
+            .chain(sql::query::context::ALL.iter())
+            .chain(sql::query::mmr::ALL.iter())
+            .chain(sql::query::relevance::ALL.iter())
+        {
+            let (_batches, display) =
+                assert_supported_query_collects(&dual_ctx, case.sql).await.map_err(|error| {
+                    datafusion::error::DataFusionError::Execution(format!(
+                        "supported query-family dual case={} sql={} error={error}",
+                        case.id, case.sql
+                    ))
+                })?;
+            assert!(
+                display.contains("QdrantQueryExec") || display.contains("WindowAggExec"),
+                "{display}"
+            );
+        }
+        for case in sql::query::grouped::ALL {
+            let (_batches, display) =
+                assert_supported_query_collects(&grouped_ctx, case.sql).await.map_err(|error| {
+                    datafusion::error::DataFusionError::Execution(format!(
+                        "supported grouped case={} sql={} error={error}",
+                        case.id, case.sql
+                    ))
+                })?;
+            assert!(
+                display.contains("QdrantQueryGroupsExec") || display.contains("WindowAggExec"),
+                "{display}"
+            );
+        }
+
+        Ok(())
+    }
+
     pub(super) async fn test_prepared_session_sql_grouped_nearest_query(
         c: Arc<QdrantContainer>,
     ) -> Result<()> {
@@ -2108,21 +2360,9 @@ error: {err}"
             create_grouped_nearest_query_context(&c, "test_session_context_grouped_nearest_query")
                 .await?;
 
-        let ascending_sql = "SELECT id, payload:tag AS tag, score FROM (SELECT DISTINCT ON \
-                             (payload:tag) id,              payload, \
-                             qdrant_nearest_score(embedding, 1.0, 0.0) AS score FROM vectors \
-                             ORDER BY              payload:tag, qdrant_nearest_score(embedding, \
-                             1.0, 0.0) DESC) grouped";
-        let ascending_without_tiebreak_sql = "SELECT id, payload:tag AS tag, score FROM (SELECT \
-                                              DISTINCT ON (payload:tag) id,              payload, \
-                                              qdrant_nearest_score(embedding, 1.0, 0.0) AS score \
-                                              FROM vectors ORDER BY              payload:tag) \
-                                              grouped";
-        let descending_sql = "SELECT id, payload:tag AS tag, score FROM (SELECT DISTINCT ON \
-                              (payload:tag) id,              payload, \
-                              qdrant_nearest_score(embedding, 1.0, 0.0) AS score FROM vectors \
-                              ORDER BY              payload:tag DESC, \
-                              qdrant_nearest_score(embedding, 1.0, 0.0) DESC) grouped LIMIT 2";
+        let ascending_sql = sql::query::grouped::NEAREST_ASC.sql;
+        let ascending_without_tiebreak_sql = sql::query::grouped::NEAREST_ASC_NO_TIEBREAK.sql;
+        let descending_sql = sql::query::grouped::NEAREST_DESC.sql;
 
         let (ascending_rows, ascending_display) =
             collect_grouped_scored_rows(&ctx, ascending_sql).await?;
@@ -2179,24 +2419,9 @@ error: {err}"
         .await?;
 
         let grouped_cases = [
-            (
-                "recommend",
-                "SELECT id, payload:tag AS tag, score FROM (SELECT DISTINCT ON (payload:tag) id, \
-                 payload, qdrant_recommend_score(embedding, [[1.0, 0.0]], [[0.0, 1.0]]) AS score \
-                 FROM vectors ORDER BY payload:tag) grouped",
-            ),
-            (
-                "discover",
-                "SELECT id, payload:tag AS tag, score FROM (SELECT DISTINCT ON (payload:tag) id, \
-                 payload, qdrant_discover_score(embedding, [1.0, 0.0], [[[1.0, 0.0], [0.0, \
-                 1.0]]]) AS score FROM vectors ORDER BY payload:tag) grouped",
-            ),
-            (
-                "context",
-                "SELECT id, payload:tag AS tag, score FROM (SELECT DISTINCT ON (payload:tag) id, \
-                 payload, qdrant_context_score(embedding, [[[1.0, 0.0], [0.0, 1.0]]]) AS score \
-                 FROM vectors ORDER BY payload:tag) grouped",
-            ),
+            ("recommend", sql::query::grouped::RECOMMEND.sql),
+            ("discover", sql::query::grouped::DISCOVER.sql),
+            ("context", sql::query::grouped::CONTEXT.sql),
         ];
 
         for (label, sql) in grouped_cases {
@@ -2285,12 +2510,7 @@ error: {err}"
         let ctx = QdrantSessionContext::from(SessionContext::new());
         drop(ctx.session_context().register_table("vectors", Arc::new(table_provider))?);
 
-        let dataframe = ctx
-            .sql(
-                "SELECT id, payload:rank AS rank, qdrant_nearest_score(vector, 1.0, 0.0) AS score \
-                 FROM vectors ORDER BY score DESC LIMIT 2",
-            )
-            .await?;
+        let dataframe = ctx.sql(sql::scan::projection::NEAREST_PAYLOAD_PATH.sql).await?;
         let plan = dataframe.clone().create_physical_plan().await?;
         let display =
             datafusion::physical_plan::displayable(plan.as_ref()).indent(true).to_string();
@@ -2321,15 +2541,11 @@ error: {err}"
         assert_f32_eq(scores[1], 0.4);
         assert!(display.contains("QdrantQueryExec"), "{display}");
 
-        let (cast_ranks, cast_display) = collect_i64_rows(
-            &ctx,
-            "SELECT id, CAST(payload:rank AS BIGINT) AS rank, qdrant_nearest_score(vector, 1.0, \
-             0.0) AS score FROM vectors ORDER BY score DESC LIMIT 2",
-            "rank",
-        )
-        .await?;
+        let (cast_ranks, cast_display) =
+            collect_i64_rows(&ctx, sql::scan::projection::NEAREST_PAYLOAD_PATH_CAST.sql, "rank")
+                .await?;
 
-        assert_eq!(cast_ranks, vec![30, 20]);
+        assert_eq!(cast_ranks, vec![30, 20, 10]);
         assert!(cast_display.contains("QdrantQueryExec"), "{cast_display}");
 
         Ok(())
@@ -2341,40 +2557,17 @@ error: {err}"
         let ctx =
             create_dual_vector_query_context(&c, "test_coordinated_formula_sql_variants").await?;
 
-        let canonical_sql = "SELECT dense.id, qdrant_formula_score(dense.score + sparse.score) AS \
-                             score FROM (SELECT id, qdrant_nearest_score(embedding, 1.0, 0.0) AS \
-                             score FROM vectors ORDER BY score DESC LIMIT 5) dense FULL OUTER \
-                             JOIN (SELECT id, qdrant_nearest_score(aux, 0.0, 1.0) AS score FROM \
-                             vectors ORDER BY score DESC LIMIT 5) sparse USING (id) ORDER BY \
-                             score DESC LIMIT 2";
-        let alias_wrapped_sql = "SELECT ranked.id, ranked.score FROM (SELECT dense.id AS id, \
-                                 qdrant_formula_score(dense.score + sparse.score) AS score FROM \
-                                 (SELECT id, qdrant_nearest_score(embedding, 1.0, 0.0) AS score \
-                                 FROM vectors ORDER BY score DESC LIMIT 5) dense FULL OUTER JOIN \
-                                 (SELECT id, qdrant_nearest_score(aux, 0.0, 1.0) AS score FROM \
-                                 vectors ORDER BY score DESC LIMIT 5) sparse USING (id)) ranked \
-                                 ORDER BY ranked.score DESC LIMIT 2";
-        let redundant_sort_sql = "SELECT ranked.id, ranked.score FROM (SELECT dense.id AS id, \
-                                  qdrant_formula_score(dense.score + sparse.score) AS score FROM \
-                                  (SELECT id, qdrant_nearest_score(embedding, 1.0, 0.0) AS score \
-                                  FROM vectors ORDER BY score DESC LIMIT 5) dense FULL OUTER JOIN \
-                                  (SELECT id, qdrant_nearest_score(aux, 0.0, 1.0) AS score FROM \
-                                  vectors ORDER BY score DESC LIMIT 5) sparse USING (id) ORDER BY \
-                                  score DESC) ranked ORDER BY ranked.score DESC LIMIT 2";
-        let alias_threaded_sql =
-            "SELECT final.id, final.score FROM (SELECT ranked.id AS id, ranked.score AS score \
-             FROM (SELECT dense.id AS id, qdrant_formula_score(dense.score + sparse.score) AS \
-             score FROM (SELECT id, qdrant_nearest_score(embedding, 1.0, 0.0) AS score FROM \
-             vectors ORDER BY score DESC LIMIT 5) dense FULL OUTER JOIN (SELECT id, \
-             qdrant_nearest_score(aux, 0.0, 1.0) AS score FROM vectors ORDER BY score DESC LIMIT \
-             5) sparse USING (id)) ranked) final ORDER BY final.score DESC LIMIT 2";
-        let sort_only_sql = "SELECT dense.id AS id FROM (SELECT id, \
-                             qdrant_nearest_score(embedding, 1.0, 0.0) AS score FROM vectors \
-                             ORDER BY score DESC LIMIT 5) dense FULL OUTER JOIN (SELECT id, \
-                             qdrant_nearest_score(aux, 0.0, 1.0) AS score FROM vectors ORDER BY \
-                             score DESC LIMIT 5) sparse USING (id) ORDER BY \
-                             qdrant_formula_score(dense.score + sparse.score) DESC LIMIT 2";
+        let without_limit_sql = sql::coordination::formula::WITHOUT_LIMIT.sql;
+        let canonical_sql = sql::coordination::formula::CANONICAL.sql;
+        let alias_wrapped_sql = sql::coordination::formula::ALIAS_WRAPPED.sql;
+        let redundant_sort_sql = sql::coordination::formula::REDUNDANT_SORT.sql;
+        let alias_threaded_sql = sql::coordination::formula::ALIAS_THREADING.sql;
+        let sort_only_sql = sql::coordination::formula::SORT_ONLY.sql;
+        let left_join_sql = sql::coordination::formula::LEFT_JOIN.sql;
+        let cross_join_sql = sql::coordination::formula::CROSS_JOIN.sql;
 
+        let (without_limit_rows, without_limit_display) =
+            collect_scored_rows(&ctx, without_limit_sql).await?;
         let (canonical_rows, canonical_display) = collect_scored_rows(&ctx, canonical_sql).await?;
         let (alias_rows, alias_display) = collect_scored_rows(&ctx, alias_wrapped_sql).await?;
         let (redundant_sort_rows, redundant_sort_display) =
@@ -2382,11 +2575,29 @@ error: {err}"
         let (alias_threaded_rows, alias_threaded_display) =
             collect_scored_rows(&ctx, alias_threaded_sql).await?;
         let (sort_only_rows, sort_only_display) = collect_id_rows(&ctx, sort_only_sql).await?;
+        let (left_join_rows, left_join_display) = collect_scored_rows(&ctx, left_join_sql).await?;
+        let (cross_join_rows, cross_join_display) =
+            collect_scored_rows(&ctx, cross_join_sql).await?;
 
+        assert_eq!(without_limit_rows.iter().map(|(id, _)| *id).collect::<Vec<_>>(), vec![1, 2, 3]);
+        assert_f32_eq(without_limit_rows[0].1, 2.0);
+        assert_f32_eq(without_limit_rows[1].1, 0.8);
+        assert_f32_eq(without_limit_rows[2].1, 0.2);
         assert_scored_rows_eq(&canonical_rows, &alias_rows);
         assert_scored_rows_eq(&canonical_rows, &redundant_sort_rows);
         assert_scored_rows_eq(&canonical_rows, &alias_threaded_rows);
+        assert_scored_rows_eq(&canonical_rows, &left_join_rows);
         assert_eq!(sort_only_rows, canonical_rows.iter().map(|(id, _)| *id).collect::<Vec<_>>(),);
+        assert_eq!(cross_join_rows.iter().map(|(id, _)| *id).collect::<Vec<_>>(), vec![1, 1]);
+        assert_f32_eq(cross_join_rows[0].1, 2.0);
+        assert_f32_eq(cross_join_rows[1].1, 1.4);
+
+        assert_eq!(
+            without_limit_display.matches("QdrantQueryExec").count(),
+            2,
+            "{without_limit_display}"
+        );
+        assert!(without_limit_display.contains("HashJoinExec"), "{without_limit_display}");
 
         for display in
             [&canonical_display, &alias_display, &redundant_sort_display, &alias_threaded_display]
@@ -2401,6 +2612,14 @@ error: {err}"
         assert!(sort_only_display.contains("prefetch=2"), "{sort_only_display}");
         assert!(!sort_only_display.contains("JoinExec"), "{sort_only_display}");
         assert!(!sort_only_display.contains("HashJoinExec"), "{sort_only_display}");
+        assert_eq!(left_join_display.matches("QdrantQueryExec").count(), 2, "{left_join_display}");
+        assert!(left_join_display.contains("HashJoinExec"), "{left_join_display}");
+        assert_eq!(
+            cross_join_display.matches("QdrantQueryExec").count(),
+            2,
+            "{cross_join_display}"
+        );
+        assert!(cross_join_display.contains("CrossJoinExec"), "{cross_join_display}");
 
         Ok(())
     }
@@ -2408,26 +2627,9 @@ error: {err}"
     pub(super) async fn test_explicit_fusion_sql_variants(c: Arc<QdrantContainer>) -> Result<()> {
         let ctx = create_dual_vector_query_context(&c, "test_explicit_fusion_sql_variants").await?;
 
-        let canonical_sql = "SELECT id, qdrant_fusion_score('RRF', dense.score, sparse.score) AS \
-                             score FROM (SELECT id, qdrant_nearest_score(embedding, 1.0, 0.0) AS \
-                             score FROM vectors ORDER BY score DESC LIMIT 5) dense FULL OUTER \
-                             JOIN (SELECT id, qdrant_nearest_score(aux, 0.0, 1.0) AS score FROM \
-                             vectors ORDER BY score DESC LIMIT 5) sparse USING (id) ORDER BY \
-                             score DESC LIMIT 2";
-        let alias_wrapped_sql = "SELECT ranked.id, ranked.score FROM (SELECT dense.id AS id, \
-                                 qdrant_fusion_score('RRF', dense.score, sparse.score) AS score \
-                                 FROM (SELECT id, qdrant_nearest_score(embedding, 1.0, 0.0) AS \
-                                 score FROM vectors ORDER BY score DESC LIMIT 5) dense FULL OUTER \
-                                 JOIN (SELECT id, qdrant_nearest_score(aux, 0.0, 1.0) AS score \
-                                 FROM vectors ORDER BY score DESC LIMIT 5) sparse USING (id)) \
-                                 ranked ORDER BY ranked.score DESC LIMIT 2";
-        let alias_threaded_sql =
-            "SELECT final.id, final.score FROM (SELECT ranked.id AS id, ranked.score AS score \
-             FROM (SELECT dense.id AS id, qdrant_fusion_score('RRF', dense.score, sparse.score) \
-             AS score FROM (SELECT id, qdrant_nearest_score(embedding, 1.0, 0.0) AS score FROM \
-             vectors ORDER BY score DESC LIMIT 5) dense FULL OUTER JOIN (SELECT id, \
-             qdrant_nearest_score(aux, 0.0, 1.0) AS score FROM vectors ORDER BY score DESC LIMIT \
-             5) sparse USING (id)) ranked) final ORDER BY final.score DESC LIMIT 2";
+        let canonical_sql = sql::coordination::fusion::CANONICAL.sql;
+        let alias_wrapped_sql = sql::coordination::fusion::ALIAS_WRAPPED.sql;
+        let alias_threaded_sql = sql::coordination::fusion::ALIAS_THREADING.sql;
 
         let (canonical_rows, canonical_display) = collect_scored_rows(&ctx, canonical_sql).await?;
         let (alias_rows, alias_display) = collect_scored_rows(&ctx, alias_wrapped_sql).await?;
@@ -2489,12 +2691,7 @@ error: {err}"
         let ctx = QdrantSessionContext::from(SessionContext::new());
         drop(ctx.session_context().register_table("vectors", Arc::new(table_provider))?);
 
-        let dataframe = ctx
-            .sql(
-                "SELECT payload:rank AS rank, COUNT(*) AS total FROM vectors GROUP BY \
-                 payload:rank ORDER BY total DESC LIMIT 2",
-            )
-            .await?;
+        let dataframe = ctx.sql(sql::scan::aggregates::INT_FACET.sql).await?;
         let plan = dataframe.clone().create_physical_plan().await?;
         let display =
             datafusion::physical_plan::displayable(plan.as_ref()).indent(true).to_string();
@@ -2576,11 +2773,7 @@ error: {err}"
         let ctx = SessionContext::new();
         drop(ctx.register_table("docs", Arc::new(table_provider))?);
 
-        let id_batches = ctx
-            .sql("SELECT id FROM docs WHERE id IN ('1', '3') ORDER BY id")
-            .await?
-            .collect()
-            .await?;
+        let id_batches = ctx.sql(sql::scan::filters::IDS_IN.sql).await?.collect().await?;
         let ids = id_batches
             .iter()
             .flat_map(|batch| {
@@ -2596,11 +2789,8 @@ error: {err}"
             .collect::<Vec<_>>();
         assert_eq!(ids, vec![1, 3]);
 
-        let missing_batches = ctx
-            .sql("SELECT id FROM docs WHERE text_embedding IS NULL ORDER BY id")
-            .await?
-            .collect()
-            .await?;
+        let missing_batches =
+            ctx.sql(sql::scan::filters::VECTOR_IS_NULL.sql).await?.collect().await?;
         let missing_ids = missing_batches
             .iter()
             .flat_map(|batch| {
@@ -2616,14 +2806,8 @@ error: {err}"
             .collect::<Vec<_>>();
         assert_eq!(missing_ids, vec![3]);
 
-        let mixed_batches = ctx
-            .sql(
-                "SELECT id FROM docs WHERE text_embedding IS NOT NULL AND multi_embedding IS NULL \
-                 ORDER BY id",
-            )
-            .await?
-            .collect()
-            .await?;
+        let mixed_batches =
+            ctx.sql(sql::scan::filters::VECTOR_NONNULL_AND_MULTI_NULL.sql).await?.collect().await?;
         let mixed_ids = mixed_batches
             .iter()
             .flat_map(|batch| {
@@ -2700,11 +2884,7 @@ error: {err}"
         let ctx = SessionContext::new();
         drop(ctx.register_table("vectors", Arc::new(table_provider))?);
 
-        let rank_batches = ctx
-            .sql("SELECT id FROM vectors WHERE payload:rank >= 20 ORDER BY id")
-            .await?
-            .collect()
-            .await?;
+        let rank_batches = ctx.sql(sql::scan::filters::RANK_GTE.sql).await?.collect().await?;
         let rank_ids = rank_batches
             .iter()
             .flat_map(|batch| {
@@ -2720,11 +2900,7 @@ error: {err}"
             .collect::<Vec<_>>();
         assert_eq!(rank_ids, vec![1, 3]);
 
-        let score_batches = ctx
-            .sql("SELECT id FROM vectors WHERE payload:score IN (1.5, 3.5) ORDER BY id")
-            .await?
-            .collect()
-            .await?;
+        let score_batches = ctx.sql(sql::scan::filters::SCORE_IN.sql).await?.collect().await?;
         let score_ids = score_batches
             .iter()
             .flat_map(|batch| {
@@ -2740,11 +2916,7 @@ error: {err}"
             .collect::<Vec<_>>();
         assert_eq!(score_ids, vec![1, 3]);
 
-        let tag_batches = ctx
-            .sql("SELECT id FROM vectors WHERE payload:tag NOT IN ('red') ORDER BY id")
-            .await?
-            .collect()
-            .await?;
+        let tag_batches = ctx.sql(sql::scan::filters::TAG_NOT_IN.sql).await?.collect().await?;
         let tag_ids = tag_batches
             .iter()
             .flat_map(|batch| {
@@ -2760,14 +2932,7 @@ error: {err}"
             .collect::<Vec<_>>();
         assert_eq!(tag_ids, vec![2, 3]);
 
-        let or_batches = ctx
-            .sql(
-                "SELECT id FROM vectors WHERE payload:tag = 'red' OR payload:tag = 'blue' ORDER \
-                 BY id",
-            )
-            .await?
-            .collect()
-            .await?;
+        let or_batches = ctx.sql(sql::scan::filters::TAG_OR.sql).await?.collect().await?;
         let or_ids = or_batches
             .iter()
             .flat_map(|batch| {
@@ -2783,14 +2948,8 @@ error: {err}"
             .collect::<Vec<_>>();
         assert_eq!(or_ids, vec![1, 3]);
 
-        let boolean_batches = ctx
-            .sql(
-                "SELECT id FROM vectors WHERE (payload:tag = 'red' OR id = '2') AND NOT \
-                 payload:rank > 20 ORDER BY id",
-            )
-            .await?
-            .collect()
-            .await?;
+        let boolean_batches =
+            ctx.sql(sql::scan::filters::TAG_OR_ID_AND_NOT_RANK.sql).await?.collect().await?;
         let boolean_ids = boolean_batches
             .iter()
             .flat_map(|batch| {
@@ -2806,11 +2965,7 @@ error: {err}"
             .collect::<Vec<_>>();
         assert_eq!(boolean_ids, vec![2]);
 
-        let null_batches = ctx
-            .sql("SELECT id FROM vectors WHERE payload:remark IS NULL ORDER BY id")
-            .await?
-            .collect()
-            .await?;
+        let null_batches = ctx.sql(sql::scan::filters::REMARK_IS_NULL.sql).await?.collect().await?;
         let null_ids = null_batches
             .iter()
             .flat_map(|batch| {
@@ -2826,11 +2981,8 @@ error: {err}"
             .collect::<Vec<_>>();
         assert_eq!(null_ids, vec![1, 2]);
 
-        let not_null_batches = ctx
-            .sql("SELECT id FROM vectors WHERE payload:remark IS NOT NULL ORDER BY id")
-            .await?
-            .collect()
-            .await?;
+        let not_null_batches =
+            ctx.sql(sql::scan::filters::REMARK_IS_NOT_NULL.sql).await?.collect().await?;
         let not_null_ids = not_null_batches
             .iter()
             .flat_map(|batch| {
@@ -2883,11 +3035,8 @@ error: {err}"
         let ctx = SessionContext::new();
         drop(ctx.register_table("vectors", Arc::new(table_provider))?);
 
-        let empty_batches = ctx
-            .sql("SELECT id FROM vectors WHERE payload:tag = '' ORDER BY id")
-            .await?
-            .collect()
-            .await?;
+        let empty_batches =
+            ctx.sql(sql::scan::filters::EMPTY_STRING_EQ.sql).await?.collect().await?;
         let empty_ids = empty_batches
             .iter()
             .flat_map(|batch| {
@@ -2903,11 +3052,8 @@ error: {err}"
             .collect::<Vec<_>>();
         assert_eq!(empty_ids, vec![1]);
 
-        let null_batches = ctx
-            .sql("SELECT id FROM vectors WHERE payload:tag IS NULL ORDER BY id")
-            .await?
-            .collect()
-            .await?;
+        let null_batches =
+            ctx.sql(sql::scan::filters::EMPTY_STRING_IS_NULL.sql).await?.collect().await?;
         let null_ids = null_batches
             .iter()
             .flat_map(|batch| {
@@ -2923,11 +3069,8 @@ error: {err}"
             .collect::<Vec<_>>();
         assert_eq!(null_ids, vec![2, 4]);
 
-        let not_null_batches = ctx
-            .sql("SELECT id FROM vectors WHERE payload:tag IS NOT NULL ORDER BY id")
-            .await?
-            .collect()
-            .await?;
+        let not_null_batches =
+            ctx.sql(sql::scan::filters::EMPTY_STRING_IS_NOT_NULL.sql).await?.collect().await?;
         let not_null_ids = not_null_batches
             .iter()
             .flat_map(|batch| {
@@ -2979,8 +3122,7 @@ error: {err}"
         let ctx = QdrantSessionContext::from(SessionContext::new());
         drop(ctx.session_context().register_table("vectors", Arc::new(table_provider))?);
 
-        let dataframe =
-            ctx.sql("SELECT COUNT(*) AS total FROM vectors WHERE payload:rank >= 20").await?;
+        let dataframe = ctx.sql(sql::scan::aggregates::COUNT_RANK_GTE.sql).await?;
         let plan = dataframe.clone().create_physical_plan().await?;
         let display =
             datafusion::physical_plan::displayable(plan.as_ref()).indent(true).to_string();
@@ -3054,12 +3196,7 @@ error: {err}"
         let ctx = QdrantSessionContext::from(SessionContext::new());
         drop(ctx.session_context().register_table("vectors", Arc::new(table_provider))?);
 
-        let dataframe = ctx
-            .sql(
-                "SELECT payload:tag AS tag, COUNT(*) AS total FROM vectors WHERE payload:rank >= \
-                 10 GROUP BY payload:tag ORDER BY total DESC LIMIT 2",
-            )
-            .await?;
+        let dataframe = ctx.sql(sql::scan::aggregates::TAG_FACET_WITH_FILTER.sql).await?;
         let plan = dataframe.clone().create_physical_plan().await?;
         let display =
             datafusion::physical_plan::displayable(plan.as_ref()).indent(true).to_string();
@@ -3119,8 +3256,7 @@ error: {err}"
         let ctx = SessionContext::new();
         drop(ctx.register_table("vectors", Arc::new(table_provider))?);
 
-        let batches =
-            ctx.sql("SELECT id, payload, vector FROM vectors ORDER BY id").await?.collect().await?;
+        let batches = ctx.sql(sql::scan::projection::UNNAMED_FULL.sql).await?.collect().await?;
         let batch = batches.into_iter().next().expect("single batch");
         let schema = batch.schema();
 

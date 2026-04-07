@@ -1,6 +1,6 @@
 # Capability Matrix
 
-Last updated: 2026-04-06
+Last updated: 2026-04-07
 
 ## Purpose
 
@@ -16,7 +16,8 @@ This file is the canonical scope and sufficiency map for `qdrant-datafusion`.
 
 | Area | Capability | Status | Notes |
 |---|---|---|---|
-| Governance | compaction-safe docs and tracker | Implemented | `docs/README.md`, `docs/DECISIONS.md`, `docs/CAPABILITY_MATRIX.md`, `docs/EXECUTION_TRACKER.md`, and `docs/STATUS.md` are the internal planning baseline. |
+| Governance | compaction-safe docs and tracker | Implemented | `docs/README.md`, `docs/DECISIONS.md`, `docs/CAPABILITY_MATRIX.md`, `docs/ADMISSION_MATRIX.md`, `docs/EXECUTION_TRACKER.md`, and `docs/STATUS.md` are the internal planning baseline. |
+| Governance | explicit admission/fallback inventory | Implemented | `docs/ADMISSION_MATRIX.md` is now the canonical inventory of exact-only, residual-capable, local-fallback, remote-only, and strict-for-now behavior across the major semantic families. |
 | Dependency surface | single compatible `DataFusion` graph | Implemented | `Cargo.toml` stays aligned to the same `DataFusion` revision as `ndatafusion`. |
 | Dependency surface | current `qdrant-client` line | Implemented | Baseline scan code uses the current `qdrant-client` APIs only. |
 | Dependency surface | current `ndarrow` line | Implemented | The crate is aligned to `ndarrow 0.0.4`. |
@@ -54,6 +55,7 @@ This file is the canonical scope and sufficiency map for `qdrant-datafusion`.
 | UDF/UDAF/UDTF surface | `Qdrant`-specific SQL helpers | Partial | The crate now exposes `qdrant_nearest_score(...)` as a marker UDF for nearest retrieval planning plus the public typed `payload(...)` helper for payload scalar access. Broader helper surface remains intentionally deferred. |
 | Planner integration | query rewriting / tree visitors / custom planning | Partial | A unified relation-pushdown analyzer / extension-planner scaffold now owns the current exact single-source `COUNT(*)` and exact scalar-facet grouped-count replacement path, classifies subtree source / topology / composition plus exact-kernel placement explicitly for later island expansion, rewrites direct scan-path `payload:<path>` projections to typed local payload accessors when the source payload schema is authoritative, rewrites four concrete `mergeable` multi-branch cases (`UNION ALL`, `UNION DISTINCT`, `INTERSECT DISTINCT`, `EXCEPT DISTINCT` over admitted raw same-collection branches) to one filtered scan, composes those extracted child kernels upward into exact `COUNT(*)` and exact scalar-facet replacements in the same analyzer pass, and now drops redundant `DISTINCT` over raw full-row `Qdrant` scans because row identity already includes unique `id`. Raw unhinted arithmetic over `payload:<path>` still requires `payload(...)` or an explicit `CAST(...)` because SQL planning sees raw `:` as `Utf8` before qdrant-specific rewrites run. Broader planner-layer capability expansion is still deferred. |
 | Validation | end-to-end scan tests on current baseline | Implemented | Integration tests cover canonical carriers, nullable heterogeneous scans, non-truncated full scans, and raw ordered-scroll runtime contracts. |
+| Validation | reviewable SQL query catalogs | Implemented | `tests/catalog/mod.rs` now mirrors the supported and unsupported SQL inventories consumed by `tests/e2e.rs` and `tests/unsupported_e2e.rs`, including explicit subquery inventory per namespace plus broader `CTE`, `UNION ALL`, `UNNEST`, `WINDOW`, and non-`FULL OUTER JOIN` SQL coverage where those forms materially interact with qdrant admission behavior. Catalog growth is explicitly SQL-space-first, with code-gap audit used secondarily to explain exposed failures, and unsupported entries are explicitly classified as `Deferred`, `ByDesign`, `Upstream`, or `InvalidInput`. |
 | Documentation | public docs aligned with current tree | Implemented | Root README, tracker docs, and repository notes describe the admitted baseline only. |
 
 ## Sufficiency Verdict

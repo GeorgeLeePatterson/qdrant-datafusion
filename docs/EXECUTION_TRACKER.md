@@ -1,6 +1,6 @@
 # Execution Tracker
 
-Last updated: 2026-04-06
+Last updated: 2026-04-07
 
 ## Purpose
 
@@ -290,6 +290,21 @@ Use it to resume work without replaying the full repository history.
     - `payload_text_match(payload:<path>, 'query')` now lowers exactly to Qdrant text-match filters on text-indexed payload fields
     - `payload_phrase_match(payload:<path>, 'phrase')` now lowers exactly to Qdrant phrase-match filters only when the text index enables phrase support
     - both predicates stay explicit remote-only SQL surfaces because exact local execution would have to duplicate Qdrant tokenizer, stopword, and stemming semantics
+50. `Q-053`: admission-mode tracking and SQL inventory tracking are now explicit and separate from feature tracking.
+    - `docs/ADMISSION_MATRIX.md` is now the canonical inventory of exact-only, exact-plus-residual, local-fallback, remote-only, and strict-for-now behavior
+    - shared strictness inherited through common recognizers or helpers is now expected to be visible there instead of remaining implicit in code
+    - `tests/catalog/mod.rs` now mirrors supported / unsupported SQL catalogs consumed by `tests/e2e.rs` and `tests/unsupported_e2e.rs`, so capability movement can be reviewed directly from query inventory
+51. `Q-054`: the supported / unsupported SQL catalogs now act as the namespace inventory rather than a thin sample set.
+    - major supported and unsupported namespaces now carry explicit subquery-shaped cases
+    - broader SQL syntax families such as `CTE`, `UNION ALL`, `UNNEST`, `WINDOW`, and non-`FULL OUTER JOIN` composition are now represented where they materially interact with qdrant admission behavior
+    - `tests/e2e.rs` and `tests/unsupported_e2e.rs` now exercise those catalog additions directly instead of leaving them as unconsumed inventory
+    - catalog expansion is now explicitly SQL-space-first: the inventories should grow by stretching the admitted and deferred SQL surface broadly, with code-gap audit used only to explain failures after the catalog exposes them
+    - unsupported inventory is now explicitly classified per query as `Deferred`, `ByDesign`, `Upstream`, or `InvalidInput`, so the reference surface distinguishes “not yet”, “not intended”, and “not our limitation”
+52. `Q-055`: remote facet/count aggregate subqueries still have one unresolved local-shell gap.
+    - outer local window execution over some remote facet/count aggregate subqueries still leaves residual `payload:<path>` expressions too late in execution
+    - local `HAVING` above the current remote facet/count aggregate path is also still unresolved in the same family
+    - the concrete tracked failing shapes are represented in `tests/catalog/mod.rs::unsupported::scan::aggregates::WINDOW_OVER_FACET_SUBQUERY` and `tests/catalog/mod.rs::unsupported::scan::aggregates::HAVING_FACET`
+    - this is tracked as a local-shell threading gap, not as a reason to narrow the SQL inventory
 
 ## Next
 
@@ -303,11 +318,20 @@ Use it to resume work without replaying the full repository history.
    - current retrieval kernels now also allow omitted projected `ORDER BY score DESC`, deferring to Qdrant's native result order unless SQL specifies a local re-sort
 4. `Q-020`: Extend the predicate algebra only where the SQL semantics are explicit.
    - nested, geo bbox/polygon, text-any, and broader count-oriented predicates beyond the current explicit `payload_is_empty(...)`, `payload_values_count(...)`, `payload_geo_distance(...) <= radius`, `payload_text_match(...)`, and `payload_phrase_match(...)` subset
-5. Continue mapping the pushdown model onto `DataFusion`’s own idioms where broader traversal is required.
+5. Keep the new admission/fallback catalog current as behavior widens.
+   - move shared strictness out of scattered implicit notes and into `docs/ADMISSION_MATRIX.md`
+   - when a path is strict-for-now, track the affected consumers and the intended widening there
+6. Keep the shared supported / unsupported SQL catalogs current as behavior widens.
+   - new admitted SQL should land in `tests/catalog/mod.rs::supported` and be consumed by `tests/e2e.rs`
+   - new deferred SQL should land in `tests/catalog/mod.rs::unsupported` and be exercised by `tests/unsupported_e2e.rs` until it migrates to the supported side
+   - if an unsupported catalog query starts passing, move it to the supported side instead of weakening the unsupported assertion or leaving stale deferred inventory behind
+   - treat the catalogs as the namespace inventory, not a sample appendix: major namespaces should expose subquery-shaped SQL and any broader syntax families that materially affect admission behavior
+   - expand the catalogs from the SQL space outward first, not from the current code gaps inward
+7. Continue mapping the pushdown model onto `DataFusion`’s own idioms where broader traversal is required.
    - `TreeNode` visitors / rewriters instead of ad hoc recursion
    - `LogicalPlan` expression and subquery helpers before project-local traversal
    - exact admission of broader filter families and aggregate-like shapes instead of ad hoc expression splitting
-6. Extend the planner scaffold beyond the current explicit classifier set toward richer island composition and kernel extraction.
+8. Extend the planner scaffold beyond the current explicit classifier set toward richer island composition and kernel extraction.
    - source-set ownership over larger plan regions
    - widen `mergeable` only with explicit algebraic proofs such as disjointness or duplicate-elimination semantics, not collection identity alone
    - broaden `invalid` detection carefully as more remote-only surfaces are introduced
