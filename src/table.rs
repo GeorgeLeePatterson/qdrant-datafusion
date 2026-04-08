@@ -2652,6 +2652,38 @@ mod tests {
     }
 
     #[test]
+    fn physical_plan_keeps_local_window_shell_above_nearest_query_kernel() {
+        let provider = test_provider(Schema::new(vec![
+            Field::new(ID_FIELD_NAME, DataType::Utf8, false),
+            Field::new(PAYLOAD_FIELD_NAME, DataType::Utf8, true),
+            Field::new("vector", DataType::new_fixed_size_list(DataType::Float32, 2, false), true),
+        ]));
+        let ctx = QdrantSessionContext::from(SessionContext::new());
+        drop(
+            ctx.session_context()
+                .register_table("vectors", Arc::new(provider))
+                .expect("register table"),
+        );
+        let dataframe = ctx
+            .sql(
+                "SELECT id, AVG(qdrant_nearest_score(vector, 1.0, 0.0)) OVER () AS avg_score FROM \
+                 vectors",
+            )
+            .now_or_never()
+            .expect("sql future is ready")
+            .expect("dataframe");
+        let plan = dataframe
+            .create_physical_plan()
+            .now_or_never()
+            .expect("plan future is ready")
+            .expect("physical plan");
+        let display = displayable(plan.as_ref()).indent(true).to_string();
+
+        assert!(display.contains("QdrantQueryExec"), "{display}");
+        assert!(display.contains("WindowAggExec"), "{display}");
+    }
+
+    #[test]
     fn physical_plan_requests_payload_for_typed_payload_udf_query_projection() {
         let provider = test_provider(Schema::new(vec![
             Field::new(ID_FIELD_NAME, DataType::Utf8, false),

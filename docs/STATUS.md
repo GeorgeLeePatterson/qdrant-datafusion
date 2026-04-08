@@ -158,7 +158,7 @@ Current branch reality:
       - grouped execution validates that returned group ids match scalar payload values on hits
       - any outer `LIMIT` remains local above the grouped exec
     - score output is only present when projected
-    - retrieval kernels can now leave benign local projection shells, local aggregate shells, and local residual filter shells above the closed qdrant query kernel instead of requiring fully remote-only projection/filter shapes, including later score projection above those local filter shells
+    - retrieval kernels can now leave benign local projection shells, local aggregate shells, local window shells, and local residual filter shells above the closed qdrant query kernel instead of requiring fully remote-only projection/filter shapes, including later score projection above those local filter shells
     - when projected, aliases win; otherwise naming follows normal `DataFusion` expression naming
 37. Current exact `Qdrant` leaf relations now converge on one generic extracted kernel family.
     - exact count, scalar facet, and nearest retrieval all share one `QdrantKernelNode` /

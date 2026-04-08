@@ -983,6 +983,11 @@ pub(crate) mod supported {
                 "SELECT id, CASE WHEN qdrant_nearest_score(vector, 1.0, 0.0) >= 0.5 THEN 1 ELSE 0 \
                  END AS bucket FROM vectors ORDER BY id",
             );
+            pub(crate) const WINDOW_DIRECT: SqlCase = SqlCase::new(
+                "query.nearest.window_direct",
+                "SELECT id, AVG(qdrant_nearest_score(vector, 1.0, 0.0)) OVER () AS avg_score FROM \
+                 vectors",
+            );
             pub(crate) const WINDOW_OVER_SUBQUERY: SqlCase = SqlCase::new(
                 "query.nearest.window_over_subquery",
                 "SELECT id, AVG(score) OVER () AS avg_score FROM (SELECT id, \
@@ -1137,6 +1142,7 @@ pub(crate) mod supported {
                 ASC_LOCAL_SORT,
                 ABS_LOCAL_PROJECTION,
                 CASE_LOCAL_PROJECTION,
+                WINDOW_DIRECT,
                 WINDOW_OVER_SUBQUERY,
                 AGGREGATE_SUBQUERY,
                 AGGREGATE_CTE,
@@ -1187,6 +1193,10 @@ pub(crate) mod supported {
                 "query.sample.asc_local_sort",
                 "SELECT id, qdrant_sample_score() AS score FROM vectors ORDER BY score ASC LIMIT 2",
             );
+            pub(crate) const WINDOW_DIRECT: SqlCase = SqlCase::new(
+                "query.sample.window_direct",
+                "SELECT id, AVG(qdrant_sample_score()) OVER () AS avg_score FROM vectors",
+            );
             pub(crate) const WINDOW_OVER_SUBQUERY: SqlCase = SqlCase::new(
                 "query.sample.window_over_subquery",
                 "SELECT id, AVG(score) OVER () AS avg_score FROM (SELECT id, \
@@ -1214,6 +1224,7 @@ pub(crate) mod supported {
                 SUBQUERY,
                 CTE,
                 ASC_LOCAL_SORT,
+                WINDOW_DIRECT,
                 WINDOW_OVER_SUBQUERY,
                 AGGREGATE_SUBQUERY,
                 AGGREGATE_CTE,
@@ -1245,6 +1256,11 @@ pub(crate) mod supported {
                  [[0.0, 1.0]]) AS score FROM vectors) SELECT id, score FROM ranked ORDER BY score \
                  DESC LIMIT 2",
             );
+            pub(crate) const WINDOW_DIRECT: SqlCase = SqlCase::new(
+                "query.recommend.window_direct",
+                "SELECT id, AVG(qdrant_recommend_score(embedding, [[1.0, 0.0]], [[0.0, 1.0]])) \
+                 OVER () AS avg_score FROM vectors",
+            );
             pub(crate) const WINDOW_OVER_SUBQUERY: SqlCase = SqlCase::new(
                 "query.recommend.window_over_subquery",
                 "SELECT id, AVG(score) OVER () AS avg_score FROM (SELECT id, \
@@ -1272,6 +1288,7 @@ pub(crate) mod supported {
                 STRATEGY,
                 SUBQUERY,
                 CTE,
+                WINDOW_DIRECT,
                 WINDOW_OVER_SUBQUERY,
                 AGGREGATE_SUBQUERY,
                 AGGREGATE_CTE,
@@ -1299,6 +1316,11 @@ pub(crate) mod supported {
                  0.0], [0.0, 1.0]]]) AS score FROM vectors) SELECT id, score FROM ranked ORDER BY \
                  score DESC LIMIT 2",
             );
+            pub(crate) const WINDOW_DIRECT: SqlCase = SqlCase::new(
+                "query.discover.window_direct",
+                "SELECT id, AVG(qdrant_discover_score(embedding, [1.0, 0.0], [[[1.0, 0.0], [0.0, \
+                 1.0]]])) OVER () AS avg_score FROM vectors",
+            );
             pub(crate) const WINDOW_OVER_SUBQUERY: SqlCase = SqlCase::new(
                 "query.discover.window_over_subquery",
                 "SELECT id, AVG(score) OVER () AS avg_score FROM (SELECT id, \
@@ -1320,6 +1342,7 @@ pub(crate) mod supported {
                 CANONICAL,
                 SUBQUERY,
                 CTE,
+                WINDOW_DIRECT,
                 WINDOW_OVER_SUBQUERY,
                 AGGREGATE_SUBQUERY,
                 AGGREGATE_CTE,
@@ -1345,6 +1368,11 @@ pub(crate) mod supported {
                  1.0]]]) AS score FROM vectors) SELECT id, score FROM ranked ORDER BY score DESC \
                  LIMIT 2",
             );
+            pub(crate) const WINDOW_DIRECT: SqlCase = SqlCase::new(
+                "query.context.window_direct",
+                "SELECT id, AVG(qdrant_context_score(embedding, [[[1.0, 0.0], [0.0, 1.0]]])) OVER \
+                 () AS avg_score FROM vectors",
+            );
             pub(crate) const WINDOW_OVER_SUBQUERY: SqlCase = SqlCase::new(
                 "query.context.window_over_subquery",
                 "SELECT id, AVG(score) OVER () AS avg_score FROM (SELECT id, \
@@ -1366,6 +1394,7 @@ pub(crate) mod supported {
                 CANONICAL,
                 SUBQUERY,
                 CTE,
+                WINDOW_DIRECT,
                 WINDOW_OVER_SUBQUERY,
                 AGGREGATE_SUBQUERY,
                 AGGREGATE_CTE,
@@ -1391,6 +1420,11 @@ pub(crate) mod supported {
                  0.0) AS score FROM vectors) SELECT id, score FROM ranked ORDER BY score DESC \
                  LIMIT 2",
             );
+            pub(crate) const WINDOW_DIRECT: SqlCase = SqlCase::new(
+                "query.mmr.window_direct",
+                "SELECT id, AVG(qdrant_nearest_with_mmr_score(embedding, 0.9, 8, 1.0, 0.0)) OVER \
+                 () AS avg_score FROM vectors",
+            );
             pub(crate) const WINDOW_OVER_SUBQUERY: SqlCase = SqlCase::new(
                 "query.mmr.window_over_subquery",
                 "SELECT id, AVG(score) OVER () AS avg_score FROM (SELECT id, \
@@ -1412,6 +1446,7 @@ pub(crate) mod supported {
                 CANONICAL,
                 SUBQUERY,
                 CTE,
+                WINDOW_DIRECT,
                 WINDOW_OVER_SUBQUERY,
                 AGGREGATE_SUBQUERY,
                 AGGREGATE_CTE,
@@ -1439,6 +1474,12 @@ pub(crate) mod supported {
                  0.0], [struct([1.0, 0.0], 1.0), struct([0.0, 1.0], -0.5)], 1.0, 0.5, 0.25) AS \
                  score FROM vectors) SELECT id, score FROM ranked ORDER BY score DESC LIMIT 2",
             );
+            pub(crate) const WINDOW_DIRECT: SqlCase = SqlCase::new(
+                "query.relevance.window_direct",
+                "SELECT id, AVG(qdrant_relevance_feedback_score(embedding, [1.0, 0.0], \
+                 [struct([1.0, 0.0], 1.0), struct([0.0, 1.0], -0.5)], 1.0, 0.5, 0.25)) OVER () AS \
+                 avg_score FROM vectors",
+            );
             pub(crate) const WINDOW_OVER_SUBQUERY: SqlCase = SqlCase::new(
                 "query.relevance.window_over_subquery",
                 "SELECT id, AVG(score) OVER () AS avg_score FROM (SELECT id, \
@@ -1463,6 +1504,7 @@ pub(crate) mod supported {
                 CANONICAL,
                 SUBQUERY,
                 CTE,
+                WINDOW_DIRECT,
                 WINDOW_OVER_SUBQUERY,
                 AGGREGATE_SUBQUERY,
                 AGGREGATE_CTE,
@@ -2147,16 +2189,6 @@ pub(crate) mod unsupported {
 
         pub(crate) mod nearest {
             use super::UnsupportedSqlCase;
-
-            pub(crate) const WINDOW_DIRECT: UnsupportedSqlCase = UnsupportedSqlCase::new(
-                "query.nearest.window_direct",
-                "SELECT id, AVG(qdrant_nearest_score(vector, 1.0, 0.0)) OVER () AS avg_score FROM \
-                 vectors",
-                "Q-054",
-                "direct window semantics over query surfaces still do not close to a kernel or \
-                 local shell",
-                "qdrant processing must close to a kernel or stay region-owned",
-            );
             pub(crate) const WIDTH_MISMATCH: UnsupportedSqlCase = UnsupportedSqlCase::invalid(
                 "query.nearest.width_mismatch",
                 "SELECT id, qdrant_nearest_score(vector, 1.0) AS score FROM vectors ORDER BY \
@@ -2165,103 +2197,37 @@ pub(crate) mod unsupported {
                 "query vector width does not match source vector width",
             );
 
-            pub(crate) const ALL: &[UnsupportedSqlCase] = &[WINDOW_DIRECT, WIDTH_MISMATCH];
+            pub(crate) const ALL: &[UnsupportedSqlCase] = &[WIDTH_MISMATCH];
         }
 
         pub(crate) mod sample {
             use super::UnsupportedSqlCase;
-
-            pub(crate) const WINDOW_DIRECT: UnsupportedSqlCase = UnsupportedSqlCase::new(
-                "query.sample.window_direct",
-                "SELECT id, AVG(qdrant_sample_score()) OVER () AS avg_score FROM vectors",
-                "Q-054",
-                "direct window semantics over query surfaces still do not close to a kernel or \
-                 local shell",
-                "qdrant processing must close to a kernel or stay region-owned",
-            );
-
-            pub(crate) const ALL: &[UnsupportedSqlCase] = &[WINDOW_DIRECT];
+            pub(crate) const ALL: &[UnsupportedSqlCase] = &[];
         }
 
         pub(crate) mod recommend {
             use super::UnsupportedSqlCase;
-
-            pub(crate) const WINDOW_DIRECT: UnsupportedSqlCase = UnsupportedSqlCase::new(
-                "query.recommend.window_direct",
-                "SELECT id, AVG(qdrant_recommend_score(embedding, [[1.0, 0.0]], [[0.0, 1.0]])) \
-                 OVER () AS avg_score FROM vectors",
-                "Q-054",
-                "direct window semantics over query surfaces still do not close to a kernel or \
-                 local shell",
-                "qdrant processing must close to a kernel or stay region-owned",
-            );
-
-            pub(crate) const ALL: &[UnsupportedSqlCase] = &[WINDOW_DIRECT];
+            pub(crate) const ALL: &[UnsupportedSqlCase] = &[];
         }
 
         pub(crate) mod discover {
             use super::UnsupportedSqlCase;
-
-            pub(crate) const WINDOW_DIRECT: UnsupportedSqlCase = UnsupportedSqlCase::new(
-                "query.discover.window_direct",
-                "SELECT id, AVG(qdrant_discover_score(embedding, [1.0, 0.0], [[[1.0, 0.0], [0.0, \
-                 1.0]]])) OVER () AS avg_score FROM vectors",
-                "Q-054",
-                "direct window semantics over query surfaces still do not close to a kernel or \
-                 local shell",
-                "qdrant processing must close to a kernel or stay region-owned",
-            );
-
-            pub(crate) const ALL: &[UnsupportedSqlCase] = &[WINDOW_DIRECT];
+            pub(crate) const ALL: &[UnsupportedSqlCase] = &[];
         }
 
         pub(crate) mod context {
             use super::UnsupportedSqlCase;
-
-            pub(crate) const WINDOW_DIRECT: UnsupportedSqlCase = UnsupportedSqlCase::new(
-                "query.context.window_direct",
-                "SELECT id, AVG(qdrant_context_score(embedding, [[[1.0, 0.0], [0.0, 1.0]]])) OVER \
-                 () AS avg_score FROM vectors",
-                "Q-054",
-                "direct window semantics over query surfaces still do not close to a kernel or \
-                 local shell",
-                "qdrant processing must close to a kernel or stay region-owned",
-            );
-
-            pub(crate) const ALL: &[UnsupportedSqlCase] = &[WINDOW_DIRECT];
+            pub(crate) const ALL: &[UnsupportedSqlCase] = &[];
         }
 
         pub(crate) mod mmr {
             use super::UnsupportedSqlCase;
-
-            pub(crate) const WINDOW_DIRECT: UnsupportedSqlCase = UnsupportedSqlCase::new(
-                "query.mmr.window_direct",
-                "SELECT id, AVG(qdrant_nearest_with_mmr_score(embedding, 0.9, 8, 1.0, 0.0)) OVER \
-                 () AS avg_score FROM vectors",
-                "Q-054",
-                "direct window semantics over query surfaces still do not close to a kernel or \
-                 local shell",
-                "qdrant processing must close to a kernel or stay region-owned",
-            );
-
-            pub(crate) const ALL: &[UnsupportedSqlCase] = &[WINDOW_DIRECT];
+            pub(crate) const ALL: &[UnsupportedSqlCase] = &[];
         }
 
         pub(crate) mod relevance {
             use super::UnsupportedSqlCase;
-
-            pub(crate) const WINDOW_DIRECT: UnsupportedSqlCase = UnsupportedSqlCase::new(
-                "query.relevance.window_direct",
-                "SELECT id, AVG(qdrant_relevance_feedback_score(embedding, [1.0, 0.0], \
-                 [struct([1.0, 0.0], 1.0), struct([0.0, 1.0], -0.5)], 1.0, 0.5, 0.25)) OVER () AS \
-                 avg_score FROM vectors",
-                "Q-054",
-                "direct window semantics over query surfaces still do not close to a kernel or \
-                 local shell",
-                "qdrant processing must close to a kernel or stay region-owned",
-            );
-
-            pub(crate) const ALL: &[UnsupportedSqlCase] = &[WINDOW_DIRECT];
+            pub(crate) const ALL: &[UnsupportedSqlCase] = &[];
         }
 
         pub(crate) mod grouped {

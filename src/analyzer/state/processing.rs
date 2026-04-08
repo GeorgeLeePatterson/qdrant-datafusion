@@ -156,6 +156,11 @@ impl ProcessingState {
         {
             return kernel_state.absorb(plan, transformed);
         }
+        if let Some(local_shell) =
+            self.op.clone().local_window_shell(self.source.clone(), &self.filters, &plan)?
+        {
+            return Ok(super::super::Analysis::new(local_shell, State::local(), true));
+        }
         if matches!(plan, LogicalPlan::SubqueryAlias(_)) {
             if let Some(local_plan) = self.op.clone().local_fallback(&self.source, &plan)? {
                 return Ok(super::super::Analysis::new(local_plan, State::local(), true));

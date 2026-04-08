@@ -327,6 +327,10 @@ Use it to resume work without replaying the full repository history.
     - the admitted exact top-facet replacement now requires `GROUP BY payload:<path> ... LIMIT N`
     - projected `ORDER BY count DESC` is optional and optimizes away as redundant because it matches qdrant facet's native top-count order
     - grouped SQL without an exact top-facet `LIMIT` now localizes cleanly instead of failing unfinished at the root
+57. `Q-058`: direct query-family window shapes now localize above closed retrieval kernels instead of remaining deferred.
+    - closed query kernels can now carry local `WindowAggExec` shells in the same way they already carry local projection, aggregate, and residual filter shells
+    - direct `AVG(qdrant_*_score(...)) OVER ()` shapes for nearest / sample / recommend / discover / context / nearest-with-MMR / relevance feedback now live in the supported SQL catalog instead of the deferred inventory
+    - the local window shell now preserves qualified input columns when it rebuilds the visible schema, so parent projections still bind honest `DataFusion` column references like `vectors.id`
 
 ## Next
 

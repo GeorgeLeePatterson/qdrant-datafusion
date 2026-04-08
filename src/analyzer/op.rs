@@ -235,6 +235,70 @@ impl QueryOp {
             .map(Some)
     }
 
+    fn local_window_shell(
+        self,
+        source: Source,
+        filters: &FiltersState,
+        plan: &LogicalPlan,
+    ) -> Result<Option<LogicalPlan>> {
+        let LogicalPlan::Window(window) = plan else {
+            return Ok(None);
+        };
+        let mut shell = LocalQueryShellBuilder::new(&self, &source, window.input.schema(), true);
+        let rewritten_window_expr = window
+            .window_expr
+            .iter()
+            .map(|expr| shell.rewrite_expr(expr))
+            .collect::<Result<Vec<_>>>()?;
+        let support_plan = LogicalPlanBuilder::from(window.input.as_ref().clone())
+            .project(shell.support_exprs(&rewritten_window_expr)?)?
+            .build()?;
+        let Some(query) = self.project(&source, &support_plan)? else {
+            return Ok(None);
+        };
+        let exact_filters = filters.exact(&source)?;
+        let kernel_plan = query_kernel_plan(
+            QueryKernel::new(source, exact_filters, query, None),
+            Arc::clone(support_plan.schema()),
+        );
+        let window_plan =
+            LogicalPlanBuilder::from(kernel_plan).window(rewritten_window_expr)?.build()?;
+        let window_plan_columns = window_plan.schema().columns();
+        let original_input_len = window.input.schema().fields().len();
+        let support_input_len = support_plan.schema().fields().len();
+        let window_output_len = window.window_expr.len();
+        let renamed_output_exprs = window_plan
+            .schema()
+            .fields()
+            .iter()
+            .enumerate()
+            .filter_map(|(index, _)| {
+                if index < original_input_len {
+                    let (qualifier, field) = window.schema.qualified_field(index);
+                    return Some(
+                        Expr::Column(window_plan_columns[index].clone())
+                            .alias_qualified(qualifier.cloned(), field.name().clone()),
+                    );
+                }
+                if index < support_input_len {
+                    return None;
+                }
+                let output_index = index - support_input_len;
+                (output_index < window_output_len).then(|| {
+                    let schema_index = original_input_len + output_index;
+                    let (qualifier, field) = window.schema.qualified_field(schema_index);
+                    Expr::Column(window_plan_columns[index].clone())
+                        .alias_qualified(qualifier.cloned(), field.name().clone())
+                })
+            })
+            .collect::<Vec<_>>();
+        LogicalPlanBuilder::from(window_plan)
+            .project(renamed_output_exprs)?
+            .build()?
+            .recompute_schema()
+            .map(Some)
+    }
+
     fn distinct_on_kernel(
         mut self,
         source: Source,
@@ -524,6 +588,18 @@ impl Op {
     ) -> Result<Option<LogicalPlan>> {
         match self {
             Self::Query(op) => op.local_aggregate_shell(source, filters, plan),
+            Self::Facet(_) => Ok(None),
+        }
+    }
+
+    pub(super) fn local_window_shell(
+        self,
+        source: Source,
+        filters: &FiltersState,
+        plan: &LogicalPlan,
+    ) -> Result<Option<LogicalPlan>> {
+        match self {
+            Self::Query(op) => op.local_window_shell(source, filters, plan),
             Self::Facet(_) => Ok(None),
         }
     }

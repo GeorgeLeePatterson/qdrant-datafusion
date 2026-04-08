@@ -76,7 +76,7 @@ canonical carrier; missing values are not imputed during scan.
   - explicit geo distance semantics through `payload_geo_distance(payload:<path>, lon, lat)`, with local numeric execution and exact scan filter pushdown for the `<= radius` subset on geo payload fields
   - explicit nested-array predicates through `payload_nested_match(payload:<path>, <predicate>)`, with exact scan filter pushdown for nested payload-array/object predicates expressed in the existing payload filter algebra
   - explicit text and phrase semantics through `payload_text_match(payload:<path>, 'query')` and `payload_phrase_match(payload:<path>, 'phrase')`, both as exact scan filter pushdown on text-indexed payload fields, with phrase matching requiring a text index that enables phrase support
-  - retrieval kernels can now leave benign local projection shells, local aggregate shells, and local residual filter shells above the closed qdrant query kernel instead of requiring fully remote-only projection/filter shapes, including later score projection above those local filter shells
+  - retrieval kernels can now leave benign local projection shells, local aggregate shells, local window shells, and local residual filter shells above the closed qdrant query kernel instead of requiring fully remote-only projection/filter shapes, including later score projection above those local filter shells
   - projected score columns follow normal `DataFusion` naming and aliasing rules
 - a unified relation-pushdown analyzer scaffold now owns the admitted planner-layer subtree
   replacements instead of relying on separate analyzer-rule ownership by convention
