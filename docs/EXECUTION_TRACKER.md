@@ -305,7 +305,8 @@ Use it to resume work without replaying the full repository history.
     - `tests/catalog/mod.rs` now mirrors supported / unsupported SQL catalogs consumed by `tests/e2e.rs` and `tests/unsupported_e2e.rs`, so capability movement can be reviewed directly from query inventory
 51. `Q-054`: the supported / unsupported SQL catalogs now act as the namespace inventory rather than a thin sample set.
     - major supported and unsupported namespaces now carry explicit subquery-shaped cases
-    - broader SQL syntax families such as `CTE`, `UNION ALL`, `UNNEST`, `WINDOW`, and non-`FULL OUTER JOIN` composition are now represented where they materially interact with qdrant admission behavior
+    - broader SQL syntax families such as `CTE`, `UNION ALL`, `UNNEST`, `WINDOW`, and explicit join matrices are now represented where they materially interact with qdrant admission behavior
+    - the mirrored SQL inventory now includes representative `INNER`, `LEFT`, `RIGHT`, `FULL`, `CROSS`, `SEMI`, and `ANTI` join forms plus `ON` / `USING` variants across scan, writes, query-kernel shells, and coordinated qdrant shapes
     - `tests/e2e.rs` and `tests/unsupported_e2e.rs` now exercise those catalog additions directly instead of leaving them as unconsumed inventory
     - catalog expansion is now explicitly SQL-space-first: the inventories should grow by stretching the admitted and deferred SQL surface broadly, with code-gap audit used only to explain failures after the catalog exposes them
     - unsupported inventory is now explicitly classified per query as `Deferred`, `ByDesign`, `Upstream`, or `InvalidInput`, so the reference surface distinguishes “not yet”, “not intended”, and “not our limitation”

@@ -45,6 +45,9 @@ That inventory should not stop at the canonical happy path. Major namespaces sho
 - explicit broader SQL syntax families such as `CTE`, `UNION ALL`, `UNNEST`, `WINDOW`, and
   non-`FULL OUTER JOIN` composition wherever those forms materially interact with qdrant admission
   behavior
+- explicit join matrices where join semantics materially affect admission or fallback behavior,
+  including `INNER`, `LEFT`, `RIGHT`, `FULL`, `CROSS`, `SEMI`, and `ANTI` forms plus representative
+  `ON` and `USING` variants where `DataFusion` admits them
 - explicit `ByDesign`, `Upstream`, or `InvalidInput` unsupported cases wherever those boundaries
   materially shape the public capability story
 

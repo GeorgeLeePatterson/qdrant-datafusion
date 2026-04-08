@@ -266,6 +266,56 @@ pub(crate) mod supported {
                  payload(payload:rank, 'Integer') AS rank FROM vectors) rhs ON lhs.id = rhs.id \
                  ORDER BY lhs.id",
             );
+            pub(crate) const INNER_JOIN_USING: SqlCase = SqlCase::new(
+                "scan.projection.inner_join_using",
+                "SELECT id FROM (SELECT id, payload(payload:rank, 'Integer') AS rank FROM \
+                 vectors) lhs JOIN (SELECT id, payload(payload:rank, 'Integer') AS rank FROM \
+                 vectors) rhs USING (id) ORDER BY id",
+            );
+            pub(crate) const RIGHT_JOIN_TYPED: SqlCase = SqlCase::new(
+                "scan.projection.right_join_typed",
+                "SELECT rhs.id, COALESCE(lhs.rank, -1) AS lhs_rank FROM (SELECT id, \
+                 payload(payload:rank, 'Integer') AS rank FROM vectors WHERE id <> '3') lhs RIGHT \
+                 JOIN (SELECT id, payload(payload:rank, 'Integer') AS rank FROM vectors) rhs ON \
+                 lhs.id = rhs.id ORDER BY rhs.id",
+            );
+            pub(crate) const FULL_JOIN_TYPED: SqlCase = SqlCase::new(
+                "scan.projection.full_join_typed",
+                "SELECT COALESCE(lhs.id, rhs.id) AS id FROM (SELECT id, payload(payload:rank, \
+                 'Integer') AS rank FROM vectors WHERE id <> '3') lhs FULL OUTER JOIN (SELECT id, \
+                 payload(payload:rank, 'Integer') AS rank FROM vectors WHERE id <> '1') rhs ON \
+                 lhs.id = rhs.id ORDER BY id",
+            );
+            pub(crate) const CROSS_JOIN_TYPED: SqlCase = SqlCase::new(
+                "scan.projection.cross_join_typed",
+                "SELECT lhs.id, rhs.rank AS rhs_rank FROM (SELECT id FROM vectors WHERE id IN \
+                 ('1', '2')) lhs CROSS JOIN (SELECT payload(payload:rank, 'Integer') AS rank FROM \
+                 vectors WHERE id IN ('1', '2')) rhs ORDER BY lhs.id, rhs_rank",
+            );
+            pub(crate) const LEFT_SEMI_JOIN_TYPED: SqlCase = SqlCase::new(
+                "scan.projection.left_semi_join_typed",
+                "SELECT lhs.id FROM (SELECT id, payload(payload:rank, 'Integer') AS rank FROM \
+                 vectors) lhs LEFT SEMI JOIN (SELECT id, payload(payload:rank, 'Integer') AS rank \
+                 FROM vectors WHERE id <> '3') rhs ON lhs.id = rhs.id ORDER BY lhs.id",
+            );
+            pub(crate) const LEFT_ANTI_JOIN_TYPED: SqlCase = SqlCase::new(
+                "scan.projection.left_anti_join_typed",
+                "SELECT lhs.id FROM (SELECT id, payload(payload:rank, 'Integer') AS rank FROM \
+                 vectors) lhs LEFT ANTI JOIN (SELECT id FROM vectors WHERE id = '2') rhs ON \
+                 lhs.id = rhs.id ORDER BY lhs.id",
+            );
+            pub(crate) const RIGHT_SEMI_JOIN_TYPED: SqlCase = SqlCase::new(
+                "scan.projection.right_semi_join_typed",
+                "SELECT rhs.id FROM (SELECT id FROM vectors WHERE id <> '3') lhs RIGHT SEMI JOIN \
+                 (SELECT id, payload(payload:rank, 'Integer') AS rank FROM vectors) rhs ON lhs.id \
+                 = rhs.id ORDER BY rhs.id",
+            );
+            pub(crate) const RIGHT_ANTI_JOIN_TYPED: SqlCase = SqlCase::new(
+                "scan.projection.right_anti_join_typed",
+                "SELECT rhs.id FROM (SELECT id FROM vectors WHERE id = '9') lhs RIGHT ANTI JOIN \
+                 (SELECT id, payload(payload:rank, 'Integer') AS rank FROM vectors) rhs ON lhs.id \
+                 = rhs.id ORDER BY rhs.id",
+            );
             pub(crate) const EMPTY_AND_COUNT_VALUES: SqlCase = SqlCase::new(
                 "scan.projection.empty_and_count_values",
                 concat!(
@@ -352,6 +402,14 @@ pub(crate) mod supported {
                 SCALAR_SUBQUERY_TYPED,
                 SELF_JOIN_TYPED,
                 LEFT_JOIN_TYPED,
+                INNER_JOIN_USING,
+                RIGHT_JOIN_TYPED,
+                FULL_JOIN_TYPED,
+                CROSS_JOIN_TYPED,
+                LEFT_SEMI_JOIN_TYPED,
+                LEFT_ANTI_JOIN_TYPED,
+                RIGHT_SEMI_JOIN_TYPED,
+                RIGHT_ANTI_JOIN_TYPED,
                 EMPTY_AND_COUNT_VALUES,
                 GEO_DISTANCE_VALUES,
                 INSERT_VERIFY,
@@ -1004,6 +1062,51 @@ pub(crate) mod supported {
                 "INSERT INTO vectors SELECT s.id, s.payload, s.vector FROM staging s JOIN staging \
                  t ON s.id = t.id",
             );
+            pub(crate) const JOIN_USING: SqlCase = SqlCase::new(
+                "writes.append.join_using",
+                "INSERT INTO vectors SELECT id, s.payload, s.vector FROM staging s JOIN staging t \
+                 USING (id)",
+            );
+            pub(crate) const LEFT_JOIN: SqlCase = SqlCase::new(
+                "writes.append.left_join",
+                "INSERT INTO vectors SELECT s.id, s.payload, s.vector FROM staging s LEFT JOIN \
+                 staging t ON s.id = t.id",
+            );
+            pub(crate) const RIGHT_JOIN: SqlCase = SqlCase::new(
+                "writes.append.right_join",
+                "INSERT INTO vectors SELECT t.id, t.payload, t.vector FROM staging s RIGHT JOIN \
+                 staging t ON s.id = t.id",
+            );
+            pub(crate) const FULL_JOIN: SqlCase = SqlCase::new(
+                "writes.append.full_join",
+                "INSERT INTO vectors SELECT s.id, s.payload, s.vector FROM staging s FULL OUTER \
+                 JOIN staging t ON s.id = t.id WHERE s.id IS NOT NULL",
+            );
+            pub(crate) const CROSS_JOIN: SqlCase = SqlCase::new(
+                "writes.append.cross_join",
+                "INSERT INTO vectors SELECT s.id, s.payload, s.vector FROM staging s CROSS JOIN \
+                 staging t WHERE s.id = t.id",
+            );
+            pub(crate) const LEFT_SEMI_JOIN: SqlCase = SqlCase::new(
+                "writes.append.left_semi_join",
+                "INSERT INTO vectors SELECT s.id, s.payload, s.vector FROM staging s LEFT SEMI \
+                 JOIN staging t ON s.id = t.id",
+            );
+            pub(crate) const LEFT_ANTI_JOIN: SqlCase = SqlCase::new(
+                "writes.append.left_anti_join",
+                "INSERT INTO vectors SELECT s.id, s.payload, s.vector FROM staging s LEFT ANTI \
+                 JOIN (SELECT id FROM staging WHERE id = '9') t ON s.id = t.id",
+            );
+            pub(crate) const RIGHT_SEMI_JOIN: SqlCase = SqlCase::new(
+                "writes.append.right_semi_join",
+                "INSERT INTO vectors SELECT t.id, t.payload, t.vector FROM (SELECT id FROM \
+                 staging WHERE id = '1') s RIGHT SEMI JOIN staging t ON s.id = t.id",
+            );
+            pub(crate) const RIGHT_ANTI_JOIN: SqlCase = SqlCase::new(
+                "writes.append.right_anti_join",
+                "INSERT INTO vectors SELECT t.id, t.payload, t.vector FROM (SELECT id FROM \
+                 staging WHERE id = '9') s RIGHT ANTI JOIN staging t ON s.id = t.id",
+            );
             pub(crate) const UNION_DISTINCT: SqlCase = SqlCase::new(
                 "writes.append.union_distinct",
                 "INSERT INTO vectors SELECT * FROM staging UNION SELECT * FROM staging",
@@ -1015,6 +1118,15 @@ pub(crate) mod supported {
                 WINDOW_SUBQUERY,
                 ORDERED_SUBQUERY,
                 JOIN,
+                JOIN_USING,
+                LEFT_JOIN,
+                RIGHT_JOIN,
+                FULL_JOIN,
+                CROSS_JOIN,
+                LEFT_SEMI_JOIN,
+                LEFT_ANTI_JOIN,
+                RIGHT_SEMI_JOIN,
+                RIGHT_ANTI_JOIN,
                 UNION_DISTINCT,
             ];
         }
@@ -1205,6 +1317,85 @@ pub(crate) mod supported {
                      vectors ORDER BY score DESC LIMIT 2) rhs ON lhs.id = rhs.id ORDER BY lhs.id"
                 ),
             );
+            pub(crate) const INNER_JOIN_USING: SqlCase = SqlCase::new(
+                "query.nearest.inner_join_using",
+                concat!(
+                    "SELECT id FROM (SELECT id, qdrant_nearest_score(vector, 1.0, 0.0) AS score \
+                     FROM vectors ORDER BY score DESC LIMIT 2) lhs ",
+                    "JOIN (SELECT id, qdrant_nearest_score(vector, 0.0, 1.0) AS score FROM \
+                     vectors ORDER BY score DESC LIMIT 2) rhs USING (id) ORDER BY id"
+                ),
+            );
+            pub(crate) const RIGHT_JOIN: SqlCase = SqlCase::new(
+                "query.nearest.right_join",
+                concat!(
+                    "SELECT rhs.id, COALESCE(lhs.score, 0.0) AS lhs_score FROM (SELECT id, \
+                     qdrant_nearest_score(vector, 1.0, 0.0) AS score FROM vectors ORDER BY score \
+                     DESC LIMIT 2) lhs ",
+                    "RIGHT JOIN (SELECT id, qdrant_nearest_score(vector, 0.0, 1.0) AS score FROM \
+                     vectors ORDER BY score DESC LIMIT 2) rhs ON lhs.id = rhs.id ORDER BY rhs.id"
+                ),
+            );
+            pub(crate) const FULL_JOIN: SqlCase = SqlCase::new(
+                "query.nearest.full_join",
+                concat!(
+                    "SELECT COALESCE(lhs.id, rhs.id) AS id FROM (SELECT id, \
+                     qdrant_nearest_score(vector, 1.0, 0.0) AS score FROM vectors ORDER BY score \
+                     DESC LIMIT 2) lhs ",
+                    "FULL OUTER JOIN (SELECT id, qdrant_nearest_score(vector, 0.0, 1.0) AS score \
+                     FROM vectors ORDER BY score DESC LIMIT 2) rhs ON lhs.id = rhs.id ORDER BY id"
+                ),
+            );
+            pub(crate) const CROSS_JOIN: SqlCase = SqlCase::new(
+                "query.nearest.cross_join",
+                concat!(
+                    "SELECT lhs.id, rhs.id AS rhs_id FROM (SELECT id, \
+                     qdrant_nearest_score(vector, 1.0, 0.0) AS score FROM vectors ORDER BY score \
+                     DESC LIMIT 2) lhs ",
+                    "CROSS JOIN (SELECT id, qdrant_nearest_score(vector, 0.0, 1.0) AS score FROM \
+                     vectors ORDER BY score DESC LIMIT 2) rhs ORDER BY lhs.id, rhs_id"
+                ),
+            );
+            pub(crate) const LEFT_SEMI_JOIN: SqlCase = SqlCase::new(
+                "query.nearest.left_semi_join",
+                concat!(
+                    "SELECT lhs.id FROM (SELECT id, qdrant_nearest_score(vector, 1.0, 0.0) AS \
+                     score FROM vectors ORDER BY score DESC LIMIT 2) lhs ",
+                    "LEFT SEMI JOIN (SELECT id, qdrant_nearest_score(vector, 0.0, 1.0) AS score \
+                     FROM vectors ORDER BY score DESC LIMIT 2) rhs ON lhs.id = rhs.id ORDER BY \
+                     lhs.id"
+                ),
+            );
+            pub(crate) const LEFT_ANTI_JOIN: SqlCase = SqlCase::new(
+                "query.nearest.left_anti_join",
+                concat!(
+                    "SELECT lhs.id FROM (SELECT id, qdrant_nearest_score(vector, 1.0, 0.0) AS \
+                     score FROM vectors ORDER BY score DESC LIMIT 2) lhs ",
+                    "LEFT ANTI JOIN (SELECT id, qdrant_nearest_score(vector, 0.0, 1.0) AS score \
+                     FROM vectors ORDER BY score DESC LIMIT 1) rhs ON lhs.id = rhs.id ORDER BY \
+                     lhs.id"
+                ),
+            );
+            pub(crate) const RIGHT_SEMI_JOIN: SqlCase = SqlCase::new(
+                "query.nearest.right_semi_join",
+                concat!(
+                    "SELECT rhs.id FROM (SELECT id, qdrant_nearest_score(vector, 1.0, 0.0) AS \
+                     score FROM vectors ORDER BY score DESC LIMIT 1) lhs ",
+                    "RIGHT SEMI JOIN (SELECT id, qdrant_nearest_score(vector, 0.0, 1.0) AS score \
+                     FROM vectors ORDER BY score DESC LIMIT 2) rhs ON lhs.id = rhs.id ORDER BY \
+                     rhs.id"
+                ),
+            );
+            pub(crate) const RIGHT_ANTI_JOIN: SqlCase = SqlCase::new(
+                "query.nearest.right_anti_join",
+                concat!(
+                    "SELECT rhs.id FROM (SELECT id, qdrant_nearest_score(vector, 1.0, 0.0) AS \
+                     score FROM vectors WHERE id = '9' ORDER BY score DESC LIMIT 1) lhs ",
+                    "RIGHT ANTI JOIN (SELECT id, qdrant_nearest_score(vector, 0.0, 1.0) AS score \
+                     FROM vectors ORDER BY score DESC LIMIT 2) rhs ON lhs.id = rhs.id ORDER BY \
+                     rhs.id"
+                ),
+            );
             pub(crate) const SCALAR_SUBQUERY_THRESHOLD: SqlCase = SqlCase::new(
                 "query.nearest.scalar_subquery_threshold",
                 "SELECT id FROM (SELECT id, qdrant_nearest_score(vector, 1.0, 0.0) AS score FROM \
@@ -1237,6 +1428,14 @@ pub(crate) mod supported {
                 EXCEPT,
                 INNER_JOIN,
                 LEFT_JOIN,
+                INNER_JOIN_USING,
+                RIGHT_JOIN,
+                FULL_JOIN,
+                CROSS_JOIN,
+                LEFT_SEMI_JOIN,
+                LEFT_ANTI_JOIN,
+                RIGHT_SEMI_JOIN,
+                RIGHT_ANTI_JOIN,
                 IN_SUBQUERY,
                 EXISTS_CORRELATED,
                 HAVING_SUBQUERY,
@@ -1842,6 +2041,18 @@ pub(crate) mod supported {
                     "ORDER BY score DESC LIMIT 2"
                 ),
             );
+            pub(crate) const RIGHT_JOIN: SqlCase = SqlCase::new(
+                "coordination.formula.right_join",
+                concat!(
+                    "SELECT sparse.id, qdrant_formula_score(dense.score + sparse.score) AS score \
+                     FROM ",
+                    "(SELECT id, qdrant_nearest_score(embedding, 1.0, 0.0) AS score FROM vectors \
+                     ORDER BY score DESC LIMIT 5) dense ",
+                    "RIGHT JOIN (SELECT id, qdrant_nearest_score(aux, 0.0, 1.0) AS score FROM \
+                     vectors ORDER BY score DESC LIMIT 5) sparse ON dense.id = sparse.id ",
+                    "ORDER BY score DESC LIMIT 2"
+                ),
+            );
 
             pub(crate) const ALL: &[SqlCase] = &[
                 WITHOUT_LIMIT,
@@ -1852,6 +2063,7 @@ pub(crate) mod supported {
                 SORT_ONLY,
                 LEFT_JOIN,
                 CROSS_JOIN,
+                RIGHT_JOIN,
             ];
         }
 
@@ -2281,8 +2493,25 @@ pub(crate) mod unsupported {
                  full-outer coordination",
                 "unsupported coordinated qdrant_fusion_score shape",
             );
+            pub(crate) const RIGHT_JOIN: UnsupportedSqlCase = UnsupportedSqlCase::new(
+                "coordination.fusion.right_join",
+                concat!(
+                    "SELECT sparse.id AS id, qdrant_fusion_score('RRF', dense.score, \
+                     sparse.score) AS score FROM ",
+                    "(SELECT id, qdrant_nearest_score(embedding, 1.0, 0.0) AS score FROM vectors \
+                     ORDER BY score DESC LIMIT 5) dense ",
+                    "RIGHT JOIN (SELECT id, qdrant_nearest_score(aux, 0.0, 1.0) AS score FROM \
+                     vectors ORDER BY score DESC LIMIT 5) sparse ON dense.id = sparse.id ",
+                    "ORDER BY score DESC LIMIT 2"
+                ),
+                "Q-038",
+                "coordinated fusion rewrite remains intentionally narrow outside admitted \
+                 full-outer coordination",
+                "unsupported coordinated qdrant_fusion_score shape",
+            );
 
-            pub(crate) const ALL: &[UnsupportedSqlCase] = &[INNER_JOIN, LEFT_JOIN, CROSS_JOIN];
+            pub(crate) const ALL: &[UnsupportedSqlCase] =
+                &[INNER_JOIN, LEFT_JOIN, CROSS_JOIN, RIGHT_JOIN];
         }
     }
 }
