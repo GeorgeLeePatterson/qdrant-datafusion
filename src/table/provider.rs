@@ -20,7 +20,7 @@ use crate::qdrant::filter::QdrantFilters;
 impl datafusion::catalog::TableProvider for QdrantTableProvider {
     fn as_any(&self) -> &dyn Any { self }
 
-    fn schema(&self) -> SchemaRef { Arc::clone(&self.schema) }
+    fn schema(&self) -> SchemaRef { self.planning_schema() }
 
     fn table_type(&self) -> TableType { TableType::Base }
 
@@ -47,8 +47,9 @@ impl datafusion::catalog::TableProvider for QdrantTableProvider {
         filters: &[Expr],
         limit: Option<usize>,
     ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+        let schema = self.planning_schema();
         let pushdown = Arc::new(QdrantScanSpec::try_new(
-            &self.schema,
+            &schema,
             &self.payload_schema,
             projection,
             filters,
@@ -76,7 +77,7 @@ impl datafusion::catalog::TableProvider for QdrantTableProvider {
         let sink = QdrantInsertSink::new(
             Arc::clone(&self.client),
             self.table.table().to_owned(),
-            Arc::clone(&self.schema),
+            self.planning_schema(),
         );
         Ok(Arc::new(DataSinkExec::new(input, Arc::new(sink), None)))
     }

@@ -140,7 +140,7 @@ Use it to resume work without replaying the full repository history.
       - `exact-children`
     - local shells around extracted child kernels are now classified separately from atomic exact kernels
     - direct scan-path `payload:<path>` projections are no longer treated as an invalid surface; they now rewrite to typed local payload accessors when the source payload schema is authoritative
-    - raw unhinted arithmetic over `payload:<path>` still fails earlier in SQL planning and currently requires `payload(...)` or an explicit `CAST(...)`
+    - known raw `payload:<path>` arithmetic and scalar-function inputs now type during SQL planning from authoritative payload-schema metadata instead of failing before qdrant-specific rewrites run
 25. `Q-028`: The planner scaffold now has a first concrete `mergeable` multi-branch state.
     - the admitted case is intentionally narrow:
       - same raw `Qdrant` collection on every branch
@@ -232,9 +232,12 @@ Use it to resume work without replaying the full repository history.
       when they lower to the same canonical payload path
     - payload-key sort pushdown now also admits order-preserving casts that preserve the same
       effective ordering over the authoritative payload scalar type
-    - raw unhinted payload arithmetic is now a mixed boundary rather than a blanket failure:
-      some scan filter and ordering contexts succeed, while direct projection / aggregate-derived
-      shapes still need earlier typing help through `payload(...)` or explicit `CAST(...)`
+    - schema metadata plus an earlier SQL-planning `ExprPlanner` now type known raw
+      `payload:<path>` references before DataFusion validates arithmetic and scalar functions, so
+      direct, subquery, CTE, union, ordering, window, and aggregate shells no longer need
+      `payload(...)` or explicit `CAST(...)` just to become numeric
+    - the remaining unsupported raw-payload SQL inventory now reflects broader SQL-shape limits
+      such as non-lateral `UNNEST`, not missing payload typing
 38. `Q-042`: Query-surface payload projections now reuse the same canonical payload resolver as
     scan filter/sort pushdown.
     - query projection admission now resolves payload outputs through authoritative payload schema

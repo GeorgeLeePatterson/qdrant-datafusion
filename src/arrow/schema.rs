@@ -9,6 +9,7 @@ use ndarrow::CsrMatrixBatchExtension;
 use qdrant_client::qdrant::{CollectionConfig, Datatype, vectors_config};
 
 use crate::error::{Error, Result};
+use crate::qdrant::QdrantPayloadSchema;
 
 pub const ID_FIELD_NAME: &str = "id";
 pub const PAYLOAD_FIELD_NAME: &str = "payload";
@@ -109,6 +110,15 @@ pub fn schema_uses_unnamed_vector_contract(schema: &Schema) -> bool {
             vector_names.len() == 1 && vector_names[0] == UNNAMED_VECTOR_FIELD_NAME
         }
     }
+}
+
+pub(crate) fn schema_with_payload_projection_metadata(
+    schema: &Schema,
+    payload_schema: &QdrantPayloadSchema,
+) -> Schema {
+    let mut metadata = schema.metadata().clone();
+    metadata.extend(payload_schema.projection_type_metadata());
+    Schema::new_with_metadata(schema.fields().clone(), metadata)
 }
 
 pub fn field_uses_unnamed_vector_contract(schema: &Schema, field: &Field) -> bool {

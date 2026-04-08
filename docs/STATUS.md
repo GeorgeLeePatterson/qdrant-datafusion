@@ -81,7 +81,7 @@ Current branch reality:
     - current admitted replacements now include exact single-source atomic relations, exact-child local shells around extracted kernels, and the current exact-children coordinated combiner subset
 28. The planner scaffold now distinguishes exact-self kernels from local shells around extracted child kernels.
     - direct scan-path `payload:<path>` projections are no longer treated as an invalid surface; they now rewrite to typed local payload accessors when the source payload schema is authoritative
-    - raw unhinted arithmetic over `payload:<path>` still fails earlier in SQL planning and currently requires `payload(...)` or an explicit `CAST(...)`
+    - known raw `payload:<path>` arithmetic and scalar-function inputs now type during SQL planning from authoritative payload-schema metadata instead of failing before qdrant-specific rewrites run
 29. The planner scaffold now has a first concrete `mergeable` multi-branch state.
     - same-collection raw `UNION ALL` branches are only classified as `mergeable` when exact filters imply pairwise-disjoint finite point-ID bounds
     - overlapping same-collection branches remain `local-compose`
@@ -174,8 +174,9 @@ Current branch reality:
     - plain scan queries can now project typed payload scalars while preserving remote filter/sort pushdown
 41. A public typed payload helper now exists for SQL planning gaps.
     - `payload(accessor, 'Type')` gives `DataFusion` a planning-time payload scalar type
-    - it currently unlocks arithmetic and similar contexts where raw `payload:<path>` would otherwise still be typed as `Utf8`
-    - raw unhinted arithmetic like `payload:rank + 1` is still intentionally deferred until an earlier SQL-planning normalization seam exists
+    - it remains useful when callers want an explicit payload scalar type, even though known raw
+      `payload:<path>` arithmetic and scalar-function inputs now type during SQL planning through
+      the earlier qdrant `ExprPlanner` seam
 42. Qdrant query-surface payload projections now reuse the same canonical payload resolver as scan filter/sort pushdown.
     - raw `payload:<path>`, public `payload(...)`, and exact casts to the authoritative payload scalar type now all resolve to the same payload-output path on qdrant query projections
     - exact cast query projections now preserve remote payload fetch and materialize typed output columns when authoritative payload metadata exists
@@ -236,7 +237,7 @@ Current branch reality:
    - datetime `order_value` currently returns integer microseconds
 8. The admitted payload SQL bridge now includes raw `payload:<path>` plus the public `payload(payload:<path>, 'Type')` helper where SQL planning needs an explicit scalar type.
    - exact scan filter and payload-key sort pushdown both reuse the same canonical payload-access recognition
-   - raw unhinted arithmetic such as `payload:rank + 1` is still intentionally deferred until an earlier SQL-planning normalization seam exists
+   - known raw `payload:<path>` arithmetic and scalar-function inputs now type during SQL planning from authoritative payload-schema metadata instead of being deferred behind `payload(...)` or explicit `CAST(...)`
 9. The admitted exact filter bridge is now a real predicate algebra over the current admitted leaves, not just conjunctive leaf pushdown.
 10. Payload-key sort exactness is now guarded by live cluster state instead of being assumed.
     - exact payload-key sort pushdown is admitted only for stable single-peer collections proven via `collection_cluster_info`

@@ -611,7 +611,8 @@ impl Op {
     ) -> Result<Option<LogicalPlan>> {
         match self {
             Self::Query(_) => Ok(None),
-            Self::Facet(_) => rewrite_typed_payload_plan(plan, source),
+            Self::Facet(_) => rewrite_typed_payload_plan(plan, source)
+                .map(|rewritten| Some(rewritten.unwrap_or_else(|| plan.clone()))),
         }
     }
 

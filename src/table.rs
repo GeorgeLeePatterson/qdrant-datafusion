@@ -21,7 +21,9 @@ pub(crate) use self::scan_spec::{
     QdrantContinuation, QdrantOrderValue, QdrantOrderedContinuation, QdrantOrdering,
     QdrantPayloadSelector, QdrantScanSpec, QdrantVectorSelector,
 };
-use crate::arrow::schema::{ID_FIELD_NAME, collection_to_arrow_schema};
+use crate::arrow::schema::{
+    ID_FIELD_NAME, collection_to_arrow_schema, schema_with_payload_projection_metadata,
+};
 use crate::error::{Error, Result};
 use crate::qdrant::QdrantPayloadSchema;
 
@@ -131,6 +133,7 @@ impl QdrantTableProvider {
         let payload_schema = Arc::new(QdrantPayloadSchema::from(info.payload_schema));
         let config = info.config.ok_or(Error::MissingCollectionInfo(collection.into()))?;
         let schema = collection_to_arrow_schema(collection, &config)?;
+        let schema = schema_with_payload_projection_metadata(&schema, &payload_schema);
         let ordered_scroll_contract = client
             .collection_cluster_info(collection)
             .await
@@ -156,17 +159,27 @@ impl QdrantTableProvider {
         self.ordered_scroll_contract
     }
 
+    pub(crate) fn planning_schema(&self) -> SchemaRef {
+        Arc::new(schema_with_payload_projection_metadata(
+            self.schema.as_ref(),
+            &self.payload_schema,
+        ))
+    }
+
     pub(crate) fn new_for_planner(
         collection: String,
         client: Arc<Qdrant>,
-        schema: SchemaRef,
+        schema: &SchemaRef,
         payload_schema: Arc<QdrantPayloadSchema>,
         ordered_scroll_contract: QdrantOrderedScrollContract,
     ) -> Self {
         Self {
             table: TableReference::bare(collection),
             client,
-            schema,
+            schema: Arc::new(schema_with_payload_projection_metadata(
+                schema.as_ref(),
+                &payload_schema,
+            )),
             payload_schema,
             ordered_scroll_contract,
         }
@@ -179,10 +192,11 @@ impl QdrantTableProvider {
         schema: Schema,
         payload_schema: QdrantPayloadSchema,
     ) -> Self {
+        let schema = Arc::new(schema);
         Self::new_for_planner(
             table.to_owned(),
             Arc::new(Qdrant::from_url("http://localhost:6334").build().expect("client")),
-            Arc::new(schema),
+            &schema,
             Arc::new(payload_schema),
             QdrantOrderedScrollContract::ExactSinglePeer,
         )
@@ -512,6 +526,16 @@ mod tests {
         }
         if let Some(projection) = plan.as_any().downcast_ref::<ProjectionExec>() {
             return qdrant_query(projection.input());
+        }
+        if let Some(limit) =
+            plan.as_any().downcast_ref::<datafusion::physical_plan::limit::GlobalLimitExec>()
+        {
+            return qdrant_query(limit.input());
+        }
+        if let Some(limit) =
+            plan.as_any().downcast_ref::<datafusion::physical_plan::limit::LocalLimitExec>()
+        {
+            return qdrant_query(limit.input());
         }
         panic!("expected qdrant query exec in plan:\n{}", displayable(plan.as_ref()).indent(true));
     }
@@ -2779,10 +2803,11 @@ mod tests {
     #[test]
     fn physical_plan_builds_qdrant_insert_sink_for_append() {
         let batch = dense_insert_batch();
+        let schema = batch.schema();
         let provider = QdrantTableProvider::new_for_planner(
             "vectors".to_owned(),
             Arc::new(Qdrant::from_url("http://localhost:6334").build().expect("client")),
-            batch.schema(),
+            &schema,
             Arc::new(QdrantPayloadSchema::default()),
             QdrantOrderedScrollContract::ExactSinglePeer,
         );

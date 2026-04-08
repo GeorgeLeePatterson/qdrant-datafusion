@@ -68,7 +68,7 @@ impl Source {
         let provider = Arc::new(QdrantTableProvider::new_for_planner(
             self.collection.clone(),
             Arc::clone(&self.client),
-            Arc::clone(&self.schema),
+            &self.schema,
             Arc::clone(&self.payload_schema),
             self.ordered_scroll_contract,
         ));

@@ -391,7 +391,92 @@ mod tests {
     use qdrant_datafusion::table::QdrantTableProvider;
     use qdrant_datafusion::test_utils::QdrantContainer;
 
-    use crate::sql_catalog::supported as sql;
+    use crate::sql_catalog::{SqlCase, supported as sql};
+
+    const SUPPORTED_SCAN_PROJECTION_CASES: &[SqlCase] = &[
+        sql::scan::projection::HINTED_PAYLOAD_ARITHMETIC,
+        sql::scan::projection::RAW_PAYLOAD_ARITHMETIC,
+        sql::scan::projection::SUBQUERY_RAW_PAYLOAD_ARITHMETIC,
+        sql::scan::projection::CTE_RAW_PAYLOAD_ARITHMETIC,
+        sql::scan::projection::UNION_ALL_RAW_PAYLOAD_ARITHMETIC,
+        sql::scan::projection::HINTED_PAYLOAD_FUNCTION,
+        sql::scan::projection::RAW_PAYLOAD_FUNCTION,
+        sql::scan::projection::RAW_PAYLOAD_DIVISION,
+        sql::scan::projection::CASE_HINTED_PAYLOAD,
+        sql::scan::projection::COALESCE_HINTED_PAYLOAD,
+        sql::scan::projection::RAW_PAYLOAD_CASE,
+        sql::scan::projection::UNION_ALL_HINTED_PAYLOAD,
+        sql::scan::projection::UNION_DISTINCT_HINTED_PAYLOAD,
+        sql::scan::projection::INTERSECT_HINTED_PAYLOAD,
+        sql::scan::projection::EXCEPT_HINTED_PAYLOAD,
+        sql::scan::projection::WINDOW_OVER_TYPED_SUBQUERY,
+        sql::scan::projection::SCALAR_SUBQUERY_TYPED,
+        sql::scan::projection::SELF_JOIN_TYPED,
+        sql::scan::projection::LEFT_JOIN_TYPED,
+        sql::scan::projection::SUBQUERY,
+        sql::scan::projection::CTE,
+        sql::scan::projection::UNNEST,
+        sql::scan::projection::WINDOW,
+    ];
+
+    const SUPPORTED_SCAN_ORDERING_CASES: &[SqlCase] = &[
+        sql::scan::ordering::HINTED_PAYLOAD_ARITHMETIC_DESC,
+        sql::scan::ordering::HINTED_PAYLOAD_FUNCTION,
+        sql::scan::ordering::CASE_HINTED_PAYLOAD,
+        sql::scan::ordering::ORDINAL_TYPED,
+        sql::scan::ordering::NULLS_LAST_TYPED,
+        sql::scan::ordering::NULLS_FIRST_TYPED,
+        sql::scan::ordering::MULTI_KEY_LOCAL,
+        sql::scan::ordering::SUBQUERY,
+        sql::scan::ordering::SUBQUERY_RAW_PAYLOAD_ARITHMETIC,
+        sql::scan::ordering::CTE_DESC,
+        sql::scan::ordering::CTE_RAW_PAYLOAD_ARITHMETIC,
+        sql::scan::ordering::WINDOW_RAW_PAYLOAD_ARITHMETIC,
+    ];
+
+    const SUPPORTED_SCAN_FILTER_CASES: &[SqlCase] = &[
+        sql::scan::filters::RAW_PAYLOAD_ARITHMETIC,
+        sql::scan::filters::SUBQUERY_RAW_PAYLOAD_ARITHMETIC,
+        sql::scan::filters::CTE_RAW_PAYLOAD_ARITHMETIC,
+        sql::scan::filters::UNION_ALL_RAW_PAYLOAD_ARITHMETIC,
+        sql::scan::filters::RAW_PAYLOAD_FUNCTION,
+        sql::scan::filters::RAW_PAYLOAD_DIVISION,
+        sql::scan::filters::HINTED_PAYLOAD_ARITHMETIC,
+        sql::scan::filters::HINTED_PAYLOAD_FUNCTION,
+        sql::scan::filters::CASE_HINTED_PAYLOAD,
+        sql::scan::filters::IN_SUBQUERY,
+        sql::scan::filters::EXISTS_CORRELATED,
+        sql::scan::filters::SCALAR_SUBQUERY,
+        sql::scan::filters::PAYLOAD_CAST_BETWEEN,
+        sql::scan::filters::TEXT_MATCH_WRAPPED,
+        sql::scan::filters::TEXT_MATCH_CASE,
+        sql::scan::filters::PHRASE_MATCH_WRAPPED,
+        sql::scan::filters::TEXT_ANY,
+        sql::scan::filters::VALUES_COUNT_GE_ONE,
+        sql::scan::filters::GEO_BBOX,
+        sql::scan::filters::GEO_POLYGON,
+        sql::scan::filters::SUBQUERY,
+        sql::scan::filters::CTE,
+        sql::scan::filters::TEXT_ANY_SUBQUERY,
+        sql::scan::filters::GEO_BBOX_SUBQUERY,
+        sql::scan::filters::GEO_POLYGON_SUBQUERY,
+    ];
+
+    const SUPPORTED_SCAN_AGGREGATE_CASES: &[SqlCase] = &[
+        sql::scan::aggregates::AVG_HINTED_PAYLOAD,
+        sql::scan::aggregates::RAW_PAYLOAD_ARITHMETIC,
+        sql::scan::aggregates::SUBQUERY_RAW_PAYLOAD_ARITHMETIC,
+        sql::scan::aggregates::CTE_RAW_PAYLOAD_ARITHMETIC,
+        sql::scan::aggregates::SUM_HINTED_PAYLOAD_ARITHMETIC,
+        sql::scan::aggregates::RAW_PAYLOAD_FUNCTION,
+        sql::scan::aggregates::RAW_PAYLOAD_DIVISION,
+        sql::scan::aggregates::CASE_HINTED_PAYLOAD,
+        sql::scan::aggregates::HAVING_LOCAL_TYPED,
+        sql::scan::aggregates::HAVING_FACET,
+        sql::scan::aggregates::WINDOW_OVER_FACET_SUBQUERY,
+        sql::scan::aggregates::SUBQUERY,
+        sql::scan::aggregates::CTE,
+    ];
 
     fn create_qdrant_client(c: &Arc<QdrantContainer>) -> Result<Qdrant> {
         Qdrant::from_url(&c.get_url()).api_key(c.get_api_key()).build().map_err(Into::into)
@@ -411,6 +496,35 @@ mod tests {
             assert_eq!(left_id, right_id, "left={left:?}, right={right:?}");
             assert_f32_eq(*left_score, *right_score);
         }
+    }
+
+    async fn assert_supported_scan_catalog_case(
+        ctx: &QdrantSessionContext,
+        case: SqlCase,
+    ) -> Result<()> {
+        let (_batches, display) =
+            assert_supported_query_collects(ctx, case.sql).await.map_err(|error| {
+                datafusion::error::DataFusionError::Execution(format!(
+                    "supported scan catalog case={} sql={} error={error}",
+                    case.id, case.sql
+                ))
+            })?;
+        assert!(
+            display.contains("QdrantScanExec")
+                || display.contains("QdrantCountExec")
+                || display.contains("QdrantFacetExec")
+                || display.contains("ProjectionExec")
+                || display.contains("AggregateExec")
+                || display.contains("SortExec")
+                || display.contains("UnnestExec")
+                || display.contains("WindowAggExec")
+                || display.contains("CrossJoinExec")
+                || display.contains("NestedLoopJoinExec"),
+            "case={} sql={} display={display}",
+            case.id,
+            case.sql,
+        );
+        Ok(())
     }
 
     async fn create_dual_vector_query_context(
@@ -1493,102 +1607,15 @@ error: {err}"
         c: Arc<QdrantContainer>,
     ) -> Result<()> {
         let ctx = create_catalog_scan_context(&c, "test_supported_scan_catalog_queries").await?;
-        let projection_cases = [
-            sql::scan::projection::HINTED_PAYLOAD_ARITHMETIC,
-            sql::scan::projection::HINTED_PAYLOAD_FUNCTION,
-            sql::scan::projection::CASE_HINTED_PAYLOAD,
-            sql::scan::projection::COALESCE_HINTED_PAYLOAD,
-            sql::scan::projection::RAW_PAYLOAD_CASE,
-            sql::scan::projection::UNION_ALL_HINTED_PAYLOAD,
-            sql::scan::projection::UNION_DISTINCT_HINTED_PAYLOAD,
-            sql::scan::projection::INTERSECT_HINTED_PAYLOAD,
-            sql::scan::projection::EXCEPT_HINTED_PAYLOAD,
-            sql::scan::projection::WINDOW_OVER_TYPED_SUBQUERY,
-            sql::scan::projection::SCALAR_SUBQUERY_TYPED,
-            sql::scan::projection::SELF_JOIN_TYPED,
-            sql::scan::projection::LEFT_JOIN_TYPED,
-            sql::scan::projection::SUBQUERY,
-            sql::scan::projection::CTE,
-            sql::scan::projection::UNNEST,
-            sql::scan::projection::WINDOW,
-        ];
-        let ordering_cases = [
-            sql::scan::ordering::HINTED_PAYLOAD_ARITHMETIC_DESC,
-            sql::scan::ordering::HINTED_PAYLOAD_FUNCTION,
-            sql::scan::ordering::CASE_HINTED_PAYLOAD,
-            sql::scan::ordering::ORDINAL_TYPED,
-            sql::scan::ordering::NULLS_LAST_TYPED,
-            sql::scan::ordering::NULLS_FIRST_TYPED,
-            sql::scan::ordering::MULTI_KEY_LOCAL,
-            sql::scan::ordering::SUBQUERY,
-            sql::scan::ordering::CTE_DESC,
-        ];
-        let filter_cases = [
-            sql::scan::filters::RAW_PAYLOAD_ARITHMETIC,
-            sql::scan::filters::SUBQUERY_RAW_PAYLOAD_ARITHMETIC,
-            sql::scan::filters::CTE_RAW_PAYLOAD_ARITHMETIC,
-            sql::scan::filters::UNION_ALL_RAW_PAYLOAD_ARITHMETIC,
-            sql::scan::filters::RAW_PAYLOAD_FUNCTION,
-            sql::scan::filters::RAW_PAYLOAD_DIVISION,
-            sql::scan::filters::HINTED_PAYLOAD_ARITHMETIC,
-            sql::scan::filters::HINTED_PAYLOAD_FUNCTION,
-            sql::scan::filters::CASE_HINTED_PAYLOAD,
-            sql::scan::filters::IN_SUBQUERY,
-            sql::scan::filters::EXISTS_CORRELATED,
-            sql::scan::filters::SCALAR_SUBQUERY,
-            sql::scan::filters::PAYLOAD_CAST_BETWEEN,
-            sql::scan::filters::TEXT_MATCH_WRAPPED,
-            sql::scan::filters::TEXT_MATCH_CASE,
-            sql::scan::filters::PHRASE_MATCH_WRAPPED,
-            sql::scan::filters::TEXT_ANY,
-            sql::scan::filters::VALUES_COUNT_GE_ONE,
-            sql::scan::filters::GEO_BBOX,
-            sql::scan::filters::GEO_POLYGON,
-            sql::scan::filters::SUBQUERY,
-            sql::scan::filters::CTE,
-            sql::scan::filters::TEXT_ANY_SUBQUERY,
-            sql::scan::filters::GEO_BBOX_SUBQUERY,
-            sql::scan::filters::GEO_POLYGON_SUBQUERY,
-        ];
-        let aggregate_cases = [
-            sql::scan::aggregates::AVG_HINTED_PAYLOAD,
-            sql::scan::aggregates::SUM_HINTED_PAYLOAD_ARITHMETIC,
-            sql::scan::aggregates::CASE_HINTED_PAYLOAD,
-            sql::scan::aggregates::HAVING_LOCAL_TYPED,
-            sql::scan::aggregates::HAVING_FACET,
-            sql::scan::aggregates::WINDOW_OVER_FACET_SUBQUERY,
-            sql::scan::aggregates::SUBQUERY,
-            sql::scan::aggregates::CTE,
-        ];
-
-        for case in projection_cases
-            .into_iter()
-            .chain(ordering_cases)
-            .chain(filter_cases)
-            .chain(aggregate_cases)
-        {
-            let (_batches, display) =
-                assert_supported_query_collects(&ctx, case.sql).await.map_err(|error| {
-                    datafusion::error::DataFusionError::Execution(format!(
-                        "supported scan catalog case={} sql={} error={error}",
-                        case.id, case.sql
-                    ))
-                })?;
-            assert!(
-                display.contains("QdrantScanExec")
-                    || display.contains("QdrantCountExec")
-                    || display.contains("QdrantFacetExec")
-                    || display.contains("ProjectionExec")
-                    || display.contains("AggregateExec")
-                    || display.contains("SortExec")
-                    || display.contains("UnnestExec")
-                    || display.contains("WindowAggExec")
-                    || display.contains("CrossJoinExec")
-                    || display.contains("NestedLoopJoinExec"),
-                "case={} sql={} display={display}",
-                case.id,
-                case.sql,
-            );
+        for cases in [
+            SUPPORTED_SCAN_PROJECTION_CASES,
+            SUPPORTED_SCAN_ORDERING_CASES,
+            SUPPORTED_SCAN_FILTER_CASES,
+            SUPPORTED_SCAN_AGGREGATE_CASES,
+        ] {
+            for &case in cases {
+                assert_supported_scan_catalog_case(&ctx, case).await?;
+            }
         }
 
         Ok(())
@@ -1973,20 +2000,20 @@ error: {err}"
                 let active = batch
                     .column(0)
                     .as_any()
-                    .downcast_ref::<StringArray>()
-                    .expect("active string array");
+                    .downcast_ref::<BooleanArray>()
+                    .expect("active bool array");
                 let totals = batch
                     .column(1)
                     .as_any()
                     .downcast_ref::<Int64Array>()
                     .expect("count int64 array");
                 (0..batch.num_rows())
-                    .map(|row| (active.value(row).to_owned(), totals.value(row)))
+                    .map(|row| (active.value(row), totals.value(row)))
                     .collect::<Vec<_>>()
             })
             .collect::<Vec<_>>();
 
-        assert_eq!(rows, vec![("true".to_owned(), 3), ("false".to_owned(), 1)]);
+        assert_eq!(rows, vec![(true, 3), (false, 1)]);
         assert!(display.contains("QdrantFacetExec"), "{display}");
         assert!(!display.contains("AggregateExec"), "{display}");
         assert!(!display.contains("SortExec"), "{display}");
@@ -2870,20 +2897,20 @@ error: {err}"
                 let ranks = batch
                     .column(0)
                     .as_any()
-                    .downcast_ref::<StringArray>()
-                    .expect("rank string array");
+                    .downcast_ref::<Int64Array>()
+                    .expect("rank int64 array");
                 let totals = batch
                     .column(1)
                     .as_any()
                     .downcast_ref::<Int64Array>()
                     .expect("count int64 array");
                 (0..batch.num_rows())
-                    .map(|row| (ranks.value(row).to_owned(), totals.value(row)))
+                    .map(|row| (ranks.value(row), totals.value(row)))
                     .collect::<Vec<_>>()
             })
             .collect::<Vec<_>>();
 
-        assert_eq!(rows, vec![("20".to_owned(), 3), ("10".to_owned(), 2)]);
+        assert_eq!(rows, vec![(20, 3), (10, 2)]);
         assert!(display.contains("QdrantFacetExec"), "{display}");
         assert!(!display.contains("AggregateExec"), "{display}");
         assert!(!display.contains("SortExec"), "{display}");

@@ -22,6 +22,8 @@ use crate::arrow::schema::PAYLOAD_FIELD_NAME;
 use crate::expr_fn::{is_payload_access_function_name, is_payload_function_name};
 use crate::table::scan_spec::QdrantPayloadOrdering;
 
+const QDRANT_PAYLOAD_TYPE_METADATA_PREFIX: &str = "qdrant.payload_type.";
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct QdrantPayloadSchema {
     fields: HashMap<String, QdrantPayloadField>,
@@ -49,6 +51,19 @@ impl QdrantPayloadField {
             QdrantPayloadField::Float => Some(DataType::Float64),
             QdrantPayloadField::Bool => Some(DataType::Boolean),
             QdrantPayloadField::Datetime => Some(DataType::Timestamp(TimeUnit::Millisecond, None)),
+            QdrantPayloadField::Geo => None,
+        }
+    }
+
+    fn projection_metadata_value(self) -> Option<&'static str> {
+        match self {
+            QdrantPayloadField::Keyword
+            | QdrantPayloadField::Text { .. }
+            | QdrantPayloadField::Uuid => Some("utf8"),
+            QdrantPayloadField::Integer { .. } => Some("int64"),
+            QdrantPayloadField::Float => Some("float64"),
+            QdrantPayloadField::Bool => Some("bool"),
+            QdrantPayloadField::Datetime => Some("timestamp_millisecond"),
             QdrantPayloadField::Geo => None,
         }
     }
@@ -378,6 +393,32 @@ impl QdrantPayloadSchema {
         self.field(&path).or_else(|| path.split('.').next().and_then(|prefix| self.field(prefix)))
     }
 
+    pub(crate) fn projection_type_metadata(&self) -> HashMap<String, String> {
+        self.fields
+            .iter()
+            .filter_map(|(path, field)| {
+                field
+                    .projection_metadata_value()
+                    .map(|value| (payload_projection_metadata_key(path), value.to_owned()))
+            })
+            .collect()
+    }
+
+    pub(crate) fn projection_data_type_from_metadata(
+        metadata: &HashMap<String, String>,
+        path: &str,
+    ) -> Option<DataType> {
+        let path = normalize_payload_schema_key(path);
+        metadata
+            .get(&payload_projection_metadata_key(&path))
+            .or_else(|| {
+                path.split('.')
+                    .next()
+                    .and_then(|prefix| metadata.get(&payload_projection_metadata_key(prefix)))
+            })
+            .and_then(|value| projection_data_type_from_metadata_value(value))
+    }
+
     pub(crate) fn ordering_for(
         &self,
         field: &str,
@@ -468,6 +509,21 @@ impl From<HashMap<String, PayloadSchemaInfo>> for QdrantPayloadSchema {
 }
 
 fn normalize_payload_schema_key(path: &str) -> String { path.replace("[]", "") }
+
+fn payload_projection_metadata_key(path: &str) -> String {
+    format!("{QDRANT_PAYLOAD_TYPE_METADATA_PREFIX}{path}")
+}
+
+fn projection_data_type_from_metadata_value(value: &str) -> Option<DataType> {
+    match value {
+        "utf8" => Some(DataType::Utf8),
+        "int64" => Some(DataType::Int64),
+        "float64" => Some(DataType::Float64),
+        "bool" => Some(DataType::Boolean),
+        "timestamp_millisecond" => Some(DataType::Timestamp(TimeUnit::Millisecond, None)),
+        _ => None,
+    }
+}
 
 fn logical_path_literal(expr: &Expr) -> Option<QdrantPayloadPath> {
     match expr.clone().unalias_nested().data {

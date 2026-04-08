@@ -4,9 +4,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::sync::Arc;
 
-use datafusion::arrow::array::{ArrayRef, Int64Array, RecordBatch, StringArray};
+use datafusion::arrow::array::{ArrayRef, BooleanArray, Int64Array, RecordBatch, StringArray};
 use datafusion::arrow::compute::SortOptions;
-use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::arrow::datatypes::{DataType, SchemaRef};
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{Result, exec_err};
 use datafusion::physical_expr::expressions::Column;
@@ -59,6 +59,105 @@ pub(crate) struct QdrantQueryGroupsExec {
     spec:       QueryGroupsKernel,
     schema:     SchemaRef,
     properties: Arc<PlanProperties>,
+}
+
+enum FacetKeyValue {
+    String(String),
+    Integer(i64),
+    Bool(bool),
+}
+
+fn facet_key_array(
+    schema: &SchemaRef,
+    op: &FacetKernel,
+    keys: Vec<FacetKeyValue>,
+) -> Result<ArrayRef> {
+    let key_field =
+        schema.fields().iter().find(|field| op.op().is_key_output_name(field.name())).ok_or_else(
+            || {
+                datafusion::error::DataFusionError::Execution(
+                    "facet kernel schema missing key output field".to_owned(),
+                )
+            },
+        )?;
+    match key_field.data_type() {
+        DataType::Utf8 => {
+            let keys = keys
+                .into_iter()
+                .map(|key| match key {
+                    FacetKeyValue::String(value) => Ok(value),
+                    FacetKeyValue::Integer(value) => Ok(value.to_string()),
+                    FacetKeyValue::Bool(value) => Ok(value.to_string()),
+                })
+                .collect::<Result<Vec<_>>>()?;
+            Ok(Arc::new(StringArray::from(keys)) as ArrayRef)
+        }
+        DataType::Int64 => {
+            let keys = keys
+                .into_iter()
+                .map(|key| {
+                    if let FacetKeyValue::Integer(value) = key {
+                        Ok(value)
+                    } else {
+                        exec_err!(
+                            "facet key type mismatch: expected Int64 output for '{}'",
+                            key_field.name()
+                        )
+                    }
+                })
+                .collect::<Result<Vec<_>>>()?;
+            Ok(Arc::new(Int64Array::from(keys)) as ArrayRef)
+        }
+        DataType::Boolean => {
+            let keys = keys
+                .into_iter()
+                .map(|key| {
+                    if let FacetKeyValue::Bool(value) = key {
+                        Ok(value)
+                    } else {
+                        exec_err!(
+                            "facet key type mismatch: expected Boolean output for '{}'",
+                            key_field.name()
+                        )
+                    }
+                })
+                .collect::<Result<Vec<_>>>()?;
+            Ok(Arc::new(BooleanArray::from(keys)) as ArrayRef)
+        }
+        data_type => exec_err!(
+            "unsupported facet key output type '{}' for '{}'",
+            data_type,
+            key_field.name()
+        ),
+    }
+}
+
+fn facet_arrays(
+    schema: &SchemaRef,
+    spec: &FacetKernel,
+    hits: Vec<qdrant_client::qdrant::FacetHit>,
+) -> Result<(ArrayRef, ArrayRef)> {
+    let mut keys = Vec::with_capacity(hits.len());
+    let mut counts = Vec::with_capacity(hits.len());
+    for hit in hits {
+        let value = hit.value.and_then(|value| value.variant).ok_or_else(|| {
+            datafusion::error::DataFusionError::Execution(
+                "Qdrant facet hit missing value".to_owned(),
+            )
+        })?;
+        let facet_value = match value {
+            facet_value::Variant::StringValue(value) => FacetKeyValue::String(value),
+            facet_value::Variant::IntegerValue(value) => FacetKeyValue::Integer(value),
+            facet_value::Variant::BoolValue(value) => FacetKeyValue::Bool(value),
+        };
+        keys.push(facet_value);
+        counts.push(i64::try_from(hit.count).map_err(|_| {
+            datafusion::error::DataFusionError::Execution(
+                "Qdrant facet count exceeds i64".to_owned(),
+            )
+        })?);
+    }
+    Ok((facet_key_array(schema, spec, keys)?, Arc::new(Int64Array::from(counts)) as ArrayRef))
 }
 
 fn expect_no_children(name: &'static str, children: &[Arc<dyn ExecutionPlan>]) -> Result<()> {
@@ -277,7 +376,7 @@ impl ExecutionPlan for QdrantFacetExec {
         let field = self.spec.op().field().clone();
         let limit = self.spec.limit();
         let schema = Arc::clone(&self.schema);
-        let op = self.spec.op().clone();
+        let spec = self.spec.clone();
         let fut = async move {
             let mut request = FacetCountsBuilder::new(collection, field.key()).exact(true);
             if let Some(filter) = filters.to_filter() {
@@ -290,35 +389,14 @@ impl ExecutionPlan for QdrantFacetExec {
                 .facet(request)
                 .await
                 .map_err(|error| datafusion::error::DataFusionError::External(Box::new(error)))?;
-            let mut keys = Vec::with_capacity(response.hits.len());
-            let mut counts = Vec::with_capacity(response.hits.len());
-            for hit in response.hits {
-                let value = hit.value.and_then(|value| value.variant).ok_or_else(|| {
-                    datafusion::error::DataFusionError::Execution(
-                        "Qdrant facet hit missing value".to_owned(),
-                    )
-                })?;
-                let facet_value = match value {
-                    facet_value::Variant::StringValue(value) => value,
-                    facet_value::Variant::IntegerValue(value) => value.to_string(),
-                    facet_value::Variant::BoolValue(value) => value.to_string(),
-                };
-                keys.push(facet_value);
-                counts.push(i64::try_from(hit.count).map_err(|_| {
-                    datafusion::error::DataFusionError::Execution(
-                        "Qdrant facet count exceeds i64".to_owned(),
-                    )
-                })?);
-            }
-            let key_array = Arc::new(StringArray::from(keys)) as ArrayRef;
-            let count_array = Arc::new(Int64Array::from(counts)) as ArrayRef;
+            let (key_array, count_array) = facet_arrays(&schema, &spec, response.hits)?;
             let columns = schema
                 .fields()
                 .iter()
                 .map(|field| {
-                    if op.is_key_output_name(field.name()) {
+                    if spec.op().is_key_output_name(field.name()) {
                         Ok(Arc::clone(&key_array))
-                    } else if op.is_count_output_name(field.name()) {
+                    } else if spec.op().is_count_output_name(field.name()) {
                         Ok(Arc::clone(&count_array))
                     } else {
                         exec_err!(

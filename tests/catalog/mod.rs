@@ -169,10 +169,38 @@ pub(crate) mod supported {
                 "SELECT id, payload(payload:rank, 'Integer') + 1 AS next_rank FROM vectors ORDER \
                  BY next_rank, id",
             );
+            pub(crate) const RAW_PAYLOAD_ARITHMETIC: SqlCase = SqlCase::new(
+                "scan.projection.raw_payload_arithmetic",
+                "SELECT payload:rank + 1 AS next_rank FROM vectors ORDER BY id",
+            );
+            pub(crate) const SUBQUERY_RAW_PAYLOAD_ARITHMETIC: SqlCase = SqlCase::new(
+                "scan.projection.subquery_raw_payload_arithmetic",
+                "SELECT next_rank FROM (SELECT payload:rank + 1 AS next_rank FROM vectors) \
+                 projected ORDER BY next_rank",
+            );
+            pub(crate) const CTE_RAW_PAYLOAD_ARITHMETIC: SqlCase = SqlCase::new(
+                "scan.projection.cte_raw_payload_arithmetic",
+                "WITH projected AS (SELECT payload:rank + 1 AS next_rank FROM vectors) SELECT \
+                 next_rank FROM projected ORDER BY next_rank",
+            );
+            pub(crate) const UNION_ALL_RAW_PAYLOAD_ARITHMETIC: SqlCase = SqlCase::new(
+                "scan.projection.union_all_raw_payload_arithmetic",
+                "SELECT next_rank FROM (SELECT payload:rank + 1 AS next_rank FROM vectors) a \
+                 UNION ALL SELECT next_rank FROM (SELECT payload:rank + 1 AS next_rank FROM \
+                 vectors) b",
+            );
             pub(crate) const HINTED_PAYLOAD_FUNCTION: SqlCase = SqlCase::new(
                 "scan.projection.hinted_payload_function",
                 "SELECT id, ABS(payload(payload:rank, 'Integer') - 15) AS rank_distance FROM \
                  vectors ORDER BY rank_distance, id",
+            );
+            pub(crate) const RAW_PAYLOAD_FUNCTION: SqlCase = SqlCase::new(
+                "scan.projection.raw_payload_function",
+                "SELECT ABS(payload:rank) AS abs_rank FROM vectors ORDER BY id",
+            );
+            pub(crate) const RAW_PAYLOAD_DIVISION: SqlCase = SqlCase::new(
+                "scan.projection.raw_payload_division",
+                "SELECT payload:rank / 2 AS half_rank FROM vectors ORDER BY id",
             );
             pub(crate) const CASE_HINTED_PAYLOAD: SqlCase = SqlCase::new(
                 "scan.projection.case_hinted_payload",
@@ -306,7 +334,13 @@ pub(crate) mod supported {
                 UNNAMED_FULL,
                 TYPED_PAYLOAD_FIELDS,
                 HINTED_PAYLOAD_ARITHMETIC,
+                RAW_PAYLOAD_ARITHMETIC,
+                SUBQUERY_RAW_PAYLOAD_ARITHMETIC,
+                CTE_RAW_PAYLOAD_ARITHMETIC,
+                UNION_ALL_RAW_PAYLOAD_ARITHMETIC,
                 HINTED_PAYLOAD_FUNCTION,
+                RAW_PAYLOAD_FUNCTION,
+                RAW_PAYLOAD_DIVISION,
                 CASE_HINTED_PAYLOAD,
                 COALESCE_HINTED_PAYLOAD,
                 RAW_PAYLOAD_CASE,
@@ -405,10 +439,25 @@ pub(crate) mod supported {
                 "SELECT id FROM (SELECT id, payload:rank AS rank FROM vectors) ordered ORDER BY \
                  rank",
             );
+            pub(crate) const SUBQUERY_RAW_PAYLOAD_ARITHMETIC: SqlCase = SqlCase::new(
+                "scan.ordering.subquery_raw_payload_arithmetic",
+                "SELECT id FROM (SELECT id, payload:rank + 1 AS sort_key FROM vectors) ranked \
+                 ORDER BY sort_key",
+            );
             pub(crate) const CTE_DESC: SqlCase = SqlCase::new(
                 "scan.ordering.cte_desc",
                 "WITH ordered AS (SELECT id, payload:rank AS rank FROM vectors) SELECT id FROM \
                  ordered ORDER BY rank DESC",
+            );
+            pub(crate) const CTE_RAW_PAYLOAD_ARITHMETIC: SqlCase = SqlCase::new(
+                "scan.ordering.cte_raw_payload_arithmetic",
+                "WITH ranked AS (SELECT id, payload:rank + 1 AS sort_key FROM vectors) SELECT id \
+                 FROM ranked ORDER BY sort_key",
+            );
+            pub(crate) const WINDOW_RAW_PAYLOAD_ARITHMETIC: SqlCase = SqlCase::new(
+                "scan.ordering.window_raw_payload_arithmetic",
+                "SELECT id, ROW_NUMBER() OVER (ORDER BY payload:rank + 1) AS row_num FROM vectors \
+                 ORDER BY id",
             );
 
             pub(crate) const ALL: &[SqlCase] = &[
@@ -427,7 +476,10 @@ pub(crate) mod supported {
                 MULTI_KEY_LOCAL,
                 MIXED_LOCAL_RAW_PAYLOAD_SECONDARY,
                 SUBQUERY,
+                SUBQUERY_RAW_PAYLOAD_ARITHMETIC,
                 CTE_DESC,
+                CTE_RAW_PAYLOAD_ARITHMETIC,
+                WINDOW_RAW_PAYLOAD_ARITHMETIC,
             ];
         }
 
@@ -807,9 +859,31 @@ pub(crate) mod supported {
                 "scan.aggregates.avg_hinted_payload",
                 "SELECT AVG(payload(payload:rank, 'Integer')) AS avg_rank FROM vectors",
             );
+            pub(crate) const RAW_PAYLOAD_ARITHMETIC: SqlCase = SqlCase::new(
+                "scan.aggregates.raw_payload_arithmetic",
+                "SELECT SUM(payload:rank + 1) AS total FROM vectors",
+            );
+            pub(crate) const SUBQUERY_RAW_PAYLOAD_ARITHMETIC: SqlCase = SqlCase::new(
+                "scan.aggregates.subquery_raw_payload_arithmetic",
+                "SELECT AVG(next_rank) AS total FROM (SELECT payload:rank + 1 AS next_rank FROM \
+                 vectors) ranked",
+            );
+            pub(crate) const CTE_RAW_PAYLOAD_ARITHMETIC: SqlCase = SqlCase::new(
+                "scan.aggregates.cte_raw_payload_arithmetic",
+                "WITH ranked AS (SELECT payload:rank + 1 AS next_rank FROM vectors) SELECT \
+                 AVG(next_rank) AS total FROM ranked",
+            );
             pub(crate) const SUM_HINTED_PAYLOAD_ARITHMETIC: SqlCase = SqlCase::new(
                 "scan.aggregates.sum_hinted_payload_arithmetic",
                 "SELECT SUM(payload(payload:rank, 'Integer') + 1) AS total FROM vectors",
+            );
+            pub(crate) const RAW_PAYLOAD_FUNCTION: SqlCase = SqlCase::new(
+                "scan.aggregates.raw_payload_function",
+                "SELECT MAX(ABS(payload:rank)) AS max_rank FROM vectors",
+            );
+            pub(crate) const RAW_PAYLOAD_DIVISION: SqlCase = SqlCase::new(
+                "scan.aggregates.raw_payload_division",
+                "SELECT AVG(payload:rank / 2) AS avg_rank FROM vectors",
             );
             pub(crate) const CASE_HINTED_PAYLOAD: SqlCase = SqlCase::new(
                 "scan.aggregates.case_hinted_payload",
@@ -875,7 +949,12 @@ pub(crate) mod supported {
                 INT_FACET,
                 COUNT_RANK_GTE,
                 AVG_HINTED_PAYLOAD,
+                RAW_PAYLOAD_ARITHMETIC,
+                SUBQUERY_RAW_PAYLOAD_ARITHMETIC,
+                CTE_RAW_PAYLOAD_ARITHMETIC,
                 SUM_HINTED_PAYLOAD_ARITHMETIC,
+                RAW_PAYLOAD_FUNCTION,
+                RAW_PAYLOAD_DIVISION,
                 CASE_HINTED_PAYLOAD,
                 AVG_VALUES_COUNT,
                 SUM_NULL_AND_MISSING_FLAGS,
@@ -1849,66 +1928,15 @@ pub(crate) mod unsupported {
         pub(crate) mod projection {
             use super::UnsupportedSqlCase;
 
-            pub(crate) const RAW_PAYLOAD_ARITHMETIC: UnsupportedSqlCase = UnsupportedSqlCase::new(
-                "scan.projection.raw_payload_arithmetic",
-                "SELECT payload:rank + 1 AS next_rank FROM vectors ORDER BY id",
-                "Q-040",
-                "raw payload arithmetic still fails before qdrant-specific rewrites run",
-                "Cannot coerce arithmetic expression",
-            );
-            pub(crate) const SUBQUERY_RAW_PAYLOAD_ARITHMETIC: UnsupportedSqlCase =
-                UnsupportedSqlCase::new(
-                    "scan.projection.subquery_raw_payload_arithmetic",
-                    "SELECT next_rank FROM (SELECT payload:rank + 1 AS next_rank FROM vectors) \
-                     projected ORDER BY next_rank",
-                    "Q-040",
-                    "raw payload arithmetic still fails before qdrant-specific rewrites run",
-                    "Cannot coerce arithmetic expression",
-                );
-            pub(crate) const CTE_RAW_PAYLOAD_ARITHMETIC: UnsupportedSqlCase =
-                UnsupportedSqlCase::new(
-                    "scan.projection.cte_raw_payload_arithmetic",
-                    "WITH projected AS (SELECT payload:rank + 1 AS next_rank FROM vectors) SELECT \
-                     next_rank FROM projected ORDER BY next_rank",
-                    "Q-040",
-                    "raw payload arithmetic still fails before qdrant-specific rewrites run",
-                    "Cannot coerce arithmetic expression",
-                );
             pub(crate) const UNNEST_RAW_PAYLOAD_ARITHMETIC: UnsupportedSqlCase =
-                UnsupportedSqlCase::new(
+                UnsupportedSqlCase::upstream(
                     "scan.projection.unnest_raw_payload_arithmetic",
                     "SELECT id, item FROM vectors CROSS JOIN UNNEST([payload:rank + 1]) AS \
                      t(item) ORDER BY id",
-                    "Q-040",
                     "unnest inputs are not lateral, so raw qdrant payload expressions are not \
                      admitted there today",
                     "No field named payload",
                 );
-            pub(crate) const UNION_ALL_RAW_PAYLOAD_ARITHMETIC: UnsupportedSqlCase =
-                UnsupportedSqlCase::new(
-                    "scan.projection.union_all_raw_payload_arithmetic",
-                    "SELECT next_rank FROM (SELECT payload:rank + 1 AS next_rank FROM vectors) a \
-                     UNION ALL SELECT next_rank FROM (SELECT payload:rank + 1 AS next_rank FROM \
-                     vectors) b",
-                    "Q-040",
-                    "raw payload arithmetic still fails before qdrant-specific rewrites run",
-                    "Cannot coerce arithmetic expression",
-                );
-            pub(crate) const RAW_PAYLOAD_FUNCTION: UnsupportedSqlCase = UnsupportedSqlCase::new(
-                "scan.projection.raw_payload_function",
-                "SELECT ABS(payload:rank) AS abs_rank FROM vectors ORDER BY id",
-                "Q-040",
-                "raw payload scalar functions still fail before qdrant-specific payload typing \
-                 rewrites run",
-                "No function matches the given name and argument types 'abs(Utf8)'",
-            );
-            pub(crate) const RAW_PAYLOAD_DIVISION: UnsupportedSqlCase = UnsupportedSqlCase::new(
-                "scan.projection.raw_payload_division",
-                "SELECT payload:rank / 2 AS half_rank FROM vectors ORDER BY id",
-                "Q-040",
-                "raw payload arithmetic still fails before qdrant-specific rewrites run",
-                "Cannot coerce arithmetic expression",
-            );
             pub(crate) const TEXT_MATCH_WRAPPED_PROJECTION: UnsupportedSqlCase =
                 UnsupportedSqlCase::by_design(
                     "scan.projection.text_match_wrapped_projection",
@@ -1930,13 +1958,7 @@ pub(crate) mod unsupported {
                 );
 
             pub(crate) const ALL: &[UnsupportedSqlCase] = &[
-                RAW_PAYLOAD_ARITHMETIC,
-                SUBQUERY_RAW_PAYLOAD_ARITHMETIC,
-                CTE_RAW_PAYLOAD_ARITHMETIC,
                 UNNEST_RAW_PAYLOAD_ARITHMETIC,
-                UNION_ALL_RAW_PAYLOAD_ARITHMETIC,
-                RAW_PAYLOAD_FUNCTION,
-                RAW_PAYLOAD_DIVISION,
                 TEXT_MATCH_WRAPPED_PROJECTION,
                 TEXT_MATCH_CASE_PROJECTION,
             ];
@@ -1945,34 +1967,6 @@ pub(crate) mod unsupported {
         pub(crate) mod ordering {
             use super::UnsupportedSqlCase;
 
-            pub(crate) const SUBQUERY_RAW_PAYLOAD_ARITHMETIC: UnsupportedSqlCase =
-                UnsupportedSqlCase::new(
-                    "scan.ordering.subquery_raw_payload_arithmetic",
-                    "SELECT id FROM (SELECT id, payload:rank + 1 AS sort_key FROM vectors) ranked \
-                     ORDER BY sort_key",
-                    "Q-040",
-                    "raw payload arithmetic still fails before qdrant-specific rewrites run",
-                    "Cannot coerce arithmetic expression",
-                );
-            pub(crate) const CTE_RAW_PAYLOAD_ARITHMETIC: UnsupportedSqlCase =
-                UnsupportedSqlCase::new(
-                    "scan.ordering.cte_raw_payload_arithmetic",
-                    "WITH ranked AS (SELECT id, payload:rank + 1 AS sort_key FROM vectors) SELECT \
-                     id FROM ranked ORDER BY sort_key",
-                    "Q-040",
-                    "raw payload arithmetic still fails before qdrant-specific rewrites run",
-                    "Cannot coerce arithmetic expression",
-                );
-            pub(crate) const WINDOW_RAW_PAYLOAD_ARITHMETIC: UnsupportedSqlCase =
-                UnsupportedSqlCase::new(
-                    "scan.ordering.window_raw_payload_arithmetic",
-                    "SELECT id, ROW_NUMBER() OVER (ORDER BY payload:rank + 1) AS row_num FROM \
-                     vectors ORDER BY id",
-                    "Q-040",
-                    "window ordering over raw payload arithmetic now gets typed, but the window \
-                     output naming still does not follow the rewritten payload expression",
-                    "No field named \"row_number() ORDER BY",
-                );
             pub(crate) const REMOTE_ONLY_PREDICATE: UnsupportedSqlCase =
                 UnsupportedSqlCase::by_design(
                     "scan.ordering.remote_only_predicate",
@@ -2000,14 +1994,8 @@ pub(crate) mod unsupported {
                      ordering key, including NULLS FIRST/LAST variants",
                     "payload_text_match",
                 );
-            pub(crate) const ALL: &[UnsupportedSqlCase] = &[
-                SUBQUERY_RAW_PAYLOAD_ARITHMETIC,
-                CTE_RAW_PAYLOAD_ARITHMETIC,
-                WINDOW_RAW_PAYLOAD_ARITHMETIC,
-                REMOTE_ONLY_PREDICATE,
-                ORDER_BY_SCORE_NON_PATH,
-                TEXT_MATCH_NULLS_LAST,
-            ];
+            pub(crate) const ALL: &[UnsupportedSqlCase] =
+                &[REMOTE_ONLY_PREDICATE, ORDER_BY_SCORE_NON_PATH, TEXT_MATCH_NULLS_LAST];
         }
 
         pub(crate) mod filters {
@@ -2046,31 +2034,6 @@ pub(crate) mod unsupported {
         pub(crate) mod aggregates {
             use super::UnsupportedSqlCase;
 
-            pub(crate) const RAW_PAYLOAD_ARITHMETIC: UnsupportedSqlCase = UnsupportedSqlCase::new(
-                "scan.aggregates.raw_payload_arithmetic",
-                "SELECT SUM(payload:rank + 1) AS total FROM vectors",
-                "Q-040",
-                "raw payload arithmetic still fails before qdrant-specific rewrites run",
-                "Cannot coerce arithmetic expression",
-            );
-            pub(crate) const SUBQUERY_RAW_PAYLOAD_ARITHMETIC: UnsupportedSqlCase =
-                UnsupportedSqlCase::new(
-                    "scan.aggregates.subquery_raw_payload_arithmetic",
-                    "SELECT AVG(next_rank) AS total FROM (SELECT payload:rank + 1 AS next_rank \
-                     FROM vectors) ranked",
-                    "Q-040",
-                    "raw payload arithmetic still fails before qdrant-specific rewrites run",
-                    "Cannot coerce arithmetic expression",
-                );
-            pub(crate) const CTE_RAW_PAYLOAD_ARITHMETIC: UnsupportedSqlCase =
-                UnsupportedSqlCase::new(
-                    "scan.aggregates.cte_raw_payload_arithmetic",
-                    "WITH ranked AS (SELECT payload:rank + 1 AS next_rank FROM vectors) SELECT \
-                     AVG(next_rank) AS total FROM ranked",
-                    "Q-040",
-                    "raw payload arithmetic still fails before qdrant-specific rewrites run",
-                    "Cannot coerce arithmetic expression",
-                );
             pub(crate) const TEXT_MATCH_AGGREGATE: UnsupportedSqlCase =
                 UnsupportedSqlCase::by_design(
                     "scan.aggregates.text_match_aggregate",
@@ -2080,21 +2043,6 @@ pub(crate) mod unsupported {
                      aggregate input",
                     "payload_text_match",
                 );
-            pub(crate) const RAW_PAYLOAD_FUNCTION: UnsupportedSqlCase = UnsupportedSqlCase::new(
-                "scan.aggregates.raw_payload_function",
-                "SELECT MAX(ABS(payload:rank)) AS max_rank FROM vectors",
-                "Q-040",
-                "raw payload scalar functions still fail before qdrant-specific payload typing \
-                 rewrites run",
-                "No function matches the given name and argument types 'abs(Utf8)'",
-            );
-            pub(crate) const RAW_PAYLOAD_DIVISION: UnsupportedSqlCase = UnsupportedSqlCase::new(
-                "scan.aggregates.raw_payload_division",
-                "SELECT AVG(payload:rank / 2) AS avg_rank FROM vectors",
-                "Q-040",
-                "raw payload arithmetic still fails before qdrant-specific rewrites run",
-                "Cannot coerce arithmetic expression",
-            );
             pub(crate) const TEXT_MATCH_CASE_AGGREGATE: UnsupportedSqlCase =
                 UnsupportedSqlCase::by_design(
                     "scan.aggregates.text_match_case_aggregate",
@@ -2113,16 +2061,8 @@ pub(crate) mod unsupported {
                 "payload_text_match requires exact qdrant text-index filter pushdown",
             );
 
-            pub(crate) const ALL: &[UnsupportedSqlCase] = &[
-                RAW_PAYLOAD_ARITHMETIC,
-                SUBQUERY_RAW_PAYLOAD_ARITHMETIC,
-                CTE_RAW_PAYLOAD_ARITHMETIC,
-                RAW_PAYLOAD_FUNCTION,
-                RAW_PAYLOAD_DIVISION,
-                TEXT_MATCH_AGGREGATE,
-                TEXT_MATCH_CASE_AGGREGATE,
-                TEXT_MATCH_HAVING,
-            ];
+            pub(crate) const ALL: &[UnsupportedSqlCase] =
+                &[TEXT_MATCH_AGGREGATE, TEXT_MATCH_CASE_AGGREGATE, TEXT_MATCH_HAVING];
         }
     }
 
