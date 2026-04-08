@@ -131,7 +131,7 @@ Use it to resume work without replaying the full repository history.
       - `batchable`
       - `coordinated`
       - `local-compose`
-    - current admitted replacements still only fire for exact single-source atomic `Qdrant` relations
+    - current admitted replacements now span exact single-source atomic relations, exact-child local-shell extraction, and the current exact-children coordinated subset
 24. `Q-027`: The planner scaffold is now exact-kernel aware inside broader `Qdrant` regions.
     - subtree status now tracks kernel placement explicitly:
       - `none`
@@ -331,6 +331,10 @@ Use it to resume work without replaying the full repository history.
     - closed query kernels can now carry local `WindowAggExec` shells in the same way they already carry local projection, aggregate, and residual filter shells
     - direct `AVG(qdrant_*_score(...)) OVER ()` shapes for nearest / sample / recommend / discover / context / nearest-with-MMR / relevance feedback now live in the supported SQL catalog instead of the deferred inventory
     - the local window shell now preserves qualified input columns when it rebuilds the visible schema, so parent projections still bind honest `DataFusion` column references like `vectors.id`
+58. `Q-059`: coordinated formula / fusion no longer require an outer SQL `LIMIT` just to close.
+    - the current exact coordinated subset still requires an id-preserving `FULL OUTER JOIN USING (id)` plus effective `ORDER BY score DESC`
+    - outer `LIMIT` is now optional for both admitted `qdrant_formula_score(...)` and `qdrant_fusion_score(...)`; when SQL omits it, the coordinated remote request omits `limit` and uses Qdrant's default result count
+    - `tests/catalog/mod.rs` now tracks `coordination.formula.without_limit` and `coordination.fusion.without_limit` as supported SQL instead of leaving fusion in the deferred inventory
 
 ## Next
 

@@ -71,6 +71,10 @@ canonical carrier; missing values are not imputed during scan.
     - exact lowering currently admits one scalar keyword or lookup-capable integer payload field and one grouped query-family source among `qdrant_nearest_score(...)`, `qdrant_recommend_score(...)`, `qdrant_discover_score(...)`, or `qdrant_context_score(...)`,
       `ORDER BY payload:<path>[ DESC]` with optional trailing `, score DESC` as an explicit in-group tie-break,
       validates returned group ids against scalar payload values on hits, and keeps any outer `LIMIT` local
+  - coordinated score composition through `qdrant_formula_score(...)` and `qdrant_fusion_score(...)`
+    - exact lowering currently admits the narrow coordinated subset over retrieval relations: an id-preserving `FULL OUTER JOIN USING (id)` over admitted query-family score branches with effective `ORDER BY score DESC`
+    - outer `LIMIT` is optional; when SQL omits it, the remote coordinated request omits `limit` and uses Qdrant's default result count
+    - `qdrant_fusion_score(...)` currently admits explicit score-column inputs, while `qdrant_formula_score(...)` admits the current coordinated score arithmetic subset
   - projected `ORDER BY score DESC` is redundant and optimizes away, while projected `ORDER BY score ASC` remains a local `DataFusion` sort
   - explicit payload presence/null/missing/empty/non-empty/count semantics through `payload_exists(payload:<path>)`, `payload_is_missing(payload:<path>)`, `payload_is_null(payload:<path>)`, `payload_is_empty(payload:<path>)`, `payload_has_values(payload:<path>)`, and `payload_values_count(payload:<path>)`, all with exact scan filter pushdown and local execution
   - explicit geo distance semantics through `payload_geo_distance(payload:<path>, lon, lat)`, with local numeric execution and exact scan filter pushdown for the `<= radius` subset on geo payload fields
@@ -112,7 +116,7 @@ canonical carrier; missing values are not imputed during scan.
 - broader aggregate/grouped SQL beyond the admitted scalar-facet subset
 - fully implicit arithmetic and similar typed SQL over raw `payload:<path>` when `DataFusion` must infer the payload scalar type during SQL planning; use `payload(payload:<path>, 'Type')` or an explicit `CAST(...)` today
 - broader `Qdrant`-specific UDF, UDAF, or UDTF surface beyond the current retrieval marker UDFs and typed `payload(...)` helper
-- broader SQL-native fusion / grouped-query semantics beyond the admitted `DISTINCT ON` grouped query-family subset
+- broader SQL-native coordination / fusion / grouped-query semantics beyond the current admitted coordinated full-outer-join subset and `DISTINCT ON` grouped query-family subset
 - broader planner rewrites beyond the narrow exact `COUNT(*)` / facet slices
 
 ## Basic Usage

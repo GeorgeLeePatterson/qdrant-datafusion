@@ -87,8 +87,8 @@ This matrix is derived from:
 | Row production | score threshold | query/search builders | retrieval relation modifier | `Current` | The current nearest prototype already admits optional score-threshold predicates over `qdrant_nearest_score(...)`. |
 | Row production | search params (`ef`, exact, quantization knobs) | `SearchParams` | retrieval relation modifier / hint | `Later` | Important, but probably better as explicit parameters after the relation surface exists. |
 | Row production | read consistency / timeout / shard selector | builders | execution modifiers | `Later` | Real features, but not part of the core SQL denotation. |
-| Ranking / re-scoring | fusion (`RRF`, `DBSF`) | `Query::Fusion`, `Query::Rrf` | ranking composition over retrieval relations | `Later` | Should compose over retrieval relations, not over table scans. |
-| Ranking / re-scoring | formula query | `Query::Formula` | score-expression modifier | `Later` | This is a scoring algebra problem, not a scan problem. |
+| Ranking / re-scoring | fusion (`RRF`, `DBSF`) | `Query::Fusion`, `Query::Rrf` | ranking composition over retrieval relations | `Current` | The current coordinated fusion slice is now admitted through `qdrant_fusion_score(...)` over the narrow exact relation shape: id-preserving `FULL OUTER JOIN USING (id)` over admitted query-family score branches with effective `ORDER BY score DESC`. Outer `LIMIT` is optional; when SQL omits it, the coordinated remote request omits `limit` and uses Qdrant's default result count. Broader coordination remains later. |
+| Ranking / re-scoring | formula query | `Query::Formula` | score-expression modifier | `Current` | The current coordinated formula slice is now admitted through `qdrant_formula_score(...)` over the same narrow exact coordination contract: id-preserving `FULL OUTER JOIN USING (id)` over admitted query-family score branches with effective `ORDER BY score DESC`, plus the current coordinated score-arithmetic subset. Outer `LIMIT` is optional; when SQL omits it, the coordinated remote request omits `limit` and uses Qdrant's default result count. Broader score-expression semantics remain later. |
 | Ranking / re-scoring | relevance feedback | `Query::RelevanceFeedback` | feedback-driven ranking | `Current` | Now exposed through `qdrant_relevance_feedback_score(...)` on the prepared session surface. Exact lowering currently admits dense vector targets, feedback-item arrays using `struct(example, score)` entries, an optional `LIMIT`, and required naive strategy coefficients; when SQL omits `LIMIT`, the remote request uses Qdrant's default result count, and when SQL omits projected score ordering it uses Qdrant's native score-desc result order. Projected `ORDER BY score DESC` is redundant and optimizes away, while projected `ORDER BY score ASC` remains a local DataFusion sort. |
 | Aggregation / grouping | point count | `count` | exact `COUNT(*)`-like pushdown | `Current` | The first aggregate-like slice is now admitted through a narrow analyzer / extension-planner path over a single `Qdrant` source. It composes directly over the existing predicate algebra. |
 | Aggregation / grouping | top-facet grouped counts over one scalar payload field | `facet` | `GROUP BY payload:<path> ... LIMIT N` | `Current` | The current facet slice now admits keyword, bool, and lookup-capable integer payload indexes. Projected `ORDER BY count DESC` is optional and redundant because it matches qdrant facet's native top-count order. Facet keys still surface as `Utf8`, matching the current textual `payload:<path>` SQL bridge, so this remains intentionally narrower than general SQL grouping. Live collection introspection on the current runtime line now preserves integer lookup/range metadata well enough to keep integer facets exact on the same admission contract. |
@@ -150,7 +150,8 @@ The following are not independent top-level features. They are modifiers over re
 3. MMR
 4. relevance feedback
 
-So they should be designed only after the first retrieval relation exists.
+So they should be designed only after the first retrieval relation exists. The current fusion /
+formula subset now follows that rule by composing over retrieval relations rather than table scans.
 
 ### 4. Aggregation / grouping algebra
 
@@ -196,12 +197,10 @@ to keep the retrieval family compositional without freezing SQL syntax too early
 
 Now that the first retrieval relation exists:
 
-1. relevance feedback
-2. nearest-with-MMR
-3. fusion
-4. broader grouped retrieval
-5. formula
-6. MMR
+1. broader fusion
+2. broader grouped retrieval
+3. broader formula
+4. MMR
 
 ### Deferred from the next release
 
@@ -257,7 +256,7 @@ The scaffold now classifies a broader internal space:
 
 The currently admitted replacement subset is still intentionally narrower:
 
-1. exact single-source atomic `Qdrant` relations only
+1. exact single-source atomic relations plus the current exact-child / exact-children extraction subsets
 2. relation kinds: exact `COUNT(*)` and the first scalar-facet grouped-count subset
 3. the first explicit invalid planner surface is projection-time `payload:<path>` access in the prepared session/planner path when no admitted exact kernel owns that expression
 4. the first explicit `mergeable` multi-branch state is same-collection raw `UNION ALL`

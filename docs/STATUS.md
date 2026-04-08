@@ -78,7 +78,7 @@ Current branch reality:
     - topology class: `leaf`, `unary chain`, `unary relation change`, `multi-branch`
     - composition class: `atomic`, `mergeable`, `batchable`, `coordinated`, `local-compose`, `invalid`
     - kernel placement: `none`, `exact-self`, `exact-child`, `exact-children`
-    - current admitted replacements still remain exact single-source atomic `Qdrant` relations only
+    - current admitted replacements now include exact single-source atomic relations, exact-child local shells around extracted kernels, and the current exact-children coordinated combiner subset
 28. The planner scaffold now distinguishes exact-self kernels from local shells around extracted child kernels.
     - direct scan-path `payload:<path>` projections are no longer treated as an invalid surface; they now rewrite to typed local payload accessors when the source payload schema is authoritative
     - raw unhinted arithmetic over `payload:<path>` still fails earlier in SQL planning and currently requires `payload(...)` or an explicit `CAST(...)`

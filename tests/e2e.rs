@@ -2751,10 +2751,12 @@ error: {err}"
 
         assert_eq!(
             without_limit_display.matches("QdrantQueryExec").count(),
-            2,
+            1,
             "{without_limit_display}"
         );
-        assert!(without_limit_display.contains("HashJoinExec"), "{without_limit_display}");
+        assert!(without_limit_display.contains("prefetch=2"), "{without_limit_display}");
+        assert!(!without_limit_display.contains("JoinExec"), "{without_limit_display}");
+        assert!(!without_limit_display.contains("HashJoinExec"), "{without_limit_display}");
 
         for display in
             [&canonical_display, &alias_display, &redundant_sort_display, &alias_threaded_display]
@@ -2784,19 +2786,28 @@ error: {err}"
     pub(super) async fn test_explicit_fusion_sql_variants(c: Arc<QdrantContainer>) -> Result<()> {
         let ctx = create_dual_vector_query_context(&c, "test_explicit_fusion_sql_variants").await?;
 
+        let without_limit_sql = sql::coordination::fusion::WITHOUT_LIMIT.sql;
         let canonical_sql = sql::coordination::fusion::CANONICAL.sql;
         let alias_wrapped_sql = sql::coordination::fusion::ALIAS_WRAPPED.sql;
         let alias_threaded_sql = sql::coordination::fusion::ALIAS_THREADING.sql;
 
+        let (without_limit_rows, without_limit_display) =
+            collect_scored_rows(&ctx, without_limit_sql).await?;
         let (canonical_rows, canonical_display) = collect_scored_rows(&ctx, canonical_sql).await?;
         let (alias_rows, alias_display) = collect_scored_rows(&ctx, alias_wrapped_sql).await?;
         let (alias_threaded_rows, alias_threaded_display) =
             collect_scored_rows(&ctx, alias_threaded_sql).await?;
 
+        assert_eq!(without_limit_rows.iter().map(|(id, _)| *id).collect::<Vec<_>>(), vec![1, 2, 3]);
+        assert_f32_eq(without_limit_rows[0].1, canonical_rows[0].1);
+        assert_f32_eq(without_limit_rows[1].1, canonical_rows[1].1);
+        assert!(without_limit_rows[2].1 <= without_limit_rows[1].1);
         assert_scored_rows_eq(&canonical_rows, &alias_rows);
         assert_scored_rows_eq(&canonical_rows, &alias_threaded_rows);
 
-        for display in [&canonical_display, &alias_display, &alias_threaded_display] {
+        for display in
+            [&without_limit_display, &canonical_display, &alias_display, &alias_threaded_display]
+        {
             assert_eq!(display.matches("QdrantQueryExec").count(), 1, "{display}");
             assert!(display.contains("prefetch=2"), "{display}");
             assert!(!display.contains("JoinExec"), "{display}");

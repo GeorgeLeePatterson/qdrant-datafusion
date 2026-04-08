@@ -148,11 +148,7 @@ fn try_rewrite_combiner(plan: &LogicalPlan) -> Result<Option<LogicalPlan>> {
 }
 
 fn coordinated_candidate(plan: &LogicalPlan) -> Result<Option<CoordinatedCandidate>> {
-    let LogicalPlan::Limit(limit) = plan else {
-        return Ok(None);
-    };
-    let Some(search) = descend_to_combiner(limit.input.as_ref(), CoordinationSearch::default())?
-    else {
+    let Some(search) = descend_to_combiner(plan, CoordinationSearch::default())? else {
         return Ok(None);
     };
     let CoordinationSearch {
@@ -380,16 +376,15 @@ fn reject_unlowered_coordinated_combiners(plan: &LogicalPlan) -> Result<()> {
             plan_err!(
                 "unsupported coordinated {FORMULA_SCORE_FUNCTION_NAME} shape; admitted cases are \
                  either locally executable SQL arithmetic over resolved columns or a coordinated \
-                 remote rewrite with an effective score-desc sort, a finite LIMIT, and an \
-                 id-preserving FULL OUTER JOIN USING (id) over closed qdrant query branches"
+                 remote rewrite with an effective score-desc sort and an id-preserving FULL OUTER \
+                 JOIN USING (id) over closed qdrant query branches"
             )
         }
         Some(SurfaceCall::Query(QuerySurfaceCall::Fusion(_))) => {
             plan_err!(
                 "unsupported coordinated {FUSION_SCORE_FUNCTION_NAME} shape; coordinated rewrite \
-                 requires explicit score-column inputs, an effective score-desc sort, a finite \
-                 LIMIT, and an id-preserving FULL OUTER JOIN USING (id) over closed qdrant query \
-                 branches"
+                 requires explicit score-column inputs, an effective score-desc sort, and an \
+                 id-preserving FULL OUTER JOIN USING (id) over closed qdrant query branches"
             )
         }
         _ => Ok(()),

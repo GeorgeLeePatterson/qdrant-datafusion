@@ -1779,6 +1779,19 @@ pub(crate) mod supported {
         pub(crate) mod fusion {
             use super::SqlCase;
 
+            pub(crate) const WITHOUT_LIMIT: SqlCase = SqlCase::new(
+                "coordination.fusion.without_limit",
+                concat!(
+                    "SELECT id, qdrant_fusion_score('RRF', dense.score, sparse.score) AS score \
+                     FROM ",
+                    "(SELECT id, qdrant_nearest_score(embedding, 1.0, 0.0) AS score FROM vectors) \
+                     dense ",
+                    "FULL OUTER JOIN ",
+                    "(SELECT id, qdrant_nearest_score(aux, 0.0, 1.0) AS score FROM vectors) \
+                     sparse ",
+                    "USING (id) ORDER BY score DESC"
+                ),
+            );
             pub(crate) const CANONICAL: SqlCase = SqlCase::new(
                 "coordination.fusion.canonical",
                 concat!(
@@ -1821,7 +1834,8 @@ pub(crate) mod supported {
                 ),
             );
 
-            pub(crate) const ALL: &[SqlCase] = &[CANONICAL, ALIAS_WRAPPED, ALIAS_THREADING];
+            pub(crate) const ALL: &[SqlCase] =
+                &[WITHOUT_LIMIT, CANONICAL, ALIAS_WRAPPED, ALIAS_THREADING];
         }
     }
 }
@@ -2279,23 +2293,6 @@ pub(crate) mod unsupported {
 
         pub(crate) mod fusion {
             use super::UnsupportedSqlCase;
-
-            pub(crate) const WITHOUT_LIMIT: UnsupportedSqlCase = UnsupportedSqlCase::new(
-                "coordination.fusion.without_limit",
-                concat!(
-                    "SELECT id, qdrant_fusion_score('RRF', dense.score, sparse.score) AS score \
-                     FROM ",
-                    "(SELECT id, qdrant_nearest_score(embedding, 1.0, 0.0) AS score FROM vectors) \
-                     dense ",
-                    "FULL OUTER JOIN ",
-                    "(SELECT id, qdrant_nearest_score(aux, 0.0, 1.0) AS score FROM vectors) \
-                     sparse ",
-                    "USING (id) ORDER BY score DESC"
-                ),
-                "Q-038",
-                "coordinated fusion rewrite still requires a finite outer limit",
-                "unsupported coordinated qdrant_fusion_score shape",
-            );
             pub(crate) const INNER_JOIN: UnsupportedSqlCase = UnsupportedSqlCase::new(
                 "coordination.fusion.inner_join",
                 concat!(
@@ -2345,8 +2342,7 @@ pub(crate) mod unsupported {
                 "unsupported coordinated qdrant_fusion_score shape",
             );
 
-            pub(crate) const ALL: &[UnsupportedSqlCase] =
-                &[WITHOUT_LIMIT, INNER_JOIN, LEFT_JOIN, CROSS_JOIN];
+            pub(crate) const ALL: &[UnsupportedSqlCase] = &[INNER_JOIN, LEFT_JOIN, CROSS_JOIN];
         }
     }
 }
