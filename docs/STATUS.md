@@ -43,7 +43,8 @@ Current branch reality:
 19. Exact top-facet grouped counts are now admitted as the second aggregate-like planner slice.
     - it lowers into `Qdrant`’s native `facet` API
     - it currently requires the `Qdrant` session/planner helper
-    - it is currently limited to one admitted scalar `payload:<path>` field with `ORDER BY count DESC LIMIT N`
+    - it is currently limited to one admitted scalar `payload:<path>` field with `LIMIT N`
+    - projected `ORDER BY count DESC` is optional and now optimizes away as redundant
     - it reuses the existing provider-owned predicate algebra for admitted exact filters
 20. The root `README.md`, repo notes, and tracker docs describe only the admitted baseline.
 21. Detailed capability-expansion planning now has an explicit semantic inventory in `docs/QDRANT_COMPATIBILITY_MATRIX.md`.
@@ -248,5 +249,6 @@ Current branch reality:
     - richer composition classes beyond the first sound `mergeable` proof case
     - maximal exact kernel extraction inside larger `Qdrant` regions beyond the first raw-union, union-distinct, and raw-distinct collapses
 13. Broader grouped SQL no longer fails just because the source group key is `payload:<path>`.
-    - exact top-facet replacement still only claims `GROUP BY payload:<path> ORDER BY count DESC LIMIT N`
+    - exact top-facet replacement now claims `GROUP BY payload:<path> ... LIMIT N`
+    - projected `ORDER BY count DESC` is optional and redundant because it matches qdrant facet's native top-count order
     - when later `HAVING` or window/subquery shells leave that exact contract, the analyzer now localizes cleanly and rewrites raw payload access into executable typed local expressions

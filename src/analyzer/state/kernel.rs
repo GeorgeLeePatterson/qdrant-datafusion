@@ -92,7 +92,9 @@ impl KernelState {
                 "surface call above kernel does not match the extracted qdrant kernel",
             ));
         }
-        if query_kernel_preserves_score_desc_sort(self.spec(), &plan) {
+        if query_kernel_preserves_score_desc_sort(self.spec(), &plan)
+            || facet_kernel_preserves_count_desc_sort(self.spec(), &plan)
+        {
             return self.absorb(plan, transformed);
         }
         Ok(super::super::Analysis::new(plan, State::local(), transformed))
@@ -185,4 +187,17 @@ fn query_kernel_preserves_score_desc_sort(spec: &KernelSpec, plan: &LogicalPlan)
         sort.expr[0].expr.clone().unalias_nested().data,
         datafusion::logical_expr::Expr::Column(column) if query.query().score_output_names().contains(&column.name)
     )
+}
+
+fn facet_kernel_preserves_count_desc_sort(spec: &KernelSpec, plan: &LogicalPlan) -> bool {
+    let KernelSpec::Facet(facet) = spec else {
+        return false;
+    };
+    let LogicalPlan::Sort(sort) = plan else {
+        return false;
+    };
+    if sort.expr.len() != 1 || sort.expr[0].asc {
+        return false;
+    }
+    facet.op().preserves_count_desc_sort(&sort.expr[0].expr)
 }

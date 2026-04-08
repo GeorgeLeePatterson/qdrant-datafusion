@@ -58,7 +58,6 @@ impl AggregateSurface {
             field,
             key_outputs: OutputNames::single(aggregate.schema.field(0).name().clone()),
             count_outputs: OutputNames::single(aggregate.schema.field(1).name().clone()),
-            sorted: false,
         }))
     }
 }

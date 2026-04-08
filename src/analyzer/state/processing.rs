@@ -22,6 +22,10 @@ pub(crate) struct ProcessingState {
               surface"
 )]
 impl ProcessingState {
+    pub(crate) fn finish_root(self, plan: &LogicalPlan) -> Result<Option<LogicalPlan>> {
+        self.op.local_fallback(&self.source, plan)
+    }
+
     pub(super) fn projection(
         mut self,
         plan: LogicalPlan,

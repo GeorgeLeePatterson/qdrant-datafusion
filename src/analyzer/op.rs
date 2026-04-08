@@ -499,7 +499,6 @@ pub(crate) struct FacetOp {
     pub(super) field:         QdrantPayloadPath,
     pub(super) key_outputs:   OutputNames,
     pub(super) count_outputs: OutputNames,
-    pub(super) sorted:        bool,
 }
 
 impl FacetOp {
@@ -516,14 +515,13 @@ impl FacetOp {
         Ok(Some(self))
     }
 
-    pub(super) fn sort(mut self, plan: &LogicalPlan) -> Option<Self> {
+    pub(super) fn sort(self, plan: &LogicalPlan) -> Option<Self> {
         let LogicalPlan::Sort(sort) = plan else {
             return None;
         };
         if sort.expr.len() != 1 || sort.expr[0].asc || !self.is_count_expr(&sort.expr[0].expr) {
             return None;
         }
-        self.sorted = true;
         Some(self)
     }
 
@@ -533,15 +531,12 @@ impl FacetOp {
         filters: &FiltersState,
         plan: &LogicalPlan,
     ) -> Result<Option<KernelState>> {
-        if !self.sorted {
-            return Ok(None);
-        }
         let exact_filters = filters.exact(&source)?;
         Ok(Some(KernelState::new(KernelSpec::Facet(FacetKernel::new(
             source,
             exact_filters,
             self,
-            limit_rows(plan)?,
+            Some(limit_rows(plan)?),
         )))))
     }
 
@@ -554,6 +549,8 @@ impl FacetOp {
     pub(crate) fn is_count_output_name(&self, name: &str) -> bool {
         self.count_outputs.contains_name(name)
     }
+
+    pub(crate) fn preserves_count_desc_sort(&self, expr: &Expr) -> bool { self.is_count_expr(expr) }
 
     fn projection_expr_supported(&self, expr: &Expr) -> bool {
         self.is_key_expr(expr) || self.is_count_expr(expr)

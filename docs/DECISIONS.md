@@ -96,13 +96,14 @@ Last updated: 2026-04-07
     - exact admitted filters may still participate through the existing predicate algebra
     - this path currently requires the `Qdrant` session/planner helper rather than plain `SessionContext`
 26. The second admitted aggregate-like SQL subset is exact top-facet grouped counts over one scalar payload field with an admitted facet contract.
-    - the admitted SQL shape is `SELECT payload:<path>, COUNT(*) ... GROUP BY payload:<path> ORDER BY count DESC LIMIT N`
+    - the admitted exact replacement now requires `GROUP BY payload:<path> ... LIMIT N`
+    - projected `ORDER BY count DESC` is optional and redundant because it matches qdrant facet's native top-count order
     - the current implementation admits one grouped field only
     - the grouped field must currently be a keyword-, bool-, or lookup-capable integer-indexed payload field
     - exact admitted filters may still participate through the existing predicate algebra
     - this path also requires the `Qdrant` session/planner helper rather than plain `SessionContext`
     - facet keys still surface as `Utf8`, matching the current textual `payload:<path>` SQL bridge
-    - broader grouped SQL remains deferred because `Qdrant` facet denotes top-N grouped counts, not unconstrained SQL grouping
+    - broader grouped SQL still localizes because `Qdrant` facet denotes top-N grouped counts, not unconstrained SQL grouping
     - when broader grouped SQL leaves that exact top-facet contract, the plan should fall back to local `DataFusion` execution rather than failing; `HAVING` and window/subquery shells over `GROUP BY payload:<path>` now follow that fallback path
 27. Planner-layer subtree replacement should be owned by one `Qdrant` relation-pushdown analyzer scaffold rather than by independent analyzer rules alone.
     - separate recognizers may remain modular

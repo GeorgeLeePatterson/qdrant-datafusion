@@ -54,7 +54,14 @@ impl Analysis {
     fn finish_root(self) -> Result<Self> {
         match self.state {
             State::Fatal(state) => plan_err!("{}", state.error.message),
-            State::Processing(_) => plan_err!("unfinished qdrant region at query root"),
+            State::Processing(state) => {
+                let plan = self.transformed.data;
+                if let Some(local_plan) = state.finish_root(&plan)? {
+                    analyze_root(local_plan)
+                } else {
+                    plan_err!("unfinished qdrant region at query root")
+                }
+            }
             State::Composite(state) => analyze_root(state.finish_root(self.transformed.data)?),
             _ => Ok(self),
         }

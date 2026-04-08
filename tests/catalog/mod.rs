@@ -822,6 +822,16 @@ pub(crate) mod supported {
                 "SELECT payload:tag AS tag, COUNT(*) AS total FROM vectors WHERE payload:rank >= \
                  10 GROUP BY payload:tag ORDER BY total DESC LIMIT 2",
             );
+            pub(crate) const TAG_FACET_LIMIT_ONLY: SqlCase = SqlCase::new(
+                "scan.aggregates.tag_facet_limit_only",
+                "SELECT payload:tag AS tag, COUNT(*) AS total FROM vectors GROUP BY payload:tag \
+                 LIMIT 2",
+            );
+            pub(crate) const TAG_GROUP_LOCAL: SqlCase = SqlCase::new(
+                "scan.aggregates.tag_group_local",
+                "SELECT payload:tag AS tag, COUNT(*) AS total FROM vectors GROUP BY payload:tag \
+                 ORDER BY total DESC, tag",
+            );
             pub(crate) const HAVING_FACET: SqlCase = SqlCase::new(
                 "scan.aggregates.having_facet",
                 "SELECT payload:tag AS tag, COUNT(*) AS total FROM vectors GROUP BY payload:tag \
@@ -855,6 +865,8 @@ pub(crate) mod supported {
                 SUM_NULL_AND_MISSING_FLAGS,
                 HAVING_LOCAL_TYPED,
                 TAG_FACET_WITH_FILTER,
+                TAG_FACET_LIMIT_ONLY,
+                TAG_GROUP_LOCAL,
                 HAVING_FACET,
                 WINDOW_OVER_FACET_SUBQUERY,
                 SUBQUERY,

@@ -283,7 +283,9 @@ impl ExecutionPlan for QdrantFacetExec {
             if let Some(filter) = filters.to_filter() {
                 request = request.filter(filter);
             }
-            request = request.limit(limit);
+            if let Some(limit) = limit {
+                request = request.limit(limit);
+            }
             let response = client
                 .facet(request)
                 .await
@@ -615,7 +617,10 @@ impl DisplayAs for QdrantFacetExec {
                     self.spec.collection(),
                     self.spec.op().field().key()
                 )?;
-                write!(f, ", limit={}", self.spec.limit())
+                if let Some(limit) = self.spec.limit() {
+                    write!(f, ", limit={limit}")?;
+                }
+                Ok(())
             }
             DisplayFormatType::TreeRender => write!(f, "QdrantFacetExec"),
         }

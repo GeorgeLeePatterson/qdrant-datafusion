@@ -88,7 +88,8 @@ Use it to resume work without replaying the full repository history.
     - admitted exact filters still reuse the existing provider-owned predicate algebra
     - unsupported aggregate shapes fall back cleanly instead of pretending to be exact
 19. `Q-022`: Exact top-facet grouped counts are now admitted as the second aggregate-like planner slice.
-    - the admitted SQL subset is `GROUP BY payload:<path> ORDER BY count DESC LIMIT N`
+    - the admitted exact replacement now requires `GROUP BY payload:<path> ... LIMIT N`
+    - projected `ORDER BY count DESC` is optional and redundant because it matches qdrant facet's native top-count order
     - the grouped field is currently limited to scalar payload fields with an admitted facet contract
     - the execution path lowers into `Qdrant`’s native `facet` API
     - admitted exact filters still reuse the existing provider-owned predicate algebra
@@ -317,6 +318,10 @@ Use it to resume work without replaying the full repository history.
     - `payload_is_null(payload:<path>)` now executes locally and lowers exactly to Qdrant explicit-null predicates, separately from SQL `payload:<path> IS NULL`
     - `payload_has_values(payload:<path>)` now executes locally and lowers exactly to the positive-`values_count` subset
     - catalog and runtime coverage now prove the surrounding family together: missing, explicit null, empty, positive cardinality, and broader `payload_values_count(...)` comparison shapes
+56. `Q-056`: exact facet closure no longer requires explicit `ORDER BY count DESC`.
+    - the admitted exact top-facet replacement now requires `GROUP BY payload:<path> ... LIMIT N`
+    - projected `ORDER BY count DESC` is optional and optimizes away as redundant because it matches qdrant facet's native top-count order
+    - grouped SQL without an exact top-facet `LIMIT` now localizes cleanly instead of failing unfinished at the root
 
 ## Next
 

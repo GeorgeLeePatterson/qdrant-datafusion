@@ -13,11 +13,16 @@ pub(crate) struct FacetKernel {
     source:  Source,
     filters: QdrantFilters,
     op:      FacetOp,
-    limit:   u64,
+    limit:   Option<u64>,
 }
 
 impl FacetKernel {
-    pub(crate) fn new(source: Source, filters: QdrantFilters, op: FacetOp, limit: u64) -> Self {
+    pub(crate) fn new(
+        source: Source,
+        filters: QdrantFilters,
+        op: FacetOp,
+        limit: Option<u64>,
+    ) -> Self {
         Self { source, filters, op, limit }
     }
 
@@ -37,10 +42,10 @@ impl FacetKernel {
 
     pub(crate) fn op(&self) -> &FacetOp { &self.op }
 
-    pub(crate) fn limit(&self) -> u64 { self.limit }
+    pub(crate) fn limit(&self) -> Option<u64> { self.limit }
 
     pub(crate) fn with_limit(mut self, limit: u64) -> Self {
-        self.limit = limit;
+        self.limit = Some(limit);
         self
     }
 }
