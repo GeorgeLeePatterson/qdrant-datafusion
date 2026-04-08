@@ -39,6 +39,8 @@ pub(crate) fn integer_scalar(value: &ScalarValue) -> Option<i64> {
         ScalarValue::UInt32(Some(value)) => Some(i64::from(*value)),
         ScalarValue::UInt16(Some(value)) => Some(i64::from(*value)),
         ScalarValue::UInt8(Some(value)) => Some(i64::from(*value)),
+        ScalarValue::Float64(Some(value)) => exact_integral_f64(*value),
+        ScalarValue::Float32(Some(value)) => exact_integral_f32(*value),
         ScalarValue::Utf8(Some(value)) | ScalarValue::LargeUtf8(Some(value)) => value.parse().ok(),
         _ => None,
     }
@@ -119,3 +121,44 @@ fn timestamp_from_string(value: &str) -> Option<Timestamp> {
 
 #[expect(clippy::cast_precision_loss)]
 fn integer_to_f64(value: i64) -> f64 { value as f64 }
+
+#[allow(clippy::cast_possible_truncation)]
+fn exact_integral_f64(value: f64) -> Option<i64> {
+    const MAX_EXACT_I64_IN_F64: f64 = 9_007_199_254_740_992.0;
+    if !(value.is_finite() && value.fract() == 0.0 && value.abs() <= MAX_EXACT_I64_IN_F64) {
+        return None;
+    }
+    Some(value as i64)
+}
+
+#[allow(clippy::cast_possible_truncation)]
+fn exact_integral_f32(value: f32) -> Option<i64> {
+    const MAX_EXACT_I64_IN_F32: f32 = 16_777_216.0;
+    if !(value.is_finite() && value.fract() == 0.0 && value.abs() <= MAX_EXACT_I64_IN_F32) {
+        return None;
+    }
+    Some(i64::from(value as i32))
+}
+
+#[cfg(test)]
+mod tests {
+    use datafusion::common::ScalarValue;
+
+    use super::integer_scalar;
+
+    #[test]
+    fn integer_scalar_accepts_exact_integral_floats() {
+        assert_eq!(integer_scalar(&ScalarValue::Float32(Some(0.0))), Some(0));
+        assert_eq!(integer_scalar(&ScalarValue::Float32(Some(7.0))), Some(7));
+        assert_eq!(integer_scalar(&ScalarValue::Float64(Some(42.0))), Some(42));
+        assert_eq!(integer_scalar(&ScalarValue::Float64(Some(-3.0))), Some(-3));
+    }
+
+    #[test]
+    fn integer_scalar_rejects_fractional_or_non_finite_floats() {
+        assert_eq!(integer_scalar(&ScalarValue::Float32(Some(0.5))), None);
+        assert_eq!(integer_scalar(&ScalarValue::Float64(Some(-1.25))), None);
+        assert_eq!(integer_scalar(&ScalarValue::Float32(Some(f32::INFINITY))), None);
+        assert_eq!(integer_scalar(&ScalarValue::Float64(Some(f64::NAN))), None);
+    }
+}

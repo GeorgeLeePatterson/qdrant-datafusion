@@ -339,6 +339,11 @@ Use it to resume work without replaying the full repository history.
     - the current exact coordinated subset still requires an id-preserving `FULL OUTER JOIN USING (id)` plus effective `ORDER BY score DESC`
     - outer `LIMIT` is now optional for both admitted `qdrant_formula_score(...)` and `qdrant_fusion_score(...)`; when SQL omits it, the coordinated remote request omits `limit` and uses Qdrant's default result count
     - `tests/catalog/mod.rs` now tracks `coordination.formula.without_limit` and `coordination.fusion.without_limit` as supported SQL instead of leaving fusion in the deferred inventory
+59. `Q-060`: branch-local qdrant-only formula leaves now compose over local joins when the formula binds to one independently-closable branch.
+    - `qdrant_formula_score(...)` no longer needs the full coordinated `FULL OUTER JOIN USING (id)` path when its qdrant-only leaves depend on exactly one branch
+    - the optimizer now rewrites the formula onto that branch, lowers it with a single prefetch descriptor, and leaves the outer SQL join local
+    - exact integer payload filters now accept integral float literals, which closes the `qdrant_condition(qdrant_payload_num('rank') > 0)` loop without weakening fractional exactness
+    - `tests/catalog/mod.rs` now tracks `coordination.formula.inner_join_qdrant_only_leaf` as supported SQL instead of deferred inventory
 
 ## Next
 

@@ -553,28 +553,42 @@ mod tests {
                 CreateCollectionBuilder::new(collection_name).vectors_config(vectors_config),
             )
             .await?;
+        create_payload_index(
+            &client,
+            collection_name,
+            "rank",
+            FieldType::Integer,
+            qdrant_client::qdrant::IntegerIndexParamsBuilder::new(true, true).build(),
+        )
+        .await?;
 
+        let mut payload1 = qdrant_client::Payload::new();
+        payload1.insert("rank", 30_i64);
+        let mut payload2 = qdrant_client::Payload::new();
+        payload2.insert("rank", 20_i64);
+        let mut payload3 = qdrant_client::Payload::new();
+        payload3.insert("rank", 10_i64);
         let points = vec![
             PointStruct::new(
                 1,
                 NamedVectors::default()
                     .add_vector("embedding", vec![1.0, 0.0])
                     .add_vector("aux", vec![0.0, 1.0]),
-                qdrant_client::Payload::new(),
+                payload1,
             ),
             PointStruct::new(
                 2,
                 NamedVectors::default()
                     .add_vector("embedding", vec![0.4, 0.0])
                     .add_vector("aux", vec![0.0, 0.4]),
-                qdrant_client::Payload::new(),
+                payload2,
             ),
             PointStruct::new(
                 3,
                 NamedVectors::default()
                     .add_vector("embedding", vec![0.0, 1.0])
                     .add_vector("aux", vec![0.0, 0.2]),
-                qdrant_client::Payload::new(),
+                payload3,
             ),
         ];
         drop(client.upsert_points(UpsertPointsBuilder::new(collection_name, points)).await?);
@@ -2763,6 +2777,8 @@ error: {err}"
         let sort_only_sql = sql::coordination::formula::SORT_ONLY.sql;
         let left_join_sql = sql::coordination::formula::LEFT_JOIN.sql;
         let cross_join_sql = sql::coordination::formula::CROSS_JOIN.sql;
+        let inner_join_qdrant_leaf_sql =
+            sql::coordination::formula::INNER_JOIN_QDRANT_ONLY_LEAF.sql;
 
         let (without_limit_rows, without_limit_display) =
             collect_scored_rows(&ctx, without_limit_sql).await?;
@@ -2776,6 +2792,8 @@ error: {err}"
         let (left_join_rows, left_join_display) = collect_scored_rows(&ctx, left_join_sql).await?;
         let (cross_join_rows, cross_join_display) =
             collect_scored_rows(&ctx, cross_join_sql).await?;
+        let (inner_join_qdrant_leaf_rows, inner_join_qdrant_leaf_display) =
+            collect_scored_rows(&ctx, inner_join_qdrant_leaf_sql).await?;
 
         assert_eq!(without_limit_rows.iter().map(|(id, _)| *id).collect::<Vec<_>>(), vec![1, 2, 3]);
         assert_f32_eq(without_limit_rows[0].1, 2.0);
@@ -2789,6 +2807,12 @@ error: {err}"
         assert_eq!(cross_join_rows.iter().map(|(id, _)| *id).collect::<Vec<_>>(), vec![1, 1]);
         assert_f32_eq(cross_join_rows[0].1, 2.0);
         assert_f32_eq(cross_join_rows[1].1, 1.4);
+        assert_eq!(
+            inner_join_qdrant_leaf_rows.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        assert_f32_eq(inner_join_qdrant_leaf_rows[0].1, 2.0);
+        assert_f32_eq(inner_join_qdrant_leaf_rows[1].1, 1.4);
 
         assert_eq!(
             without_limit_display.matches("QdrantQueryExec").count(),
@@ -2820,6 +2844,20 @@ error: {err}"
             "{cross_join_display}"
         );
         assert!(cross_join_display.contains("CrossJoinExec"), "{cross_join_display}");
+        assert_eq!(
+            inner_join_qdrant_leaf_display.matches("QdrantQueryExec").count(),
+            2,
+            "{inner_join_qdrant_leaf_display}"
+        );
+        assert!(
+            inner_join_qdrant_leaf_display.contains("JoinExec")
+                || inner_join_qdrant_leaf_display.contains("HashJoinExec"),
+            "{inner_join_qdrant_leaf_display}"
+        );
+        assert!(
+            inner_join_qdrant_leaf_display.contains("__qdrant_formula_score"),
+            "{inner_join_qdrant_leaf_display}"
+        );
 
         Ok(())
     }

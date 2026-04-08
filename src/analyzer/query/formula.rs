@@ -431,11 +431,11 @@ impl TryFrom<FormulaCall> for FormulaQuery {
 impl FormulaQuery {
     pub(crate) fn same_semantics(&self, other: &Self) -> bool { self == other }
 
-    pub(super) fn validate_on_source(&self, source: &Source) -> Result<()> {
+    pub(crate) fn validate_on_source(&self, source: &Source) -> Result<()> {
         self.expression.validate_on_source(source)
     }
 
-    pub(super) fn descriptor(
+    pub(crate) fn descriptor(
         &self,
         source: &Source,
         prefetch: &[QueryPrefetchBranch],

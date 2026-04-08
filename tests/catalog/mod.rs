@@ -2539,6 +2539,18 @@ pub(crate) mod supported {
                     "ORDER BY score DESC LIMIT 2"
                 ),
             );
+            pub(crate) const INNER_JOIN_QDRANT_ONLY_LEAF: SqlCase = SqlCase::new(
+                "coordination.formula.inner_join_qdrant_only_leaf",
+                concat!(
+                    "SELECT dense.id, qdrant_formula_score(dense.score + \
+                     qdrant_condition(qdrant_payload_num('rank') > 0)) AS score FROM ",
+                    "(SELECT id, qdrant_nearest_score(embedding, 1.0, 0.0) AS score FROM vectors \
+                     ORDER BY score DESC LIMIT 5) dense ",
+                    "JOIN (SELECT id, qdrant_nearest_score(aux, 0.0, 1.0) AS score FROM vectors \
+                     ORDER BY score DESC LIMIT 5) sparse ON dense.id = sparse.id ",
+                    "ORDER BY score DESC LIMIT 2"
+                ),
+            );
 
             pub(crate) const ALL: &[SqlCase] = &[
                 WITHOUT_LIMIT,
@@ -2550,6 +2562,7 @@ pub(crate) mod supported {
                 LEFT_JOIN,
                 CROSS_JOIN,
                 RIGHT_JOIN,
+                INNER_JOIN_QDRANT_ONLY_LEAF,
             ];
         }
 
@@ -2909,24 +2922,7 @@ pub(crate) mod unsupported {
         pub(crate) mod formula {
             use super::UnsupportedSqlCase;
 
-            pub(crate) const INNER_JOIN_QDRANT_ONLY_LEAF: UnsupportedSqlCase =
-                UnsupportedSqlCase::new(
-                    "coordination.formula.inner_join_qdrant_only_leaf",
-                    concat!(
-                        "SELECT dense.id, qdrant_formula_score(dense.score + \
-                         qdrant_condition(qdrant_payload_num('rank') > 0)) AS score FROM ",
-                        "(SELECT id, qdrant_nearest_score(embedding, 1.0, 0.0) AS score FROM \
-                         vectors ORDER BY score DESC LIMIT 5) dense ",
-                        "JOIN (SELECT id, qdrant_nearest_score(aux, 0.0, 1.0) AS score FROM \
-                         vectors ORDER BY score DESC LIMIT 5) sparse ON dense.id = sparse.id ",
-                        "ORDER BY score DESC LIMIT 2"
-                    ),
-                    "Q-038",
-                    "coordinated formula rewrite remains intentionally narrow outside admitted \
-                     full-outer coordination",
-                    "unsupported coordinated qdrant_formula_score shape",
-                );
-            pub(crate) const ALL: &[UnsupportedSqlCase] = &[INNER_JOIN_QDRANT_ONLY_LEAF];
+            pub(crate) const ALL: &[UnsupportedSqlCase] = &[];
         }
 
         pub(crate) mod fusion {

@@ -4514,7 +4514,7 @@ mod tests {
     }
 
     #[test]
-    fn physical_plan_errors_clearly_for_qdrant_only_formula_leaves_outside_admitted_shape() {
+    fn physical_plan_composes_branch_local_qdrant_formula_join_remotely() {
         let provider = QdrantTableProvider {
             payload_schema: payload_schema([(
                 "rank",
@@ -4559,16 +4559,17 @@ mod tests {
             .now_or_never()
             .expect("sql future is ready")
             .expect("dataframe");
-        let err = dataframe
+        let plan = dataframe
             .create_physical_plan()
             .now_or_never()
             .expect("plan future is ready")
-            .expect_err("unsupported coordinated formula shape should fail clearly");
+            .expect("physical plan");
+        let display = displayable(plan.as_ref()).indent(true).to_string();
 
-        assert!(
-            err.to_string().contains("unsupported coordinated qdrant_formula_score shape"),
-            "{err}"
-        );
+        assert_eq!(display.matches("QdrantQueryExec").count(), 2, "{display}");
+        assert!(display.contains("JoinExec") || display.contains("HashJoinExec"), "{display}");
+        assert!(!display.contains("prefetch=2"), "{display}");
+        assert!(display.contains("__qdrant_formula_score"), "{display}");
     }
 
     #[test]

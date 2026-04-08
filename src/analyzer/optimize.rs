@@ -1,15 +1,17 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::sync::Arc;
 
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::common::{Column, DFSchemaRef, Result, plan_err};
-use datafusion::logical_expr::{Expr, Extension, JoinType, LogicalPlan};
+use datafusion::logical_expr::utils::expr_to_columns;
+use datafusion::logical_expr::{Expr, Extension, Join, JoinType, LogicalPlan};
 use datafusion::optimizer::{OptimizerConfig, OptimizerRule};
+use datafusion::prelude::col;
 
 use super::kernel::KernelSpec;
 use super::node::KernelNode;
 use super::op::Op;
-use super::query::{FusionQuery, QueryPrefetchBranch};
+use super::query::{FormulaQuery, FusionQuery, QueryPrefetchBranch};
 use super::source::Source;
 use super::state::FiltersState;
 use super::surface::{QuerySurfaceCall, SurfaceCall};
@@ -49,6 +51,13 @@ impl OptimizerRule for CoordinatedCombiners {
             }
         })?;
         let transformed = transformed.data.transform_up(|plan| {
+            if let Some(rewritten) = try_rewrite_single_branch_formula(&plan)? {
+                Ok(Transformed::yes(rewritten))
+            } else {
+                Ok(Transformed::no(plan))
+            }
+        })?;
+        let transformed = transformed.data.transform_up(|plan| {
             if let Some(rewritten) = try_rewrite_combiner(&plan)? {
                 Ok(Transformed::yes(rewritten))
             } else {
@@ -71,6 +80,265 @@ impl OptimizerRule for CoordinatedCombiners {
         })?;
         reject_unlowered_coordinated_combiners(&transformed.data)?;
         Ok(transformed)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum JoinSide {
+    Left,
+    Right,
+}
+
+fn try_rewrite_single_branch_formula(plan: &LogicalPlan) -> Result<Option<LogicalPlan>> {
+    match plan {
+        LogicalPlan::Projection(projection) => match projection.input.as_ref() {
+            LogicalPlan::Sort(sort) => {
+                let LogicalPlan::Join(join) = sort.input.as_ref() else {
+                    return Ok(None);
+                };
+                rewrite_single_branch_formula_plan(
+                    join,
+                    Some(projection.expr.as_slice()),
+                    Some(sort.expr.as_slice()),
+                )
+            }
+            LogicalPlan::Join(join) => {
+                rewrite_single_branch_formula_plan(join, Some(projection.expr.as_slice()), None)
+            }
+            _ => Ok(None),
+        },
+        LogicalPlan::Sort(sort) => {
+            let LogicalPlan::Join(join) = sort.input.as_ref() else {
+                return Ok(None);
+            };
+            rewrite_single_branch_formula_plan(join, None, Some(sort.expr.as_slice()))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn rewrite_single_branch_formula_plan(
+    join: &Join,
+    projection_exprs: Option<&[Expr]>,
+    sort_exprs: Option<&[datafusion::logical_expr::SortExpr]>,
+) -> Result<Option<LogicalPlan>> {
+    let Some((formula_expr, formula_query, side)) =
+        branch_local_formula_rewrite(join, projection_exprs, sort_exprs)?
+    else {
+        return Ok(None);
+    };
+    let hidden_name = unique_formula_output_name(&join.schema);
+    let rewritten_join = rewrite_join_with_formula_branch(join, &formula_expr, &hidden_name, side)?;
+    let rewritten_projection_exprs = projection_exprs
+        .map(|exprs| {
+            exprs
+                .iter()
+                .map(|expr| rewrite_formula_surface_to_column(expr, &formula_query, &hidden_name))
+                .collect::<Result<Vec<_>>>()
+        })
+        .transpose()?;
+    let rewritten_sort_exprs = sort_exprs
+        .map(|exprs| {
+            exprs
+                .iter()
+                .map(|sort_expr| {
+                    Ok(datafusion::logical_expr::SortExpr {
+                        expr:        rewrite_formula_surface_to_column(
+                            &sort_expr.expr,
+                            &formula_query,
+                            &hidden_name,
+                        )?,
+                        asc:         sort_expr.asc,
+                        nulls_first: sort_expr.nulls_first,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()
+        })
+        .transpose()?;
+
+    let mut plan = LogicalPlan::Join(rewritten_join);
+    if let Some(sort_exprs) = rewritten_sort_exprs {
+        plan = LogicalPlan::Sort(datafusion::logical_expr::logical_plan::Sort {
+            expr:  sort_exprs,
+            input: Arc::new(plan),
+            fetch: None,
+        });
+    }
+    if let Some(projection_exprs) = rewritten_projection_exprs {
+        plan = datafusion::logical_expr::LogicalPlanBuilder::from(plan)
+            .project(projection_exprs)?
+            .build()?;
+    }
+    plan.recompute_schema().map(Some)
+}
+
+fn branch_local_formula_rewrite(
+    join: &Join,
+    projection_exprs: Option<&[Expr]>,
+    sort_exprs: Option<&[datafusion::logical_expr::SortExpr]>,
+) -> Result<Option<(Expr, FormulaQuery, JoinSide)>> {
+    let mut formula_expr = None;
+    let mut formula_query = None;
+    if let Some(exprs) = projection_exprs {
+        for expr in exprs {
+            collect_formula_surface(expr, &mut formula_expr, &mut formula_query)?;
+        }
+    }
+    if let Some(exprs) = sort_exprs {
+        for expr in exprs {
+            collect_formula_surface(&expr.expr, &mut formula_expr, &mut formula_query)?;
+        }
+    }
+    let (Some(formula_expr), Some(formula_query)) = (formula_expr, formula_query) else {
+        return Ok(None);
+    };
+    let Some(side) = formula_join_side(join, &formula_expr)? else {
+        return Ok(None);
+    };
+    let target_plan = match side {
+        JoinSide::Left => join.left.as_ref(),
+        JoinSide::Right => join.right.as_ref(),
+    };
+    let Some((source, branch)) = query_branch_from_plan(target_plan)? else {
+        return Ok(None);
+    };
+    if formula_query.validate_on_source(&source).is_err() {
+        return Ok(None);
+    }
+    if formula_query.descriptor(&source, &[branch]).is_err() {
+        return Ok(None);
+    }
+    Ok(Some((formula_expr, formula_query, side)))
+}
+
+fn collect_formula_surface(
+    expr: &Expr,
+    formula_expr: &mut Option<Expr>,
+    formula_query: &mut Option<FormulaQuery>,
+) -> Result<()> {
+    let mut found = None;
+    let _ = expr.apply(|node| {
+        let Some(call) = FormulaCall::from_expr(node)? else {
+            return Ok(TreeNodeRecursion::Continue);
+        };
+        found = Some((node.clone(), FormulaQuery::try_from(call)?));
+        Ok(TreeNodeRecursion::Jump)
+    })?;
+    let Some((candidate_expr, candidate_query)) = found else {
+        return Ok(());
+    };
+    if let Some(existing) = formula_query {
+        if !existing.same_semantics(&candidate_query) {
+            return Ok(());
+        }
+    } else {
+        *formula_expr = Some(candidate_expr);
+        *formula_query = Some(candidate_query);
+    }
+    Ok(())
+}
+
+fn formula_join_side(join: &Join, formula_expr: &Expr) -> Result<Option<JoinSide>> {
+    let Some(call) = FormulaCall::from_expr(formula_expr)? else {
+        return Ok(None);
+    };
+    let mut columns = HashSet::new();
+    expr_to_columns(&call.formula, &mut columns)?;
+    let mut side = None;
+    for column in columns {
+        let in_left = join.left.schema().index_of_column(&column).is_ok();
+        let in_right = join.right.schema().index_of_column(&column).is_ok();
+        let column_side = match (in_left, in_right) {
+            (true, false) => JoinSide::Left,
+            (false, true) => JoinSide::Right,
+            _ => return Ok(None),
+        };
+        if let Some(existing) = side {
+            if existing != column_side {
+                return Ok(None);
+            }
+        } else {
+            side = Some(column_side);
+        }
+    }
+    Ok(side)
+}
+
+fn rewrite_join_with_formula_branch(
+    join: &Join,
+    formula_expr: &Expr,
+    hidden_name: &str,
+    side: JoinSide,
+) -> Result<Join> {
+    let (left, right) = match side {
+        JoinSide::Left => (
+            Arc::new(formula_projected_branch(join.left.as_ref(), formula_expr, hidden_name)?),
+            Arc::clone(&join.right),
+        ),
+        JoinSide::Right => (
+            Arc::clone(&join.left),
+            Arc::new(formula_projected_branch(join.right.as_ref(), formula_expr, hidden_name)?),
+        ),
+    };
+    Join::try_new(
+        left,
+        right,
+        join.on.clone(),
+        join.filter.clone(),
+        join.join_type,
+        join.join_constraint,
+        join.null_equality,
+        join.null_aware,
+    )
+}
+
+fn formula_projected_branch(
+    plan: &LogicalPlan,
+    formula_expr: &Expr,
+    hidden_name: &str,
+) -> Result<LogicalPlan> {
+    let mut projection_exprs =
+        plan.schema().columns().into_iter().map(Expr::Column).collect::<Vec<_>>();
+    projection_exprs.push(formula_expr.clone().alias(hidden_name.to_owned()));
+    let projected = datafusion::logical_expr::LogicalPlanBuilder::from(plan.clone())
+        .project(projection_exprs)?
+        .build()?;
+    datafusion::logical_expr::LogicalPlanBuilder::from(projected)
+        .sort(vec![col(hidden_name).sort(false, false)])?
+        .build()
+}
+
+fn rewrite_formula_surface_to_column(
+    expr: &Expr,
+    target: &FormulaQuery,
+    hidden_name: &str,
+) -> Result<Expr> {
+    expr.clone()
+        .transform_up(|nested| {
+            let Some(call) = FormulaCall::from_expr(&nested)? else {
+                return Ok(Transformed::no(nested));
+            };
+            let query = FormulaQuery::try_from(call)?;
+            if !query.same_semantics(target) {
+                return Ok(Transformed::no(nested));
+            }
+            Ok(Transformed::yes(Expr::Column(Column::from_name(hidden_name))))
+        })
+        .map(|rewritten| rewritten.data)
+}
+
+fn unique_formula_output_name(schema: &DFSchemaRef) -> String {
+    let base = "__qdrant_formula_score";
+    if schema.fields().iter().all(|field| field.name() != base) {
+        return base.to_owned();
+    }
+    let mut index = 0_usize;
+    loop {
+        let candidate = format!("{base}_{index}");
+        if schema.fields().iter().all(|field| field.name().as_str() != candidate) {
+            return candidate;
+        }
+        index += 1;
     }
 }
 
@@ -170,12 +438,19 @@ fn coordinated_candidate(plan: &LogicalPlan) -> Result<Option<CoordinatedCandida
     let Some((source, prefetch)) = collect_prefetch_branches(&surface, branch_input)? else {
         return Ok(None);
     };
-    if prefetch.len() < 2 {
+    if !coordination_prefetch_supported(&surface, prefetch.len()) {
         return Ok(None);
     }
     let mut projection_chain = combiner_projection.into_iter().collect::<Vec<_>>();
     projection_chain.extend(preserved_projections.into_iter().rev());
     Ok(Some(CoordinatedCandidate { surface, source, prefetch, projection_chain, sort_plan }))
+}
+
+fn coordination_prefetch_supported(surface: &SurfaceCall, prefetch_len: usize) -> bool {
+    match surface {
+        SurfaceCall::Query(QuerySurfaceCall::Formula(_)) => prefetch_len >= 1,
+        SurfaceCall::Query(_) => prefetch_len >= 2,
+    }
 }
 
 #[derive(Default)]
@@ -499,7 +774,7 @@ fn collect_prefetch_branch_leaves(
     }
 }
 
-fn supported_coordination_join(join: &datafusion::logical_expr::logical_plan::Join) -> bool {
+fn supported_coordination_join(join: &Join) -> bool {
     join.join_type == JoinType::Full
         && join.filter.is_none()
         && join.on.len() == 1

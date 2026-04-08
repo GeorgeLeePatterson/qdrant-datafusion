@@ -191,6 +191,10 @@ Current branch reality:
     - that join matrix now explicitly covers representative `INNER`, `LEFT`, `RIGHT`, `FULL`, `CROSS`, `SEMI`, and `ANTI` forms plus `ON` / `USING` variants across the standard SQL scan/write surface, independent query-family branches joined locally above remote kernels, and the qdrant-specific coordination surface
     - unsupported catalog entries now distinguish `Deferred`, `ByDesign`, `Upstream`, and `InvalidInput` so the current public boundary is readable without code inspection
     - catalog expansion is now explicitly SQL-space-first rather than code-gap-first, so the unsupported inventory can expose real library limits directly as SQL
+45. Branch-local qdrant-only formula leaves now compose over local joins when the formula binds to one independently-closable branch.
+    - `qdrant_formula_score(...)` still admits the exact coordinated `FULL OUTER JOIN USING (id)` remote rewrite, but it no longer requires that path when qdrant-only leaves belong to one join branch
+    - the current optimizer now rewrites that formula onto the owning branch, lowers it with a single prefetch descriptor, and leaves the outer SQL join local
+    - exact integer payload filters now also accept integral float literals, which closes the `qdrant_condition(qdrant_payload_num('rank') > 0)` path without weakening fractional exactness
 
 ## Current Code Ownership
 
