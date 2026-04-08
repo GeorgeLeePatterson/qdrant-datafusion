@@ -2503,7 +2503,10 @@ error: {err}"
                 display.contains("QdrantQueryExec")
                     || display.contains("SortExec")
                     || display.contains("AggregateExec")
-                    || display.contains("WindowAggExec"),
+                    || display.contains("WindowAggExec")
+                    || display.contains("HashJoinExec")
+                    || display.contains("JoinExec")
+                    || display.contains("NestedLoopJoinExec"),
                 "{display}"
             );
         }
@@ -2524,7 +2527,10 @@ error: {err}"
             assert!(
                 display.contains("QdrantQueryExec")
                     || display.contains("AggregateExec")
-                    || display.contains("WindowAggExec"),
+                    || display.contains("WindowAggExec")
+                    || display.contains("HashJoinExec")
+                    || display.contains("JoinExec")
+                    || display.contains("NestedLoopJoinExec"),
                 "{display}"
             );
         }

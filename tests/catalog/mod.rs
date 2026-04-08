@@ -1495,6 +1495,68 @@ pub(crate) mod supported {
                 "SELECT id, qdrant_sample_score() + CAST(1.0 AS FLOAT) AS shifted_score FROM \
                  vectors ORDER BY shifted_score DESC LIMIT 2",
             );
+            pub(crate) const LEFT_JOIN: SqlCase = SqlCase::new(
+                "query.sample.left_join",
+                "SELECT lhs.id, COALESCE(rhs.score, 0.0) AS rhs_score FROM (SELECT id, \
+                 qdrant_sample_score() AS score FROM vectors ORDER BY score DESC LIMIT 2) lhs \
+                 LEFT JOIN (SELECT id, qdrant_sample_score('random') AS score FROM vectors ORDER \
+                 BY score DESC LIMIT 2) rhs ON lhs.id = rhs.id ORDER BY lhs.id",
+            );
+            pub(crate) const INNER_JOIN_USING: SqlCase = SqlCase::new(
+                "query.sample.inner_join_using",
+                "SELECT id FROM (SELECT id, qdrant_sample_score() AS score FROM vectors ORDER BY \
+                 score DESC LIMIT 2) lhs JOIN (SELECT id, qdrant_sample_score('random') AS score \
+                 FROM vectors ORDER BY score DESC LIMIT 2) rhs USING (id) ORDER BY id",
+            );
+            pub(crate) const RIGHT_JOIN: SqlCase = SqlCase::new(
+                "query.sample.right_join",
+                "SELECT rhs.id, COALESCE(lhs.score, 0.0) AS lhs_score FROM (SELECT id, \
+                 qdrant_sample_score() AS score FROM vectors ORDER BY score DESC LIMIT 2) lhs \
+                 RIGHT JOIN (SELECT id, qdrant_sample_score('random') AS score FROM vectors ORDER \
+                 BY score DESC LIMIT 2) rhs ON lhs.id = rhs.id ORDER BY rhs.id",
+            );
+            pub(crate) const FULL_JOIN: SqlCase = SqlCase::new(
+                "query.sample.full_join",
+                "SELECT COALESCE(lhs.id, rhs.id) AS id FROM (SELECT id, qdrant_sample_score() AS \
+                 score FROM vectors ORDER BY score DESC LIMIT 2) lhs FULL OUTER JOIN (SELECT id, \
+                 qdrant_sample_score('random') AS score FROM vectors ORDER BY score DESC LIMIT 2) \
+                 rhs ON lhs.id = rhs.id ORDER BY id",
+            );
+            pub(crate) const CROSS_JOIN: SqlCase = SqlCase::new(
+                "query.sample.cross_join",
+                "SELECT lhs.id, rhs.id AS rhs_id FROM (SELECT id, qdrant_sample_score() AS score \
+                 FROM vectors ORDER BY score DESC LIMIT 2) lhs CROSS JOIN (SELECT id, \
+                 qdrant_sample_score('random') AS score FROM vectors ORDER BY score DESC LIMIT 2) \
+                 rhs ORDER BY lhs.id, rhs_id",
+            );
+            pub(crate) const LEFT_SEMI_JOIN: SqlCase = SqlCase::new(
+                "query.sample.left_semi_join",
+                "SELECT lhs.id FROM (SELECT id, qdrant_sample_score() AS score FROM vectors ORDER \
+                 BY score DESC LIMIT 2) lhs LEFT SEMI JOIN (SELECT id, \
+                 qdrant_sample_score('random') AS score FROM vectors ORDER BY score DESC LIMIT 2) \
+                 rhs ON lhs.id = rhs.id ORDER BY lhs.id",
+            );
+            pub(crate) const LEFT_ANTI_JOIN: SqlCase = SqlCase::new(
+                "query.sample.left_anti_join",
+                "SELECT lhs.id FROM (SELECT id, qdrant_sample_score() AS score FROM vectors ORDER \
+                 BY score DESC LIMIT 2) lhs LEFT ANTI JOIN (SELECT id, \
+                 qdrant_sample_score('random') AS score FROM vectors ORDER BY score DESC LIMIT 1) \
+                 rhs ON lhs.id = rhs.id ORDER BY lhs.id",
+            );
+            pub(crate) const RIGHT_SEMI_JOIN: SqlCase = SqlCase::new(
+                "query.sample.right_semi_join",
+                "SELECT rhs.id FROM (SELECT id, qdrant_sample_score() AS score FROM vectors ORDER \
+                 BY score DESC LIMIT 1) lhs RIGHT SEMI JOIN (SELECT id, \
+                 qdrant_sample_score('random') AS score FROM vectors ORDER BY score DESC LIMIT 2) \
+                 rhs ON lhs.id = rhs.id ORDER BY rhs.id",
+            );
+            pub(crate) const RIGHT_ANTI_JOIN: SqlCase = SqlCase::new(
+                "query.sample.right_anti_join",
+                "SELECT rhs.id FROM (SELECT id, qdrant_sample_score() AS score FROM vectors WHERE \
+                 id = '9' ORDER BY score DESC LIMIT 1) lhs RIGHT ANTI JOIN (SELECT id, \
+                 qdrant_sample_score('random') AS score FROM vectors ORDER BY score DESC LIMIT 2) \
+                 rhs ON lhs.id = rhs.id ORDER BY rhs.id",
+            );
 
             pub(crate) const ALL: &[SqlCase] = &[
                 EXPLICIT,
@@ -1507,6 +1569,15 @@ pub(crate) mod supported {
                 AGGREGATE_SUBQUERY,
                 AGGREGATE_CTE,
                 LOCAL_PROJECTION,
+                LEFT_JOIN,
+                INNER_JOIN_USING,
+                RIGHT_JOIN,
+                FULL_JOIN,
+                CROSS_JOIN,
+                LEFT_SEMI_JOIN,
+                LEFT_ANTI_JOIN,
+                RIGHT_SEMI_JOIN,
+                RIGHT_ANTI_JOIN,
             ];
         }
 
@@ -1560,6 +1631,77 @@ pub(crate) mod supported {
                 "SELECT id FROM vectors WHERE qdrant_recommend_score(embedding, [[1.0, 0.0]], \
                  [[0.0, 1.0]]) <= 1.0 ORDER BY id",
             );
+            pub(crate) const LEFT_JOIN: SqlCase = SqlCase::new(
+                "query.recommend.left_join",
+                "SELECT lhs.id, COALESCE(rhs.score, 0.0) AS rhs_score FROM (SELECT id, \
+                 qdrant_recommend_score(embedding, [[1.0, 0.0]], [[0.0, 1.0]]) AS score FROM \
+                 vectors ORDER BY score DESC LIMIT 2) lhs LEFT JOIN (SELECT id, \
+                 qdrant_recommend_score(embedding, [[0.0, 1.0]], [[1.0, 0.0]]) AS score FROM \
+                 vectors ORDER BY score DESC LIMIT 2) rhs ON lhs.id = rhs.id ORDER BY lhs.id",
+            );
+            pub(crate) const INNER_JOIN_USING: SqlCase = SqlCase::new(
+                "query.recommend.inner_join_using",
+                "SELECT id FROM (SELECT id, qdrant_recommend_score(embedding, [[1.0, 0.0]], \
+                 [[0.0, 1.0]]) AS score FROM vectors ORDER BY score DESC LIMIT 2) lhs JOIN \
+                 (SELECT id, qdrant_recommend_score(embedding, [[0.0, 1.0]], [[1.0, 0.0]]) AS \
+                 score FROM vectors ORDER BY score DESC LIMIT 2) rhs USING (id) ORDER BY id",
+            );
+            pub(crate) const RIGHT_JOIN: SqlCase = SqlCase::new(
+                "query.recommend.right_join",
+                "SELECT rhs.id, COALESCE(lhs.score, 0.0) AS lhs_score FROM (SELECT id, \
+                 qdrant_recommend_score(embedding, [[1.0, 0.0]], [[0.0, 1.0]]) AS score FROM \
+                 vectors ORDER BY score DESC LIMIT 2) lhs RIGHT JOIN (SELECT id, \
+                 qdrant_recommend_score(embedding, [[0.0, 1.0]], [[1.0, 0.0]]) AS score FROM \
+                 vectors ORDER BY score DESC LIMIT 2) rhs ON lhs.id = rhs.id ORDER BY rhs.id",
+            );
+            pub(crate) const FULL_JOIN: SqlCase = SqlCase::new(
+                "query.recommend.full_join",
+                "SELECT COALESCE(lhs.id, rhs.id) AS id FROM (SELECT id, \
+                 qdrant_recommend_score(embedding, [[1.0, 0.0]], [[0.0, 1.0]]) AS score FROM \
+                 vectors ORDER BY score DESC LIMIT 2) lhs FULL OUTER JOIN (SELECT id, \
+                 qdrant_recommend_score(embedding, [[0.0, 1.0]], [[1.0, 0.0]]) AS score FROM \
+                 vectors ORDER BY score DESC LIMIT 2) rhs ON lhs.id = rhs.id ORDER BY id",
+            );
+            pub(crate) const CROSS_JOIN: SqlCase = SqlCase::new(
+                "query.recommend.cross_join",
+                "SELECT lhs.id, rhs.id AS rhs_id FROM (SELECT id, \
+                 qdrant_recommend_score(embedding, [[1.0, 0.0]], [[0.0, 1.0]]) AS score FROM \
+                 vectors ORDER BY score DESC LIMIT 2) lhs CROSS JOIN (SELECT id, \
+                 qdrant_recommend_score(embedding, [[0.0, 1.0]], [[1.0, 0.0]]) AS score FROM \
+                 vectors ORDER BY score DESC LIMIT 2) rhs ORDER BY lhs.id, rhs_id",
+            );
+            pub(crate) const LEFT_SEMI_JOIN: SqlCase = SqlCase::new(
+                "query.recommend.left_semi_join",
+                "SELECT lhs.id FROM (SELECT id, qdrant_recommend_score(embedding, [[1.0, 0.0]], \
+                 [[0.0, 1.0]]) AS score FROM vectors ORDER BY score DESC LIMIT 2) lhs LEFT SEMI \
+                 JOIN (SELECT id, qdrant_recommend_score(embedding, [[0.0, 1.0]], [[1.0, 0.0]]) \
+                 AS score FROM vectors ORDER BY score DESC LIMIT 2) rhs ON lhs.id = rhs.id ORDER \
+                 BY lhs.id",
+            );
+            pub(crate) const LEFT_ANTI_JOIN: SqlCase = SqlCase::new(
+                "query.recommend.left_anti_join",
+                "SELECT lhs.id FROM (SELECT id, qdrant_recommend_score(embedding, [[1.0, 0.0]], \
+                 [[0.0, 1.0]]) AS score FROM vectors ORDER BY score DESC LIMIT 2) lhs LEFT ANTI \
+                 JOIN (SELECT id, qdrant_recommend_score(embedding, [[0.0, 1.0]], [[1.0, 0.0]]) \
+                 AS score FROM vectors ORDER BY score DESC LIMIT 1) rhs ON lhs.id = rhs.id ORDER \
+                 BY lhs.id",
+            );
+            pub(crate) const RIGHT_SEMI_JOIN: SqlCase = SqlCase::new(
+                "query.recommend.right_semi_join",
+                "SELECT rhs.id FROM (SELECT id, qdrant_recommend_score(embedding, [[1.0, 0.0]], \
+                 [[0.0, 1.0]]) AS score FROM vectors ORDER BY score DESC LIMIT 1) lhs RIGHT SEMI \
+                 JOIN (SELECT id, qdrant_recommend_score(embedding, [[0.0, 1.0]], [[1.0, 0.0]]) \
+                 AS score FROM vectors ORDER BY score DESC LIMIT 2) rhs ON lhs.id = rhs.id ORDER \
+                 BY rhs.id",
+            );
+            pub(crate) const RIGHT_ANTI_JOIN: SqlCase = SqlCase::new(
+                "query.recommend.right_anti_join",
+                "SELECT rhs.id FROM (SELECT id, qdrant_recommend_score(embedding, [[1.0, 0.0]], \
+                 [[0.0, 1.0]]) AS score FROM vectors WHERE id = '9' ORDER BY score DESC LIMIT 1) \
+                 lhs RIGHT ANTI JOIN (SELECT id, qdrant_recommend_score(embedding, [[0.0, 1.0]], \
+                 [[1.0, 0.0]]) AS score FROM vectors ORDER BY score DESC LIMIT 2) rhs ON lhs.id = \
+                 rhs.id ORDER BY rhs.id",
+            );
 
             pub(crate) const ALL: &[SqlCase] = &[
                 DEFAULT,
@@ -1571,6 +1713,15 @@ pub(crate) mod supported {
                 AGGREGATE_SUBQUERY,
                 AGGREGATE_CTE,
                 LOCAL_FILTER,
+                LEFT_JOIN,
+                INNER_JOIN_USING,
+                RIGHT_JOIN,
+                FULL_JOIN,
+                CROSS_JOIN,
+                LEFT_SEMI_JOIN,
+                LEFT_ANTI_JOIN,
+                RIGHT_SEMI_JOIN,
+                RIGHT_ANTI_JOIN,
             ];
         }
 
@@ -1615,6 +1766,81 @@ pub(crate) mod supported {
                 "WITH ranked AS (SELECT AVG(qdrant_discover_score(embedding, [1.0, 0.0], [[[1.0, \
                  0.0], [0.0, 1.0]]])) AS avg_score FROM vectors) SELECT * FROM ranked",
             );
+            pub(crate) const LEFT_JOIN: SqlCase = SqlCase::new(
+                "query.discover.left_join",
+                "SELECT lhs.id, COALESCE(rhs.score, 0.0) AS rhs_score FROM (SELECT id, \
+                 qdrant_discover_score(embedding, [1.0, 0.0], [[[1.0, 0.0], [0.0, 1.0]]]) AS \
+                 score FROM vectors ORDER BY score DESC LIMIT 2) lhs LEFT JOIN (SELECT id, \
+                 qdrant_discover_score(embedding, [0.0, 1.0], [[[1.0, 0.0], [0.0, 1.0]]]) AS \
+                 score FROM vectors ORDER BY score DESC LIMIT 2) rhs ON lhs.id = rhs.id ORDER BY \
+                 lhs.id",
+            );
+            pub(crate) const INNER_JOIN_USING: SqlCase = SqlCase::new(
+                "query.discover.inner_join_using",
+                "SELECT id FROM (SELECT id, qdrant_discover_score(embedding, [1.0, 0.0], [[[1.0, \
+                 0.0], [0.0, 1.0]]]) AS score FROM vectors ORDER BY score DESC LIMIT 2) lhs JOIN \
+                 (SELECT id, qdrant_discover_score(embedding, [0.0, 1.0], [[[1.0, 0.0], [0.0, \
+                 1.0]]]) AS score FROM vectors ORDER BY score DESC LIMIT 2) rhs USING (id) ORDER \
+                 BY id",
+            );
+            pub(crate) const RIGHT_JOIN: SqlCase = SqlCase::new(
+                "query.discover.right_join",
+                "SELECT rhs.id, COALESCE(lhs.score, 0.0) AS lhs_score FROM (SELECT id, \
+                 qdrant_discover_score(embedding, [1.0, 0.0], [[[1.0, 0.0], [0.0, 1.0]]]) AS \
+                 score FROM vectors ORDER BY score DESC LIMIT 2) lhs RIGHT JOIN (SELECT id, \
+                 qdrant_discover_score(embedding, [0.0, 1.0], [[[1.0, 0.0], [0.0, 1.0]]]) AS \
+                 score FROM vectors ORDER BY score DESC LIMIT 2) rhs ON lhs.id = rhs.id ORDER BY \
+                 rhs.id",
+            );
+            pub(crate) const FULL_JOIN: SqlCase = SqlCase::new(
+                "query.discover.full_join",
+                "SELECT COALESCE(lhs.id, rhs.id) AS id FROM (SELECT id, \
+                 qdrant_discover_score(embedding, [1.0, 0.0], [[[1.0, 0.0], [0.0, 1.0]]]) AS \
+                 score FROM vectors ORDER BY score DESC LIMIT 2) lhs FULL OUTER JOIN (SELECT id, \
+                 qdrant_discover_score(embedding, [0.0, 1.0], [[[1.0, 0.0], [0.0, 1.0]]]) AS \
+                 score FROM vectors ORDER BY score DESC LIMIT 2) rhs ON lhs.id = rhs.id ORDER BY \
+                 id",
+            );
+            pub(crate) const CROSS_JOIN: SqlCase = SqlCase::new(
+                "query.discover.cross_join",
+                "SELECT lhs.id, rhs.id AS rhs_id FROM (SELECT id, \
+                 qdrant_discover_score(embedding, [1.0, 0.0], [[[1.0, 0.0], [0.0, 1.0]]]) AS \
+                 score FROM vectors ORDER BY score DESC LIMIT 2) lhs CROSS JOIN (SELECT id, \
+                 qdrant_discover_score(embedding, [0.0, 1.0], [[[1.0, 0.0], [0.0, 1.0]]]) AS \
+                 score FROM vectors ORDER BY score DESC LIMIT 2) rhs ORDER BY lhs.id, rhs_id",
+            );
+            pub(crate) const LEFT_SEMI_JOIN: SqlCase = SqlCase::new(
+                "query.discover.left_semi_join",
+                "SELECT lhs.id FROM (SELECT id, qdrant_discover_score(embedding, [1.0, 0.0], \
+                 [[[1.0, 0.0], [0.0, 1.0]]]) AS score FROM vectors ORDER BY score DESC LIMIT 2) \
+                 lhs LEFT SEMI JOIN (SELECT id, qdrant_discover_score(embedding, [0.0, 1.0], \
+                 [[[1.0, 0.0], [0.0, 1.0]]]) AS score FROM vectors ORDER BY score DESC LIMIT 2) \
+                 rhs ON lhs.id = rhs.id ORDER BY lhs.id",
+            );
+            pub(crate) const LEFT_ANTI_JOIN: SqlCase = SqlCase::new(
+                "query.discover.left_anti_join",
+                "SELECT lhs.id FROM (SELECT id, qdrant_discover_score(embedding, [1.0, 0.0], \
+                 [[[1.0, 0.0], [0.0, 1.0]]]) AS score FROM vectors ORDER BY score DESC LIMIT 2) \
+                 lhs LEFT ANTI JOIN (SELECT id, qdrant_discover_score(embedding, [0.0, 1.0], \
+                 [[[1.0, 0.0], [0.0, 1.0]]]) AS score FROM vectors ORDER BY score DESC LIMIT 1) \
+                 rhs ON lhs.id = rhs.id ORDER BY lhs.id",
+            );
+            pub(crate) const RIGHT_SEMI_JOIN: SqlCase = SqlCase::new(
+                "query.discover.right_semi_join",
+                "SELECT rhs.id FROM (SELECT id, qdrant_discover_score(embedding, [1.0, 0.0], \
+                 [[[1.0, 0.0], [0.0, 1.0]]]) AS score FROM vectors ORDER BY score DESC LIMIT 1) \
+                 lhs RIGHT SEMI JOIN (SELECT id, qdrant_discover_score(embedding, [0.0, 1.0], \
+                 [[[1.0, 0.0], [0.0, 1.0]]]) AS score FROM vectors ORDER BY score DESC LIMIT 2) \
+                 rhs ON lhs.id = rhs.id ORDER BY rhs.id",
+            );
+            pub(crate) const RIGHT_ANTI_JOIN: SqlCase = SqlCase::new(
+                "query.discover.right_anti_join",
+                "SELECT rhs.id FROM (SELECT id, qdrant_discover_score(embedding, [1.0, 0.0], \
+                 [[[1.0, 0.0], [0.0, 1.0]]]) AS score FROM vectors WHERE id = '9' ORDER BY score \
+                 DESC LIMIT 1) lhs RIGHT ANTI JOIN (SELECT id, qdrant_discover_score(embedding, \
+                 [0.0, 1.0], [[[1.0, 0.0], [0.0, 1.0]]]) AS score FROM vectors ORDER BY score \
+                 DESC LIMIT 2) rhs ON lhs.id = rhs.id ORDER BY rhs.id",
+            );
 
             pub(crate) const ALL: &[SqlCase] = &[
                 CANONICAL,
@@ -1624,6 +1850,15 @@ pub(crate) mod supported {
                 WINDOW_OVER_SUBQUERY,
                 AGGREGATE_SUBQUERY,
                 AGGREGATE_CTE,
+                LEFT_JOIN,
+                INNER_JOIN_USING,
+                RIGHT_JOIN,
+                FULL_JOIN,
+                CROSS_JOIN,
+                LEFT_SEMI_JOIN,
+                LEFT_ANTI_JOIN,
+                RIGHT_SEMI_JOIN,
+                RIGHT_ANTI_JOIN,
             ];
         }
 
@@ -1667,6 +1902,77 @@ pub(crate) mod supported {
                 "WITH ranked AS (SELECT AVG(qdrant_context_score(embedding, [[[1.0, 0.0], [0.0, \
                  1.0]]])) AS avg_score FROM vectors) SELECT * FROM ranked",
             );
+            pub(crate) const LEFT_JOIN: SqlCase = SqlCase::new(
+                "query.context.left_join",
+                "SELECT lhs.id, COALESCE(rhs.score, 0.0) AS rhs_score FROM (SELECT id, \
+                 qdrant_context_score(embedding, [[[1.0, 0.0], [0.0, 1.0]]]) AS score FROM \
+                 vectors ORDER BY score DESC LIMIT 2) lhs LEFT JOIN (SELECT id, \
+                 qdrant_context_score(embedding, [[[0.0, 1.0], [1.0, 0.0]]]) AS score FROM \
+                 vectors ORDER BY score DESC LIMIT 2) rhs ON lhs.id = rhs.id ORDER BY lhs.id",
+            );
+            pub(crate) const INNER_JOIN_USING: SqlCase = SqlCase::new(
+                "query.context.inner_join_using",
+                "SELECT id FROM (SELECT id, qdrant_context_score(embedding, [[[1.0, 0.0], [0.0, \
+                 1.0]]]) AS score FROM vectors ORDER BY score DESC LIMIT 2) lhs JOIN (SELECT id, \
+                 qdrant_context_score(embedding, [[[0.0, 1.0], [1.0, 0.0]]]) AS score FROM \
+                 vectors ORDER BY score DESC LIMIT 2) rhs USING (id) ORDER BY id",
+            );
+            pub(crate) const RIGHT_JOIN: SqlCase = SqlCase::new(
+                "query.context.right_join",
+                "SELECT rhs.id, COALESCE(lhs.score, 0.0) AS lhs_score FROM (SELECT id, \
+                 qdrant_context_score(embedding, [[[1.0, 0.0], [0.0, 1.0]]]) AS score FROM \
+                 vectors ORDER BY score DESC LIMIT 2) lhs RIGHT JOIN (SELECT id, \
+                 qdrant_context_score(embedding, [[[0.0, 1.0], [1.0, 0.0]]]) AS score FROM \
+                 vectors ORDER BY score DESC LIMIT 2) rhs ON lhs.id = rhs.id ORDER BY rhs.id",
+            );
+            pub(crate) const FULL_JOIN: SqlCase = SqlCase::new(
+                "query.context.full_join",
+                "SELECT COALESCE(lhs.id, rhs.id) AS id FROM (SELECT id, \
+                 qdrant_context_score(embedding, [[[1.0, 0.0], [0.0, 1.0]]]) AS score FROM \
+                 vectors ORDER BY score DESC LIMIT 2) lhs FULL OUTER JOIN (SELECT id, \
+                 qdrant_context_score(embedding, [[[0.0, 1.0], [1.0, 0.0]]]) AS score FROM \
+                 vectors ORDER BY score DESC LIMIT 2) rhs ON lhs.id = rhs.id ORDER BY id",
+            );
+            pub(crate) const CROSS_JOIN: SqlCase = SqlCase::new(
+                "query.context.cross_join",
+                "SELECT lhs.id, rhs.id AS rhs_id FROM (SELECT id, qdrant_context_score(embedding, \
+                 [[[1.0, 0.0], [0.0, 1.0]]]) AS score FROM vectors ORDER BY score DESC LIMIT 2) \
+                 lhs CROSS JOIN (SELECT id, qdrant_context_score(embedding, [[[0.0, 1.0], [1.0, \
+                 0.0]]]) AS score FROM vectors ORDER BY score DESC LIMIT 2) rhs ORDER BY lhs.id, \
+                 rhs_id",
+            );
+            pub(crate) const LEFT_SEMI_JOIN: SqlCase = SqlCase::new(
+                "query.context.left_semi_join",
+                "SELECT lhs.id FROM (SELECT id, qdrant_context_score(embedding, [[[1.0, 0.0], \
+                 [0.0, 1.0]]]) AS score FROM vectors ORDER BY score DESC LIMIT 2) lhs LEFT SEMI \
+                 JOIN (SELECT id, qdrant_context_score(embedding, [[[0.0, 1.0], [1.0, 0.0]]]) AS \
+                 score FROM vectors ORDER BY score DESC LIMIT 2) rhs ON lhs.id = rhs.id ORDER BY \
+                 lhs.id",
+            );
+            pub(crate) const LEFT_ANTI_JOIN: SqlCase = SqlCase::new(
+                "query.context.left_anti_join",
+                "SELECT lhs.id FROM (SELECT id, qdrant_context_score(embedding, [[[1.0, 0.0], \
+                 [0.0, 1.0]]]) AS score FROM vectors ORDER BY score DESC LIMIT 2) lhs LEFT ANTI \
+                 JOIN (SELECT id, qdrant_context_score(embedding, [[[0.0, 1.0], [1.0, 0.0]]]) AS \
+                 score FROM vectors ORDER BY score DESC LIMIT 1) rhs ON lhs.id = rhs.id ORDER BY \
+                 lhs.id",
+            );
+            pub(crate) const RIGHT_SEMI_JOIN: SqlCase = SqlCase::new(
+                "query.context.right_semi_join",
+                "SELECT rhs.id FROM (SELECT id, qdrant_context_score(embedding, [[[1.0, 0.0], \
+                 [0.0, 1.0]]]) AS score FROM vectors ORDER BY score DESC LIMIT 1) lhs RIGHT SEMI \
+                 JOIN (SELECT id, qdrant_context_score(embedding, [[[0.0, 1.0], [1.0, 0.0]]]) AS \
+                 score FROM vectors ORDER BY score DESC LIMIT 2) rhs ON lhs.id = rhs.id ORDER BY \
+                 rhs.id",
+            );
+            pub(crate) const RIGHT_ANTI_JOIN: SqlCase = SqlCase::new(
+                "query.context.right_anti_join",
+                "SELECT rhs.id FROM (SELECT id, qdrant_context_score(embedding, [[[1.0, 0.0], \
+                 [0.0, 1.0]]]) AS score FROM vectors WHERE id = '9' ORDER BY score DESC LIMIT 1) \
+                 lhs RIGHT ANTI JOIN (SELECT id, qdrant_context_score(embedding, [[[0.0, 1.0], \
+                 [1.0, 0.0]]]) AS score FROM vectors ORDER BY score DESC LIMIT 2) rhs ON lhs.id = \
+                 rhs.id ORDER BY rhs.id",
+            );
 
             pub(crate) const ALL: &[SqlCase] = &[
                 CANONICAL,
@@ -1676,6 +1982,15 @@ pub(crate) mod supported {
                 WINDOW_OVER_SUBQUERY,
                 AGGREGATE_SUBQUERY,
                 AGGREGATE_CTE,
+                LEFT_JOIN,
+                INNER_JOIN_USING,
+                RIGHT_JOIN,
+                FULL_JOIN,
+                CROSS_JOIN,
+                LEFT_SEMI_JOIN,
+                LEFT_ANTI_JOIN,
+                RIGHT_SEMI_JOIN,
+                RIGHT_ANTI_JOIN,
             ];
         }
 
@@ -1719,6 +2034,74 @@ pub(crate) mod supported {
                 "WITH ranked AS (SELECT AVG(qdrant_nearest_with_mmr_score(embedding, 0.9, 8, 1.0, \
                  0.0)) AS avg_score FROM vectors) SELECT * FROM ranked",
             );
+            pub(crate) const LEFT_JOIN: SqlCase = SqlCase::new(
+                "query.mmr.left_join",
+                "SELECT lhs.id, COALESCE(rhs.score, 0.0) AS rhs_score FROM (SELECT id, \
+                 qdrant_nearest_with_mmr_score(embedding, 0.9, 8, 1.0, 0.0) AS score FROM vectors \
+                 ORDER BY score DESC LIMIT 2) lhs LEFT JOIN (SELECT id, \
+                 qdrant_nearest_with_mmr_score(embedding, 0.5, 8, 0.0, 1.0) AS score FROM vectors \
+                 ORDER BY score DESC LIMIT 2) rhs ON lhs.id = rhs.id ORDER BY lhs.id",
+            );
+            pub(crate) const INNER_JOIN_USING: SqlCase = SqlCase::new(
+                "query.mmr.inner_join_using",
+                "SELECT id FROM (SELECT id, qdrant_nearest_with_mmr_score(embedding, 0.9, 8, 1.0, \
+                 0.0) AS score FROM vectors ORDER BY score DESC LIMIT 2) lhs JOIN (SELECT id, \
+                 qdrant_nearest_with_mmr_score(embedding, 0.5, 8, 0.0, 1.0) AS score FROM vectors \
+                 ORDER BY score DESC LIMIT 2) rhs USING (id) ORDER BY id",
+            );
+            pub(crate) const RIGHT_JOIN: SqlCase = SqlCase::new(
+                "query.mmr.right_join",
+                "SELECT rhs.id, COALESCE(lhs.score, 0.0) AS lhs_score FROM (SELECT id, \
+                 qdrant_nearest_with_mmr_score(embedding, 0.9, 8, 1.0, 0.0) AS score FROM vectors \
+                 ORDER BY score DESC LIMIT 2) lhs RIGHT JOIN (SELECT id, \
+                 qdrant_nearest_with_mmr_score(embedding, 0.5, 8, 0.0, 1.0) AS score FROM vectors \
+                 ORDER BY score DESC LIMIT 2) rhs ON lhs.id = rhs.id ORDER BY rhs.id",
+            );
+            pub(crate) const FULL_JOIN: SqlCase = SqlCase::new(
+                "query.mmr.full_join",
+                "SELECT COALESCE(lhs.id, rhs.id) AS id FROM (SELECT id, \
+                 qdrant_nearest_with_mmr_score(embedding, 0.9, 8, 1.0, 0.0) AS score FROM vectors \
+                 ORDER BY score DESC LIMIT 2) lhs FULL OUTER JOIN (SELECT id, \
+                 qdrant_nearest_with_mmr_score(embedding, 0.5, 8, 0.0, 1.0) AS score FROM vectors \
+                 ORDER BY score DESC LIMIT 2) rhs ON lhs.id = rhs.id ORDER BY id",
+            );
+            pub(crate) const CROSS_JOIN: SqlCase = SqlCase::new(
+                "query.mmr.cross_join",
+                "SELECT lhs.id, rhs.id AS rhs_id FROM (SELECT id, \
+                 qdrant_nearest_with_mmr_score(embedding, 0.9, 8, 1.0, 0.0) AS score FROM vectors \
+                 ORDER BY score DESC LIMIT 2) lhs CROSS JOIN (SELECT id, \
+                 qdrant_nearest_with_mmr_score(embedding, 0.5, 8, 0.0, 1.0) AS score FROM vectors \
+                 ORDER BY score DESC LIMIT 2) rhs ORDER BY lhs.id, rhs_id",
+            );
+            pub(crate) const LEFT_SEMI_JOIN: SqlCase = SqlCase::new(
+                "query.mmr.left_semi_join",
+                "SELECT lhs.id FROM (SELECT id, qdrant_nearest_with_mmr_score(embedding, 0.9, 8, \
+                 1.0, 0.0) AS score FROM vectors ORDER BY score DESC LIMIT 2) lhs LEFT SEMI JOIN \
+                 (SELECT id, qdrant_nearest_with_mmr_score(embedding, 0.5, 8, 0.0, 1.0) AS score \
+                 FROM vectors ORDER BY score DESC LIMIT 2) rhs ON lhs.id = rhs.id ORDER BY lhs.id",
+            );
+            pub(crate) const LEFT_ANTI_JOIN: SqlCase = SqlCase::new(
+                "query.mmr.left_anti_join",
+                "SELECT lhs.id FROM (SELECT id, qdrant_nearest_with_mmr_score(embedding, 0.9, 8, \
+                 1.0, 0.0) AS score FROM vectors ORDER BY score DESC LIMIT 2) lhs LEFT ANTI JOIN \
+                 (SELECT id, qdrant_nearest_with_mmr_score(embedding, 0.5, 8, 0.0, 1.0) AS score \
+                 FROM vectors ORDER BY score DESC LIMIT 1) rhs ON lhs.id = rhs.id ORDER BY lhs.id",
+            );
+            pub(crate) const RIGHT_SEMI_JOIN: SqlCase = SqlCase::new(
+                "query.mmr.right_semi_join",
+                "SELECT rhs.id FROM (SELECT id, qdrant_nearest_with_mmr_score(embedding, 0.9, 8, \
+                 1.0, 0.0) AS score FROM vectors ORDER BY score DESC LIMIT 1) lhs RIGHT SEMI JOIN \
+                 (SELECT id, qdrant_nearest_with_mmr_score(embedding, 0.5, 8, 0.0, 1.0) AS score \
+                 FROM vectors ORDER BY score DESC LIMIT 2) rhs ON lhs.id = rhs.id ORDER BY rhs.id",
+            );
+            pub(crate) const RIGHT_ANTI_JOIN: SqlCase = SqlCase::new(
+                "query.mmr.right_anti_join",
+                "SELECT rhs.id FROM (SELECT id, qdrant_nearest_with_mmr_score(embedding, 0.9, 8, \
+                 1.0, 0.0) AS score FROM vectors WHERE id = '9' ORDER BY score DESC LIMIT 1) lhs \
+                 RIGHT ANTI JOIN (SELECT id, qdrant_nearest_with_mmr_score(embedding, 0.5, 8, \
+                 0.0, 1.0) AS score FROM vectors ORDER BY score DESC LIMIT 2) rhs ON lhs.id = \
+                 rhs.id ORDER BY rhs.id",
+            );
 
             pub(crate) const ALL: &[SqlCase] = &[
                 CANONICAL,
@@ -1728,6 +2111,15 @@ pub(crate) mod supported {
                 WINDOW_OVER_SUBQUERY,
                 AGGREGATE_SUBQUERY,
                 AGGREGATE_CTE,
+                LEFT_JOIN,
+                INNER_JOIN_USING,
+                RIGHT_JOIN,
+                FULL_JOIN,
+                CROSS_JOIN,
+                LEFT_SEMI_JOIN,
+                LEFT_ANTI_JOIN,
+                RIGHT_SEMI_JOIN,
+                RIGHT_ANTI_JOIN,
             ];
         }
 
@@ -1777,6 +2169,91 @@ pub(crate) mod supported {
                  0.0], [struct([1.0, 0.0], 1.0), struct([0.0, 1.0], -0.5)], 1.0, 0.5, 0.25)) AS \
                  avg_score FROM vectors) SELECT * FROM ranked",
             );
+            pub(crate) const LEFT_JOIN: SqlCase = SqlCase::new(
+                "query.relevance.left_join",
+                "SELECT lhs.id, COALESCE(rhs.score, 0.0) AS rhs_score FROM (SELECT id, \
+                 qdrant_relevance_feedback_score(embedding, [1.0, 0.0], [struct([1.0, 0.0], 1.0), \
+                 struct([0.0, 1.0], -0.5)], 1.0, 0.5, 0.25) AS score FROM vectors ORDER BY score \
+                 DESC LIMIT 2) lhs LEFT JOIN (SELECT id, \
+                 qdrant_relevance_feedback_score(embedding, [0.0, 1.0], [struct([0.0, 1.0], 1.0), \
+                 struct([1.0, 0.0], -0.5)], 1.0, 0.5, 0.25) AS score FROM vectors ORDER BY score \
+                 DESC LIMIT 2) rhs ON lhs.id = rhs.id ORDER BY lhs.id",
+            );
+            pub(crate) const INNER_JOIN_USING: SqlCase = SqlCase::new(
+                "query.relevance.inner_join_using",
+                "SELECT id FROM (SELECT id, qdrant_relevance_feedback_score(embedding, [1.0, \
+                 0.0], [struct([1.0, 0.0], 1.0), struct([0.0, 1.0], -0.5)], 1.0, 0.5, 0.25) AS \
+                 score FROM vectors ORDER BY score DESC LIMIT 2) lhs JOIN (SELECT id, \
+                 qdrant_relevance_feedback_score(embedding, [0.0, 1.0], [struct([0.0, 1.0], 1.0), \
+                 struct([1.0, 0.0], -0.5)], 1.0, 0.5, 0.25) AS score FROM vectors ORDER BY score \
+                 DESC LIMIT 2) rhs USING (id) ORDER BY id",
+            );
+            pub(crate) const RIGHT_JOIN: SqlCase = SqlCase::new(
+                "query.relevance.right_join",
+                "SELECT rhs.id, COALESCE(lhs.score, 0.0) AS lhs_score FROM (SELECT id, \
+                 qdrant_relevance_feedback_score(embedding, [1.0, 0.0], [struct([1.0, 0.0], 1.0), \
+                 struct([0.0, 1.0], -0.5)], 1.0, 0.5, 0.25) AS score FROM vectors ORDER BY score \
+                 DESC LIMIT 2) lhs RIGHT JOIN (SELECT id, \
+                 qdrant_relevance_feedback_score(embedding, [0.0, 1.0], [struct([0.0, 1.0], 1.0), \
+                 struct([1.0, 0.0], -0.5)], 1.0, 0.5, 0.25) AS score FROM vectors ORDER BY score \
+                 DESC LIMIT 2) rhs ON lhs.id = rhs.id ORDER BY rhs.id",
+            );
+            pub(crate) const FULL_JOIN: SqlCase = SqlCase::new(
+                "query.relevance.full_join",
+                "SELECT COALESCE(lhs.id, rhs.id) AS id FROM (SELECT id, \
+                 qdrant_relevance_feedback_score(embedding, [1.0, 0.0], [struct([1.0, 0.0], 1.0), \
+                 struct([0.0, 1.0], -0.5)], 1.0, 0.5, 0.25) AS score FROM vectors ORDER BY score \
+                 DESC LIMIT 2) lhs FULL OUTER JOIN (SELECT id, \
+                 qdrant_relevance_feedback_score(embedding, [0.0, 1.0], [struct([0.0, 1.0], 1.0), \
+                 struct([1.0, 0.0], -0.5)], 1.0, 0.5, 0.25) AS score FROM vectors ORDER BY score \
+                 DESC LIMIT 2) rhs ON lhs.id = rhs.id ORDER BY id",
+            );
+            pub(crate) const CROSS_JOIN: SqlCase = SqlCase::new(
+                "query.relevance.cross_join",
+                "SELECT lhs.id, rhs.id AS rhs_id FROM (SELECT id, \
+                 qdrant_relevance_feedback_score(embedding, [1.0, 0.0], [struct([1.0, 0.0], 1.0), \
+                 struct([0.0, 1.0], -0.5)], 1.0, 0.5, 0.25) AS score FROM vectors ORDER BY score \
+                 DESC LIMIT 2) lhs CROSS JOIN (SELECT id, \
+                 qdrant_relevance_feedback_score(embedding, [0.0, 1.0], [struct([0.0, 1.0], 1.0), \
+                 struct([1.0, 0.0], -0.5)], 1.0, 0.5, 0.25) AS score FROM vectors ORDER BY score \
+                 DESC LIMIT 2) rhs ORDER BY lhs.id, rhs_id",
+            );
+            pub(crate) const LEFT_SEMI_JOIN: SqlCase = SqlCase::new(
+                "query.relevance.left_semi_join",
+                "SELECT lhs.id FROM (SELECT id, qdrant_relevance_feedback_score(embedding, [1.0, \
+                 0.0], [struct([1.0, 0.0], 1.0), struct([0.0, 1.0], -0.5)], 1.0, 0.5, 0.25) AS \
+                 score FROM vectors ORDER BY score DESC LIMIT 2) lhs LEFT SEMI JOIN (SELECT id, \
+                 qdrant_relevance_feedback_score(embedding, [0.0, 1.0], [struct([0.0, 1.0], 1.0), \
+                 struct([1.0, 0.0], -0.5)], 1.0, 0.5, 0.25) AS score FROM vectors ORDER BY score \
+                 DESC LIMIT 2) rhs ON lhs.id = rhs.id ORDER BY lhs.id",
+            );
+            pub(crate) const LEFT_ANTI_JOIN: SqlCase = SqlCase::new(
+                "query.relevance.left_anti_join",
+                "SELECT lhs.id FROM (SELECT id, qdrant_relevance_feedback_score(embedding, [1.0, \
+                 0.0], [struct([1.0, 0.0], 1.0), struct([0.0, 1.0], -0.5)], 1.0, 0.5, 0.25) AS \
+                 score FROM vectors ORDER BY score DESC LIMIT 2) lhs LEFT ANTI JOIN (SELECT id, \
+                 qdrant_relevance_feedback_score(embedding, [0.0, 1.0], [struct([0.0, 1.0], 1.0), \
+                 struct([1.0, 0.0], -0.5)], 1.0, 0.5, 0.25) AS score FROM vectors ORDER BY score \
+                 DESC LIMIT 1) rhs ON lhs.id = rhs.id ORDER BY lhs.id",
+            );
+            pub(crate) const RIGHT_SEMI_JOIN: SqlCase = SqlCase::new(
+                "query.relevance.right_semi_join",
+                "SELECT rhs.id FROM (SELECT id, qdrant_relevance_feedback_score(embedding, [1.0, \
+                 0.0], [struct([1.0, 0.0], 1.0), struct([0.0, 1.0], -0.5)], 1.0, 0.5, 0.25) AS \
+                 score FROM vectors ORDER BY score DESC LIMIT 1) lhs RIGHT SEMI JOIN (SELECT id, \
+                 qdrant_relevance_feedback_score(embedding, [0.0, 1.0], [struct([0.0, 1.0], 1.0), \
+                 struct([1.0, 0.0], -0.5)], 1.0, 0.5, 0.25) AS score FROM vectors ORDER BY score \
+                 DESC LIMIT 2) rhs ON lhs.id = rhs.id ORDER BY rhs.id",
+            );
+            pub(crate) const RIGHT_ANTI_JOIN: SqlCase = SqlCase::new(
+                "query.relevance.right_anti_join",
+                "SELECT rhs.id FROM (SELECT id, qdrant_relevance_feedback_score(embedding, [1.0, \
+                 0.0], [struct([1.0, 0.0], 1.0), struct([0.0, 1.0], -0.5)], 1.0, 0.5, 0.25) AS \
+                 score FROM vectors WHERE id = '9' ORDER BY score DESC LIMIT 1) lhs RIGHT ANTI \
+                 JOIN (SELECT id, qdrant_relevance_feedback_score(embedding, [0.0, 1.0], \
+                 [struct([0.0, 1.0], 1.0), struct([1.0, 0.0], -0.5)], 1.0, 0.5, 0.25) AS score \
+                 FROM vectors ORDER BY score DESC LIMIT 2) rhs ON lhs.id = rhs.id ORDER BY rhs.id",
+            );
 
             pub(crate) const ALL: &[SqlCase] = &[
                 CANONICAL,
@@ -1786,6 +2263,15 @@ pub(crate) mod supported {
                 WINDOW_OVER_SUBQUERY,
                 AGGREGATE_SUBQUERY,
                 AGGREGATE_CTE,
+                LEFT_JOIN,
+                INNER_JOIN_USING,
+                RIGHT_JOIN,
+                FULL_JOIN,
+                CROSS_JOIN,
+                LEFT_SEMI_JOIN,
+                LEFT_ANTI_JOIN,
+                RIGHT_SEMI_JOIN,
+                RIGHT_ANTI_JOIN,
             ];
         }
 

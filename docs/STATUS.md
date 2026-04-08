@@ -188,7 +188,7 @@ Current branch reality:
     - `docs/ADMISSION_MATRIX.md` now records which major semantic families are exact-only, exact-plus-residual, local-fallback, remote-only, or still strict-for-now
     - `tests/catalog/mod.rs` now mirrors supported / unsupported SQL catalogs consumed by `tests/e2e.rs` and `tests/unsupported_e2e.rs`, so capability movement is reviewable as queries, not only prose
     - the mirrored catalogs now also carry explicit subquery coverage per namespace plus broader `CTE`, `UNION ALL`, `UNNEST`, `WINDOW`, and join-matrix SQL inventory where those forms materially interact with qdrant admission behavior
-    - that join matrix now explicitly covers representative `INNER`, `LEFT`, `RIGHT`, `FULL`, `CROSS`, `SEMI`, and `ANTI` forms plus `ON` / `USING` variants across the standard SQL scan/write surface and the qdrant-specific coordination surface
+    - that join matrix now explicitly covers representative `INNER`, `LEFT`, `RIGHT`, `FULL`, `CROSS`, `SEMI`, and `ANTI` forms plus `ON` / `USING` variants across the standard SQL scan/write surface, independent query-family branches joined locally above remote kernels, and the qdrant-specific coordination surface
     - unsupported catalog entries now distinguish `Deferred`, `ByDesign`, `Upstream`, and `InvalidInput` so the current public boundary is readable without code inspection
     - catalog expansion is now explicitly SQL-space-first rather than code-gap-first, so the unsupported inventory can expose real library limits directly as SQL
 
