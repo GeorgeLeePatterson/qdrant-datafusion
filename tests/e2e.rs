@@ -2431,6 +2431,7 @@ error: {err}"
                     || display.contains("QdrantQueryBatchExec")
                     || display.contains("ProjectionExec")
                     || display.contains("FilterExec")
+                    || display.contains("AggregateExec")
                     || display.contains("WindowAggExec")
                     || display.contains("HashJoinExec")
                     || display.contains("JoinExec"),
@@ -2466,6 +2467,7 @@ error: {err}"
             assert!(
                 display.contains("QdrantQueryExec")
                     || display.contains("SortExec")
+                    || display.contains("AggregateExec")
                     || display.contains("WindowAggExec"),
                 "{display}"
             );
@@ -2485,7 +2487,9 @@ error: {err}"
                     ))
                 })?;
             assert!(
-                display.contains("QdrantQueryExec") || display.contains("WindowAggExec"),
+                display.contains("QdrantQueryExec")
+                    || display.contains("AggregateExec")
+                    || display.contains("WindowAggExec"),
                 "{display}"
             );
         }

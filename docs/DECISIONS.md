@@ -158,7 +158,7 @@ Last updated: 2026-04-07
       - omitted projected score ordering uses Qdrant's native score-desc result order
       - projected `ORDER BY score DESC` is redundant and optimizes away, while projected `ORDER BY score ASC` remains local
       - optional score-threshold predicates
-      - benign local projection shells and local residual filter shells can remain above the closed qdrant query kernel, including later score projection above those local filter shells
+      - benign local projection shells, local aggregate shells, and local residual filter shells can remain above the closed qdrant query kernel, including later score projection above those local filter shells
     - projecting the score column is optional
     - when the score is projected, aliases win; otherwise naming follows normal `DataFusion`
       expression naming

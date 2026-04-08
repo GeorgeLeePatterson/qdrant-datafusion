@@ -16,11 +16,6 @@ pub(crate) struct ProcessingState {
     clippy::unnecessary_wraps,
     reason = "state transition methods share a uniform Result-based interface across variants"
 )]
-#[expect(
-    clippy::unused_self,
-    reason = "processing transition methods stay instance-based to mirror the state machine \
-              surface"
-)]
 impl ProcessingState {
     pub(crate) fn finish_root(self, plan: &LogicalPlan) -> Result<Option<LogicalPlan>> {
         self.op.local_fallback(&self.source, plan)
@@ -136,6 +131,14 @@ impl ProcessingState {
         plan: LogicalPlan,
         transformed: bool,
     ) -> Result<super::super::Analysis> {
+        if let Some(local_shell) =
+            self.op.clone().local_aggregate_shell(self.source.clone(), &self.filters, &plan)?
+        {
+            return Ok(super::super::Analysis::new(local_shell, State::local(), true));
+        }
+        if let Some(local_plan) = self.op.local_fallback(&self.source, &plan)? {
+            return Ok(super::super::Analysis::new(local_plan, State::local(), true));
+        }
         Ok(super::super::fatal(
             plan,
             transformed,

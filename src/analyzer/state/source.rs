@@ -158,12 +158,8 @@ impl SourceState {
         plan: LogicalPlan,
         transformed: bool,
     ) -> Result<super::super::Analysis> {
-        if SurfaceCall::collect(&plan.expressions())?.is_some() {
-            return Ok(super::super::fatal(
-                plan,
-                transformed,
-                "qdrant surface call is not admitted inside aggregate semantics",
-            ));
+        if let Some(surface) = SurfaceCall::collect(&plan.expressions())? {
+            return self.open(surface)?.aggregate(plan, transformed);
         }
         match AggregateSurface::of(&plan, &self.source)? {
             AggregateSurface::Local => self.localize(plan, transformed),

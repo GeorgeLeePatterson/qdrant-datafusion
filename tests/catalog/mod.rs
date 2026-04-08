@@ -358,6 +358,14 @@ pub(crate) mod supported {
                 "SELECT id FROM vectors ORDER BY payload(payload:rank, 'Integer') + 1 DESC, id \
                  DESC",
             );
+            pub(crate) const RAW_PAYLOAD_ARITHMETIC: SqlCase = SqlCase::new(
+                "scan.ordering.raw_payload_arithmetic",
+                "SELECT id FROM vectors ORDER BY payload:rank + 1",
+            );
+            pub(crate) const RAW_PAYLOAD_DIVISION: SqlCase = SqlCase::new(
+                "scan.ordering.raw_payload_division",
+                "SELECT id FROM vectors ORDER BY payload:rank / 2, id",
+            );
             pub(crate) const HINTED_PAYLOAD_FUNCTION: SqlCase = SqlCase::new(
                 "scan.ordering.hinted_payload_function",
                 "SELECT id FROM vectors ORDER BY ABS(payload(payload:rank, 'Integer') - 15), id",
@@ -387,6 +395,11 @@ pub(crate) mod supported {
                 "SELECT id FROM vectors ORDER BY ABS(payload(payload:rank, 'Integer') - 20), \
                  payload(payload:tag, 'Utf8'), id",
             );
+            pub(crate) const MIXED_LOCAL_RAW_PAYLOAD_SECONDARY: SqlCase = SqlCase::new(
+                "scan.ordering.mixed_local_raw_payload_secondary",
+                "SELECT id FROM vectors ORDER BY ABS(payload(payload:rank, 'Integer') - 20), \
+                 payload:tag, id",
+            );
             pub(crate) const SUBQUERY: SqlCase = SqlCase::new(
                 "scan.ordering.subquery",
                 "SELECT id FROM (SELECT id, payload:rank AS rank FROM vectors) ordered ORDER BY \
@@ -404,12 +417,15 @@ pub(crate) mod supported {
                 CAST_PAYLOAD_DESC,
                 ORDER_BY_SCORE_CAST,
                 HINTED_PAYLOAD_ARITHMETIC_DESC,
+                RAW_PAYLOAD_ARITHMETIC,
+                RAW_PAYLOAD_DIVISION,
                 HINTED_PAYLOAD_FUNCTION,
                 CASE_HINTED_PAYLOAD,
                 ORDINAL_TYPED,
                 NULLS_LAST_TYPED,
                 NULLS_FIRST_TYPED,
                 MULTI_KEY_LOCAL,
+                MIXED_LOCAL_RAW_PAYLOAD_SECONDARY,
                 SUBQUERY,
                 CTE_DESC,
             ];
@@ -972,6 +988,16 @@ pub(crate) mod supported {
                 "SELECT id, AVG(score) OVER () AS avg_score FROM (SELECT id, \
                  qdrant_nearest_score(vector, 1.0, 0.0) AS score FROM vectors) ranked ORDER BY id",
             );
+            pub(crate) const AGGREGATE_SUBQUERY: SqlCase = SqlCase::new(
+                "query.nearest.aggregate_subquery",
+                "SELECT * FROM (SELECT AVG(qdrant_nearest_score(vector, 1.0, 0.0)) AS avg_score \
+                 FROM vectors) ranked",
+            );
+            pub(crate) const AGGREGATE_CTE: SqlCase = SqlCase::new(
+                "query.nearest.aggregate_cte",
+                "WITH ranked AS (SELECT AVG(qdrant_nearest_score(vector, 1.0, 0.0)) AS avg_score \
+                 FROM vectors) SELECT * FROM ranked",
+            );
             pub(crate) const FILTERED_SUBQUERY_FUNCTION: SqlCase = SqlCase::new(
                 "query.nearest.filtered_subquery_function",
                 "SELECT id FROM (SELECT id, qdrant_nearest_score(vector, 1.0, 0.0) AS score FROM \
@@ -1079,6 +1105,12 @@ pub(crate) mod supported {
                  score FROM vectors) ranked GROUP BY id, score HAVING MAX(score) >= 0.0 ORDER BY \
                  id",
             );
+            pub(crate) const HAVING_DIRECT: SqlCase = SqlCase::new(
+                "query.nearest.having_direct",
+                "SELECT qdrant_nearest_score(vector, 1.0, 0.0) AS score FROM vectors GROUP BY \
+                 qdrant_nearest_score(vector, 1.0, 0.0) HAVING MAX(qdrant_nearest_score(vector, \
+                 1.0, 0.0)) >= 0.0",
+            );
             pub(crate) const LEFT_JOIN: SqlCase = SqlCase::new(
                 "query.nearest.left_join",
                 concat!(
@@ -1106,6 +1138,8 @@ pub(crate) mod supported {
                 ABS_LOCAL_PROJECTION,
                 CASE_LOCAL_PROJECTION,
                 WINDOW_OVER_SUBQUERY,
+                AGGREGATE_SUBQUERY,
+                AGGREGATE_CTE,
                 FILTERED_SUBQUERY_FUNCTION,
                 PAYLOAD_PROJECTION_SIMPLE,
                 SUBQUERY,
@@ -1121,6 +1155,7 @@ pub(crate) mod supported {
                 IN_SUBQUERY,
                 EXISTS_CORRELATED,
                 HAVING_SUBQUERY,
+                HAVING_DIRECT,
                 SCALAR_SUBQUERY_THRESHOLD,
             ];
         }
@@ -1157,6 +1192,16 @@ pub(crate) mod supported {
                 "SELECT id, AVG(score) OVER () AS avg_score FROM (SELECT id, \
                  qdrant_sample_score() AS score FROM vectors) sampled ORDER BY id",
             );
+            pub(crate) const AGGREGATE_SUBQUERY: SqlCase = SqlCase::new(
+                "query.sample.aggregate_subquery",
+                "SELECT * FROM (SELECT AVG(qdrant_sample_score()) AS avg_score FROM vectors) \
+                 ranked",
+            );
+            pub(crate) const AGGREGATE_CTE: SqlCase = SqlCase::new(
+                "query.sample.aggregate_cte",
+                "WITH ranked AS (SELECT AVG(qdrant_sample_score()) AS avg_score FROM vectors) \
+                 SELECT * FROM ranked",
+            );
             pub(crate) const LOCAL_PROJECTION: SqlCase = SqlCase::new(
                 "query.sample.local_projection",
                 "SELECT id, qdrant_sample_score() + CAST(1.0 AS FLOAT) AS shifted_score FROM \
@@ -1170,6 +1215,8 @@ pub(crate) mod supported {
                 CTE,
                 ASC_LOCAL_SORT,
                 WINDOW_OVER_SUBQUERY,
+                AGGREGATE_SUBQUERY,
+                AGGREGATE_CTE,
                 LOCAL_PROJECTION,
             ];
         }
@@ -1204,14 +1251,32 @@ pub(crate) mod supported {
                  qdrant_recommend_score(embedding, [[1.0, 0.0]], [[0.0, 1.0]]) AS score FROM \
                  vectors) ranked ORDER BY id",
             );
+            pub(crate) const AGGREGATE_SUBQUERY: SqlCase = SqlCase::new(
+                "query.recommend.aggregate_subquery",
+                "SELECT * FROM (SELECT AVG(qdrant_recommend_score(embedding, [[1.0, 0.0]], [[0.0, \
+                 1.0]])) AS avg_score FROM vectors) ranked",
+            );
+            pub(crate) const AGGREGATE_CTE: SqlCase = SqlCase::new(
+                "query.recommend.aggregate_cte",
+                "WITH ranked AS (SELECT AVG(qdrant_recommend_score(embedding, [[1.0, 0.0]], \
+                 [[0.0, 1.0]])) AS avg_score FROM vectors) SELECT * FROM ranked",
+            );
             pub(crate) const LOCAL_FILTER: SqlCase = SqlCase::new(
                 "query.recommend.local_filter",
                 "SELECT id FROM vectors WHERE qdrant_recommend_score(embedding, [[1.0, 0.0]], \
                  [[0.0, 1.0]]) <= 1.0 ORDER BY id",
             );
 
-            pub(crate) const ALL: &[SqlCase] =
-                &[DEFAULT, STRATEGY, SUBQUERY, CTE, WINDOW_OVER_SUBQUERY, LOCAL_FILTER];
+            pub(crate) const ALL: &[SqlCase] = &[
+                DEFAULT,
+                STRATEGY,
+                SUBQUERY,
+                CTE,
+                WINDOW_OVER_SUBQUERY,
+                AGGREGATE_SUBQUERY,
+                AGGREGATE_CTE,
+                LOCAL_FILTER,
+            ];
         }
 
         pub(crate) mod discover {
@@ -1240,8 +1305,25 @@ pub(crate) mod supported {
                  qdrant_discover_score(embedding, [1.0, 0.0], [[[1.0, 0.0], [0.0, 1.0]]]) AS \
                  score FROM vectors) ranked ORDER BY id",
             );
+            pub(crate) const AGGREGATE_SUBQUERY: SqlCase = SqlCase::new(
+                "query.discover.aggregate_subquery",
+                "SELECT * FROM (SELECT AVG(qdrant_discover_score(embedding, [1.0, 0.0], [[[1.0, \
+                 0.0], [0.0, 1.0]]])) AS avg_score FROM vectors) ranked",
+            );
+            pub(crate) const AGGREGATE_CTE: SqlCase = SqlCase::new(
+                "query.discover.aggregate_cte",
+                "WITH ranked AS (SELECT AVG(qdrant_discover_score(embedding, [1.0, 0.0], [[[1.0, \
+                 0.0], [0.0, 1.0]]])) AS avg_score FROM vectors) SELECT * FROM ranked",
+            );
 
-            pub(crate) const ALL: &[SqlCase] = &[CANONICAL, SUBQUERY, CTE, WINDOW_OVER_SUBQUERY];
+            pub(crate) const ALL: &[SqlCase] = &[
+                CANONICAL,
+                SUBQUERY,
+                CTE,
+                WINDOW_OVER_SUBQUERY,
+                AGGREGATE_SUBQUERY,
+                AGGREGATE_CTE,
+            ];
         }
 
         pub(crate) mod context {
@@ -1269,8 +1351,25 @@ pub(crate) mod supported {
                  qdrant_context_score(embedding, [[[1.0, 0.0], [0.0, 1.0]]]) AS score FROM \
                  vectors) ranked ORDER BY id",
             );
+            pub(crate) const AGGREGATE_SUBQUERY: SqlCase = SqlCase::new(
+                "query.context.aggregate_subquery",
+                "SELECT * FROM (SELECT AVG(qdrant_context_score(embedding, [[[1.0, 0.0], [0.0, \
+                 1.0]]])) AS avg_score FROM vectors) ranked",
+            );
+            pub(crate) const AGGREGATE_CTE: SqlCase = SqlCase::new(
+                "query.context.aggregate_cte",
+                "WITH ranked AS (SELECT AVG(qdrant_context_score(embedding, [[[1.0, 0.0], [0.0, \
+                 1.0]]])) AS avg_score FROM vectors) SELECT * FROM ranked",
+            );
 
-            pub(crate) const ALL: &[SqlCase] = &[CANONICAL, SUBQUERY, CTE, WINDOW_OVER_SUBQUERY];
+            pub(crate) const ALL: &[SqlCase] = &[
+                CANONICAL,
+                SUBQUERY,
+                CTE,
+                WINDOW_OVER_SUBQUERY,
+                AGGREGATE_SUBQUERY,
+                AGGREGATE_CTE,
+            ];
         }
 
         pub(crate) mod mmr {
@@ -1298,8 +1397,25 @@ pub(crate) mod supported {
                  qdrant_nearest_with_mmr_score(embedding, 0.9, 8, 1.0, 0.0) AS score FROM \
                  vectors) ranked ORDER BY id",
             );
+            pub(crate) const AGGREGATE_SUBQUERY: SqlCase = SqlCase::new(
+                "query.mmr.aggregate_subquery",
+                "SELECT * FROM (SELECT AVG(qdrant_nearest_with_mmr_score(embedding, 0.9, 8, 1.0, \
+                 0.0)) AS avg_score FROM vectors) ranked",
+            );
+            pub(crate) const AGGREGATE_CTE: SqlCase = SqlCase::new(
+                "query.mmr.aggregate_cte",
+                "WITH ranked AS (SELECT AVG(qdrant_nearest_with_mmr_score(embedding, 0.9, 8, 1.0, \
+                 0.0)) AS avg_score FROM vectors) SELECT * FROM ranked",
+            );
 
-            pub(crate) const ALL: &[SqlCase] = &[CANONICAL, SUBQUERY, CTE, WINDOW_OVER_SUBQUERY];
+            pub(crate) const ALL: &[SqlCase] = &[
+                CANONICAL,
+                SUBQUERY,
+                CTE,
+                WINDOW_OVER_SUBQUERY,
+                AGGREGATE_SUBQUERY,
+                AGGREGATE_CTE,
+            ];
         }
 
         pub(crate) mod relevance {
@@ -1330,8 +1446,27 @@ pub(crate) mod supported {
                  struct([0.0, 1.0], -0.5)], 1.0, 0.5, 0.25) AS score FROM vectors) ranked ORDER \
                  BY id",
             );
+            pub(crate) const AGGREGATE_SUBQUERY: SqlCase = SqlCase::new(
+                "query.relevance.aggregate_subquery",
+                "SELECT * FROM (SELECT AVG(qdrant_relevance_feedback_score(embedding, [1.0, 0.0], \
+                 [struct([1.0, 0.0], 1.0), struct([0.0, 1.0], -0.5)], 1.0, 0.5, 0.25)) AS \
+                 avg_score FROM vectors) ranked",
+            );
+            pub(crate) const AGGREGATE_CTE: SqlCase = SqlCase::new(
+                "query.relevance.aggregate_cte",
+                "WITH ranked AS (SELECT AVG(qdrant_relevance_feedback_score(embedding, [1.0, \
+                 0.0], [struct([1.0, 0.0], 1.0), struct([0.0, 1.0], -0.5)], 1.0, 0.5, 0.25)) AS \
+                 avg_score FROM vectors) SELECT * FROM ranked",
+            );
 
-            pub(crate) const ALL: &[SqlCase] = &[CANONICAL, SUBQUERY, CTE, WINDOW_OVER_SUBQUERY];
+            pub(crate) const ALL: &[SqlCase] = &[
+                CANONICAL,
+                SUBQUERY,
+                CTE,
+                WINDOW_OVER_SUBQUERY,
+                AGGREGATE_SUBQUERY,
+                AGGREGATE_CTE,
+            ];
         }
 
         pub(crate) mod grouped {
@@ -1754,13 +1889,6 @@ pub(crate) mod unsupported {
         pub(crate) mod ordering {
             use super::UnsupportedSqlCase;
 
-            pub(crate) const RAW_PAYLOAD_ARITHMETIC: UnsupportedSqlCase = UnsupportedSqlCase::new(
-                "scan.ordering.raw_payload_arithmetic",
-                "SELECT id FROM vectors ORDER BY payload:rank + 1",
-                "Q-040",
-                "raw payload arithmetic still fails before qdrant-specific rewrites run",
-                "Cannot coerce arithmetic expression",
-            );
             pub(crate) const SUBQUERY_RAW_PAYLOAD_ARITHMETIC: UnsupportedSqlCase =
                 UnsupportedSqlCase::new(
                     "scan.ordering.subquery_raw_payload_arithmetic",
@@ -1785,8 +1913,9 @@ pub(crate) mod unsupported {
                     "SELECT id, ROW_NUMBER() OVER (ORDER BY payload:rank + 1) AS row_num FROM \
                      vectors ORDER BY id",
                     "Q-040",
-                    "raw payload arithmetic still fails before qdrant-specific rewrites run",
-                    "Cannot coerce arithmetic expression",
+                    "window ordering over raw payload arithmetic now gets typed, but the window \
+                     output naming still does not follow the rewritten payload expression",
+                    "No field named \"row_number() ORDER BY",
                 );
             pub(crate) const REMOTE_ONLY_PREDICATE: UnsupportedSqlCase =
                 UnsupportedSqlCase::by_design(
@@ -1806,13 +1935,6 @@ pub(crate) mod unsupported {
                      than an arbitrary scalar expression",
                     "qdrant_order_by_score requires a qdrant payload path",
                 );
-            pub(crate) const RAW_PAYLOAD_DIVISION: UnsupportedSqlCase = UnsupportedSqlCase::new(
-                "scan.ordering.raw_payload_division",
-                "SELECT id FROM vectors ORDER BY payload:rank / 2, id",
-                "Q-040",
-                "raw payload arithmetic still fails before qdrant-specific rewrites run",
-                "Cannot coerce arithmetic expression",
-            );
             pub(crate) const TEXT_MATCH_NULLS_LAST: UnsupportedSqlCase =
                 UnsupportedSqlCase::by_design(
                     "scan.ordering.text_match_nulls_last",
@@ -1822,27 +1944,13 @@ pub(crate) mod unsupported {
                      ordering key, including NULLS FIRST/LAST variants",
                     "payload_text_match",
                 );
-            pub(crate) const MIXED_LOCAL_RAW_PAYLOAD_SECONDARY: UnsupportedSqlCase =
-                UnsupportedSqlCase::new(
-                    "scan.ordering.mixed_local_raw_payload_secondary",
-                    "SELECT id FROM vectors ORDER BY ABS(payload(payload:rank, 'Integer') - 20), \
-                     payload:tag, id",
-                    "Q-040",
-                    "once ordering becomes local, residual raw payload sort keys still fail \
-                     physical execution unless they are also rewritten to typed local accessors",
-                    "Binary operator 'Colon' is not supported in the physical expr",
-                );
-
             pub(crate) const ALL: &[UnsupportedSqlCase] = &[
-                RAW_PAYLOAD_ARITHMETIC,
                 SUBQUERY_RAW_PAYLOAD_ARITHMETIC,
                 CTE_RAW_PAYLOAD_ARITHMETIC,
                 WINDOW_RAW_PAYLOAD_ARITHMETIC,
                 REMOTE_ONLY_PREDICATE,
                 ORDER_BY_SCORE_NON_PATH,
-                RAW_PAYLOAD_DIVISION,
                 TEXT_MATCH_NULLS_LAST,
-                MIXED_LOCAL_RAW_PAYLOAD_SECONDARY,
             ];
         }
 
@@ -2040,14 +2148,6 @@ pub(crate) mod unsupported {
         pub(crate) mod nearest {
             use super::UnsupportedSqlCase;
 
-            pub(crate) const AGGREGATE_SUBQUERY: UnsupportedSqlCase = UnsupportedSqlCase::new(
-                "query.nearest.aggregate_subquery",
-                "SELECT * FROM (SELECT AVG(qdrant_nearest_score(vector, 1.0, 0.0)) AS avg_score \
-                 FROM vectors) ranked",
-                "Q-054",
-                "query surfaces are not admitted inside aggregate semantics yet",
-                "qdrant surface call is not admitted inside aggregate semantics",
-            );
             pub(crate) const WINDOW_DIRECT: UnsupportedSqlCase = UnsupportedSqlCase::new(
                 "query.nearest.window_direct",
                 "SELECT id, AVG(qdrant_nearest_score(vector, 1.0, 0.0)) OVER () AS avg_score FROM \
@@ -2057,23 +2157,6 @@ pub(crate) mod unsupported {
                  local shell",
                 "qdrant processing must close to a kernel or stay region-owned",
             );
-            pub(crate) const AGGREGATE_CTE: UnsupportedSqlCase = UnsupportedSqlCase::new(
-                "query.nearest.aggregate_cte",
-                "WITH ranked AS (SELECT AVG(qdrant_nearest_score(vector, 1.0, 0.0)) AS avg_score \
-                 FROM vectors) SELECT * FROM ranked",
-                "Q-054",
-                "query surfaces are not admitted inside aggregate semantics yet",
-                "qdrant surface call is not admitted inside aggregate semantics",
-            );
-            pub(crate) const HAVING_DIRECT: UnsupportedSqlCase = UnsupportedSqlCase::new(
-                "query.nearest.having_direct",
-                "SELECT qdrant_nearest_score(vector, 1.0, 0.0) AS score FROM vectors GROUP BY \
-                 qdrant_nearest_score(vector, 1.0, 0.0) HAVING MAX(qdrant_nearest_score(vector, \
-                 1.0, 0.0)) >= 0.0",
-                "Q-054",
-                "query surfaces are not admitted inside group-by and having semantics yet",
-                "qdrant surface call is not admitted inside aggregate semantics",
-            );
             pub(crate) const WIDTH_MISMATCH: UnsupportedSqlCase = UnsupportedSqlCase::invalid(
                 "query.nearest.width_mismatch",
                 "SELECT id, qdrant_nearest_score(vector, 1.0) AS score FROM vectors ORDER BY \
@@ -2082,21 +2165,12 @@ pub(crate) mod unsupported {
                 "query vector width does not match source vector width",
             );
 
-            pub(crate) const ALL: &[UnsupportedSqlCase] =
-                &[AGGREGATE_SUBQUERY, WINDOW_DIRECT, AGGREGATE_CTE, HAVING_DIRECT, WIDTH_MISMATCH];
+            pub(crate) const ALL: &[UnsupportedSqlCase] = &[WINDOW_DIRECT, WIDTH_MISMATCH];
         }
 
         pub(crate) mod sample {
             use super::UnsupportedSqlCase;
 
-            pub(crate) const AGGREGATE_SUBQUERY: UnsupportedSqlCase = UnsupportedSqlCase::new(
-                "query.sample.aggregate_subquery",
-                "SELECT * FROM (SELECT AVG(qdrant_sample_score()) AS avg_score FROM vectors) \
-                 ranked",
-                "Q-054",
-                "query surfaces are not admitted inside aggregate semantics yet",
-                "qdrant surface call is not admitted inside aggregate semantics",
-            );
             pub(crate) const WINDOW_DIRECT: UnsupportedSqlCase = UnsupportedSqlCase::new(
                 "query.sample.window_direct",
                 "SELECT id, AVG(qdrant_sample_score()) OVER () AS avg_score FROM vectors",
@@ -2105,30 +2179,13 @@ pub(crate) mod unsupported {
                  local shell",
                 "qdrant processing must close to a kernel or stay region-owned",
             );
-            pub(crate) const AGGREGATE_CTE: UnsupportedSqlCase = UnsupportedSqlCase::new(
-                "query.sample.aggregate_cte",
-                "WITH ranked AS (SELECT AVG(qdrant_sample_score()) AS avg_score FROM vectors) \
-                 SELECT * FROM ranked",
-                "Q-054",
-                "query surfaces are not admitted inside aggregate semantics yet",
-                "qdrant surface call is not admitted inside aggregate semantics",
-            );
 
-            pub(crate) const ALL: &[UnsupportedSqlCase] =
-                &[AGGREGATE_SUBQUERY, WINDOW_DIRECT, AGGREGATE_CTE];
+            pub(crate) const ALL: &[UnsupportedSqlCase] = &[WINDOW_DIRECT];
         }
 
         pub(crate) mod recommend {
             use super::UnsupportedSqlCase;
 
-            pub(crate) const AGGREGATE_SUBQUERY: UnsupportedSqlCase = UnsupportedSqlCase::new(
-                "query.recommend.aggregate_subquery",
-                "SELECT * FROM (SELECT AVG(qdrant_recommend_score(embedding, [[1.0, 0.0]], [[0.0, \
-                 1.0]])) AS avg_score FROM vectors) ranked",
-                "Q-054",
-                "query surfaces are not admitted inside aggregate semantics yet",
-                "qdrant surface call is not admitted inside aggregate semantics",
-            );
             pub(crate) const WINDOW_DIRECT: UnsupportedSqlCase = UnsupportedSqlCase::new(
                 "query.recommend.window_direct",
                 "SELECT id, AVG(qdrant_recommend_score(embedding, [[1.0, 0.0]], [[0.0, 1.0]])) \
@@ -2138,30 +2195,13 @@ pub(crate) mod unsupported {
                  local shell",
                 "qdrant processing must close to a kernel or stay region-owned",
             );
-            pub(crate) const AGGREGATE_CTE: UnsupportedSqlCase = UnsupportedSqlCase::new(
-                "query.recommend.aggregate_cte",
-                "WITH ranked AS (SELECT AVG(qdrant_recommend_score(embedding, [[1.0, 0.0]], \
-                 [[0.0, 1.0]])) AS avg_score FROM vectors) SELECT * FROM ranked",
-                "Q-054",
-                "query surfaces are not admitted inside aggregate semantics yet",
-                "qdrant surface call is not admitted inside aggregate semantics",
-            );
 
-            pub(crate) const ALL: &[UnsupportedSqlCase] =
-                &[AGGREGATE_SUBQUERY, WINDOW_DIRECT, AGGREGATE_CTE];
+            pub(crate) const ALL: &[UnsupportedSqlCase] = &[WINDOW_DIRECT];
         }
 
         pub(crate) mod discover {
             use super::UnsupportedSqlCase;
 
-            pub(crate) const AGGREGATE_SUBQUERY: UnsupportedSqlCase = UnsupportedSqlCase::new(
-                "query.discover.aggregate_subquery",
-                "SELECT * FROM (SELECT AVG(qdrant_discover_score(embedding, [1.0, 0.0], [[[1.0, \
-                 0.0], [0.0, 1.0]]])) AS avg_score FROM vectors) ranked",
-                "Q-054",
-                "query surfaces are not admitted inside aggregate semantics yet",
-                "qdrant surface call is not admitted inside aggregate semantics",
-            );
             pub(crate) const WINDOW_DIRECT: UnsupportedSqlCase = UnsupportedSqlCase::new(
                 "query.discover.window_direct",
                 "SELECT id, AVG(qdrant_discover_score(embedding, [1.0, 0.0], [[[1.0, 0.0], [0.0, \
@@ -2171,30 +2211,13 @@ pub(crate) mod unsupported {
                  local shell",
                 "qdrant processing must close to a kernel or stay region-owned",
             );
-            pub(crate) const AGGREGATE_CTE: UnsupportedSqlCase = UnsupportedSqlCase::new(
-                "query.discover.aggregate_cte",
-                "WITH ranked AS (SELECT AVG(qdrant_discover_score(embedding, [1.0, 0.0], [[[1.0, \
-                 0.0], [0.0, 1.0]]])) AS avg_score FROM vectors) SELECT * FROM ranked",
-                "Q-054",
-                "query surfaces are not admitted inside aggregate semantics yet",
-                "qdrant surface call is not admitted inside aggregate semantics",
-            );
 
-            pub(crate) const ALL: &[UnsupportedSqlCase] =
-                &[AGGREGATE_SUBQUERY, WINDOW_DIRECT, AGGREGATE_CTE];
+            pub(crate) const ALL: &[UnsupportedSqlCase] = &[WINDOW_DIRECT];
         }
 
         pub(crate) mod context {
             use super::UnsupportedSqlCase;
 
-            pub(crate) const AGGREGATE_SUBQUERY: UnsupportedSqlCase = UnsupportedSqlCase::new(
-                "query.context.aggregate_subquery",
-                "SELECT * FROM (SELECT AVG(qdrant_context_score(embedding, [[[1.0, 0.0], [0.0, \
-                 1.0]]])) AS avg_score FROM vectors) ranked",
-                "Q-054",
-                "query surfaces are not admitted inside aggregate semantics yet",
-                "qdrant surface call is not admitted inside aggregate semantics",
-            );
             pub(crate) const WINDOW_DIRECT: UnsupportedSqlCase = UnsupportedSqlCase::new(
                 "query.context.window_direct",
                 "SELECT id, AVG(qdrant_context_score(embedding, [[[1.0, 0.0], [0.0, 1.0]]])) OVER \
@@ -2204,30 +2227,13 @@ pub(crate) mod unsupported {
                  local shell",
                 "qdrant processing must close to a kernel or stay region-owned",
             );
-            pub(crate) const AGGREGATE_CTE: UnsupportedSqlCase = UnsupportedSqlCase::new(
-                "query.context.aggregate_cte",
-                "WITH ranked AS (SELECT AVG(qdrant_context_score(embedding, [[[1.0, 0.0], [0.0, \
-                 1.0]]])) AS avg_score FROM vectors) SELECT * FROM ranked",
-                "Q-054",
-                "query surfaces are not admitted inside aggregate semantics yet",
-                "qdrant surface call is not admitted inside aggregate semantics",
-            );
 
-            pub(crate) const ALL: &[UnsupportedSqlCase] =
-                &[AGGREGATE_SUBQUERY, WINDOW_DIRECT, AGGREGATE_CTE];
+            pub(crate) const ALL: &[UnsupportedSqlCase] = &[WINDOW_DIRECT];
         }
 
         pub(crate) mod mmr {
             use super::UnsupportedSqlCase;
 
-            pub(crate) const AGGREGATE_SUBQUERY: UnsupportedSqlCase = UnsupportedSqlCase::new(
-                "query.mmr.aggregate_subquery",
-                "SELECT * FROM (SELECT AVG(qdrant_nearest_with_mmr_score(embedding, 0.9, 8, 1.0, \
-                 0.0)) AS avg_score FROM vectors) ranked",
-                "Q-054",
-                "query surfaces are not admitted inside aggregate semantics yet",
-                "qdrant surface call is not admitted inside aggregate semantics",
-            );
             pub(crate) const WINDOW_DIRECT: UnsupportedSqlCase = UnsupportedSqlCase::new(
                 "query.mmr.window_direct",
                 "SELECT id, AVG(qdrant_nearest_with_mmr_score(embedding, 0.9, 8, 1.0, 0.0)) OVER \
@@ -2237,31 +2243,13 @@ pub(crate) mod unsupported {
                  local shell",
                 "qdrant processing must close to a kernel or stay region-owned",
             );
-            pub(crate) const AGGREGATE_CTE: UnsupportedSqlCase = UnsupportedSqlCase::new(
-                "query.mmr.aggregate_cte",
-                "WITH ranked AS (SELECT AVG(qdrant_nearest_with_mmr_score(embedding, 0.9, 8, 1.0, \
-                 0.0)) AS avg_score FROM vectors) SELECT * FROM ranked",
-                "Q-054",
-                "query surfaces are not admitted inside aggregate semantics yet",
-                "qdrant surface call is not admitted inside aggregate semantics",
-            );
 
-            pub(crate) const ALL: &[UnsupportedSqlCase] =
-                &[AGGREGATE_SUBQUERY, WINDOW_DIRECT, AGGREGATE_CTE];
+            pub(crate) const ALL: &[UnsupportedSqlCase] = &[WINDOW_DIRECT];
         }
 
         pub(crate) mod relevance {
             use super::UnsupportedSqlCase;
 
-            pub(crate) const AGGREGATE_SUBQUERY: UnsupportedSqlCase = UnsupportedSqlCase::new(
-                "query.relevance.aggregate_subquery",
-                "SELECT * FROM (SELECT AVG(qdrant_relevance_feedback_score(embedding, [1.0, 0.0], \
-                 [struct([1.0, 0.0], 1.0), struct([0.0, 1.0], -0.5)], 1.0, 0.5, 0.25)) AS \
-                 avg_score FROM vectors) ranked",
-                "Q-054",
-                "query surfaces are not admitted inside aggregate semantics yet",
-                "qdrant surface call is not admitted inside aggregate semantics",
-            );
             pub(crate) const WINDOW_DIRECT: UnsupportedSqlCase = UnsupportedSqlCase::new(
                 "query.relevance.window_direct",
                 "SELECT id, AVG(qdrant_relevance_feedback_score(embedding, [1.0, 0.0], \
@@ -2272,18 +2260,8 @@ pub(crate) mod unsupported {
                  local shell",
                 "qdrant processing must close to a kernel or stay region-owned",
             );
-            pub(crate) const AGGREGATE_CTE: UnsupportedSqlCase = UnsupportedSqlCase::new(
-                "query.relevance.aggregate_cte",
-                "WITH ranked AS (SELECT AVG(qdrant_relevance_feedback_score(embedding, [1.0, \
-                 0.0], [struct([1.0, 0.0], 1.0), struct([0.0, 1.0], -0.5)], 1.0, 0.5, 0.25)) AS \
-                 avg_score FROM vectors) SELECT * FROM ranked",
-                "Q-054",
-                "query surfaces are not admitted inside aggregate semantics yet",
-                "qdrant surface call is not admitted inside aggregate semantics",
-            );
 
-            pub(crate) const ALL: &[UnsupportedSqlCase] =
-                &[AGGREGATE_SUBQUERY, WINDOW_DIRECT, AGGREGATE_CTE];
+            pub(crate) const ALL: &[UnsupportedSqlCase] = &[WINDOW_DIRECT];
         }
 
         pub(crate) mod grouped {

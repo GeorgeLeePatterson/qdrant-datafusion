@@ -232,6 +232,9 @@ Use it to resume work without replaying the full repository history.
       when they lower to the same canonical payload path
     - payload-key sort pushdown now also admits order-preserving casts that preserve the same
       effective ordering over the authoritative payload scalar type
+    - raw unhinted payload arithmetic is now a mixed boundary rather than a blanket failure:
+      some scan filter and ordering contexts succeed, while direct projection / aggregate-derived
+      shapes still need earlier typing help through `payload(...)` or explicit `CAST(...)`
 38. `Q-042`: Query-surface payload projections now reuse the same canonical payload resolver as
     scan filter/sort pushdown.
     - query projection admission now resolves payload outputs through authoritative payload schema
@@ -270,10 +273,12 @@ Use it to resume work without replaying the full repository history.
     - docs and tracker state now promote that grouped-nearest `DISTINCT ON` subset from an implementation detail to an admitted current capability while keeping broader grouped retrieval deferred
     - grouped execution validates that returned group ids match scalar payload values on hits so multi-valued grouped fields fail clearly instead of producing SQL-incompatible results
     - outer SQL `LIMIT` is preserved locally because final group ordering is imposed after grouped retrieval, while the grouped request itself uses an exact point-count upper bound instead of Qdrant's default group limit
-45. `Q-048`: retrieval kernels now allow benign local projection shells and local residual filter shells above the closed qdrant query kernel instead of requiring fully remote-only projection/filter shapes.
+45. `Q-048`: retrieval kernels now allow benign local projection shells, local aggregate shells, and local residual filter shells above the closed qdrant query kernel instead of requiring fully remote-only projection/filter shapes.
     - live end-to-end coverage now proves local projection over `qdrant_nearest_score(...) + ...` above a closed `QdrantQueryExec`
+    - aggregate subquery / CTE shapes over current query-family score surfaces now localize cleanly above the closed `QdrantQueryExec` instead of fataling inside aggregate semantics
     - mixed query-kernel predicates now split into exact remote payload/id filters plus local residual `FilterExec` shells instead of fataling when a non-pushdownable score predicate remains
     - those local residual filter shells can now still feed a later projected score column instead of forcing the score marker back into an unsupported local surface
+    - direct nearest `HAVING` over grouped score outputs is now admitted through the same local aggregate-shell path
     - grouped nearest top-1 no longer requires an explicit trailing `score DESC` when SQL only orders by the grouped payload key, while an explicit score tie-break still lowers when present
 46. `Q-049`: grouped retrieval is now widened from nearest-only to the current grouped query-family subset on the existing `DISTINCT ON` contract.
     - planner and live end-to-end coverage now prove grouped `qdrant_recommend_score(...)`, `qdrant_discover_score(...)`, and `qdrant_context_score(...)` on the same `QdrantQueryGroupsExec` path

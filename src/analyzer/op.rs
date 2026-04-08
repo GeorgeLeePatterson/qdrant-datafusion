@@ -182,6 +182,59 @@ impl QueryOp {
             .map(Some)
     }
 
+    fn local_aggregate_shell(
+        self,
+        source: Source,
+        filters: &FiltersState,
+        plan: &LogicalPlan,
+    ) -> Result<Option<LogicalPlan>> {
+        let LogicalPlan::Aggregate(aggregate) = plan else {
+            return Ok(None);
+        };
+        let mut shell =
+            LocalQueryShellBuilder::new(&self, &source, aggregate.input.schema(), false);
+        let rewritten_group_expr = aggregate
+            .group_expr
+            .iter()
+            .map(|expr| shell.rewrite_expr(expr))
+            .collect::<Result<Vec<_>>>()?;
+        let rewritten_aggr_expr = aggregate
+            .aggr_expr
+            .iter()
+            .map(|expr| shell.rewrite_expr(expr))
+            .collect::<Result<Vec<_>>>()?;
+        let support_exprs = shell
+            .support_exprs(&[rewritten_group_expr.clone(), rewritten_aggr_expr.clone()].concat())?;
+        let support_plan = LogicalPlanBuilder::from(aggregate.input.as_ref().clone())
+            .project(support_exprs)?
+            .build()?;
+        let Some(query) = self.project(&source, &support_plan)? else {
+            return Ok(None);
+        };
+        let exact_filters = filters.exact(&source)?;
+        let kernel_plan = query_kernel_plan(
+            QueryKernel::new(source, exact_filters, query, None),
+            Arc::clone(support_plan.schema()),
+        );
+        let aggregate_plan = LogicalPlanBuilder::from(kernel_plan)
+            .aggregate(rewritten_group_expr, rewritten_aggr_expr)?
+            .build()?;
+        let renamed_output_exprs = aggregate_plan
+            .schema()
+            .columns()
+            .into_iter()
+            .enumerate()
+            .map(|(index, column)| {
+                Expr::Column(column).alias(aggregate.schema.field(index).name().clone())
+            })
+            .collect::<Vec<_>>();
+        LogicalPlanBuilder::from(aggregate_plan)
+            .project(renamed_output_exprs)?
+            .build()?
+            .recompute_schema()
+            .map(Some)
+    }
+
     fn distinct_on_kernel(
         mut self,
         source: Source,
@@ -459,6 +512,18 @@ impl Op {
     ) -> Result<Option<LogicalPlan>> {
         match self {
             Self::Query(op) => op.local_filter_shell(source, filters, plan),
+            Self::Facet(_) => Ok(None),
+        }
+    }
+
+    pub(super) fn local_aggregate_shell(
+        self,
+        source: Source,
+        filters: &FiltersState,
+        plan: &LogicalPlan,
+    ) -> Result<Option<LogicalPlan>> {
+        match self {
+            Self::Query(op) => op.local_aggregate_shell(source, filters, plan),
             Self::Facet(_) => Ok(None),
         }
     }
