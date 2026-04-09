@@ -2829,7 +2829,45 @@ mod tests {
         let display = displayable(plan.as_ref()).indent(true).to_string();
 
         assert!(display.contains("DataSinkExec"), "{display}");
-        assert!(display.contains("QdrantInsertSink: collection=vectors"), "{display}");
+        assert!(
+            display.contains("QdrantInsertSink: collection=vectors, op=Insert Into"),
+            "{display}"
+        );
+    }
+
+    #[test]
+    fn physical_plan_builds_qdrant_insert_sink_for_overwrite() {
+        let batch = dense_insert_batch();
+        let schema = batch.schema();
+        let provider = QdrantTableProvider::new_for_planner(
+            "vectors".to_owned(),
+            Arc::new(Qdrant::from_url("http://localhost:6334").build().expect("client")),
+            &schema,
+            Arc::new(QdrantPayloadSchema::default()),
+            QdrantOrderedScrollContract::ExactSinglePeer,
+        );
+        let staging = MemTable::try_new(batch.schema(), vec![vec![batch]]).expect("staging table");
+        let ctx = SessionContext::new();
+        drop(ctx.register_table("vectors", Arc::new(provider)).expect("register qdrant table"));
+        drop(ctx.register_table("staging", Arc::new(staging)).expect("register staging table"));
+
+        let dataframe = ctx
+            .sql("INSERT OVERWRITE vectors SELECT id, payload, vector FROM staging")
+            .now_or_never()
+            .expect("sql future is ready")
+            .expect("insert dataframe");
+        let plan = dataframe
+            .create_physical_plan()
+            .now_or_never()
+            .expect("plan future is ready")
+            .expect("insert physical plan");
+        let display = displayable(plan.as_ref()).indent(true).to_string();
+
+        assert!(display.contains("DataSinkExec"), "{display}");
+        assert!(
+            display.contains("QdrantInsertSink: collection=vectors, op=Insert Overwrite"),
+            "{display}"
+        );
     }
 
     #[test]

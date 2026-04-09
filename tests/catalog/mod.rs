@@ -1145,6 +1145,27 @@ pub(crate) mod supported {
                 UNION_DISTINCT,
             ];
         }
+
+        pub(crate) mod overwrite {
+            use super::SqlCase;
+
+            pub(crate) const INSERT_SELECT: SqlCase = SqlCase::new(
+                "writes.overwrite.insert_select",
+                "INSERT OVERWRITE vectors SELECT id, payload, vector FROM staging",
+            );
+            pub(crate) const TARGET_COLUMNS_OMIT_PAYLOAD: SqlCase = SqlCase::new(
+                "writes.overwrite.target_columns_omit_payload",
+                "INSERT OVERWRITE vectors (id, vector) SELECT id, vector FROM staging",
+            );
+            pub(crate) const TARGET_COLUMNS_REORDERED: SqlCase = SqlCase::new(
+                "writes.overwrite.target_columns_reordered",
+                "INSERT OVERWRITE vectors (vector, id, payload) SELECT vector, id, payload FROM \
+                 staging",
+            );
+
+            pub(crate) const ALL: &[SqlCase] =
+                &[INSERT_SELECT, TARGET_COLUMNS_OMIT_PAYLOAD, TARGET_COLUMNS_REORDERED];
+        }
     }
 
     pub(crate) mod query {
@@ -2988,6 +3009,36 @@ pub(crate) mod unsupported {
                 WINDOW_EXTRA_COLUMN,
                 EXISTS_EXTRA_COLUMN,
             ];
+        }
+
+        pub(crate) mod overwrite {
+            use super::UnsupportedSqlCase;
+
+            pub(crate) const SCHEMA_MISMATCH: UnsupportedSqlCase = UnsupportedSqlCase::invalid(
+                "writes.overwrite.schema_mismatch",
+                "INSERT OVERWRITE vectors SELECT id, vector FROM staging",
+                "without explicit target columns, overwrite input must still match the canonical \
+                 provider schema exactly",
+                "Column count doesn't match insert query!",
+            );
+            pub(crate) const EXTRA_COLUMN: UnsupportedSqlCase = UnsupportedSqlCase::invalid(
+                "writes.overwrite.extra_column",
+                "INSERT OVERWRITE vectors SELECT id, payload, vector, id AS copy_id FROM staging",
+                "without explicit target columns, overwrite input must still match the canonical \
+                 provider schema exactly",
+                "Column count doesn't match insert query!",
+            );
+            pub(crate) const CTE_INSERT: UnsupportedSqlCase = UnsupportedSqlCase::upstream(
+                "writes.overwrite.cte_insert",
+                "WITH staged AS (SELECT id, payload, vector FROM staging) INSERT OVERWRITE \
+                 vectors SELECT * FROM staged",
+                "DataFusion still does not admit INSERT OVERWRITE with a preceding CTE in this \
+                 shape",
+                "not implemented yet",
+            );
+
+            pub(crate) const ALL: &[UnsupportedSqlCase] =
+                &[SCHEMA_MISMATCH, EXTRA_COLUMN, CTE_INSERT];
         }
     }
 

@@ -4,7 +4,7 @@
 
 The current crate scope is intentionally narrow: correct, paginated collection scans over the
 canonical Arrow carriers used by `ndarrow` and `nabled::arrow`, the exact pushdown-first SQL
-bridge for ordering and filtering, append-only `INSERT INTO` into canonical qdrant row schemas
+bridge for ordering and filtering, canonical-schema `INSERT INTO` / `INSERT OVERWRITE` writes
 including `DataFusion` target-column reshaping into that schema, and the first narrow planner
 slices for exact `COUNT(*)` and top-facet grouped-count pushdown. It is not yet the broad SQL
 surface for `Qdrant` fusion, broader grouped retrieval, or broader planner rewrites.
@@ -27,9 +27,11 @@ canonical carrier; missing values are not imputed during scan.
 
 - collection config introspection into the scan schema
 - true table scans via paginated `Qdrant::scroll`
-- append-only `INSERT INTO` through `DataSinkExec` when `DataFusion` produces the canonical qdrant provider schema
+- canonical-schema `INSERT INTO` and `INSERT OVERWRITE` through `DataSinkExec` when `DataFusion` produces the canonical qdrant provider schema
   - current admitted write row contract is the provider schema: `id`, optional `payload` JSON text, and the declared qdrant vector columns
   - explicit target-column inserts are admitted when `DataFusion` normalizes them into that schema, including reordered target columns and omission of nullable `payload`
+  - `INSERT INTO` now follows the current qdrant `InsertOnly` contract on the validated runtime line: existing ids are preserved while new ids insert
+  - `INSERT OVERWRITE` now clears the collection first, then writes canonical rows through the same sink path
 - schema/projection-driven vector selection
 - SQL `LIMIT` pushdown to the scan stream
 - exact physical sort pushdown for `ORDER BY id ASC`
@@ -113,7 +115,7 @@ canonical carrier; missing values are not imputed during scan.
 
 ## Not Yet Admitted
 
-- broader write semantics beyond append-only `INSERT INTO` into the canonical provider schema, including update/replace semantics and richer reshaping than the current target-column normalization path
+- broader write semantics beyond the current canonical `INSERT INTO` / `INSERT OVERWRITE` contract, including `REPLACE`, update/merge semantics, and richer reshaping than the current target-column normalization path
 - broader payload/container distinctions beyond the current explicit `payload_exists(...)`, `payload_is_missing(...)`, `payload_is_null(...)`, `payload_is_empty(...)`, `payload_has_values(...)`, `payload_values_count(...)`, `payload_geo_distance(...) <= radius`, `payload_geo_within_bbox(...)`, `payload_geo_within_polygon(...)`, `payload_nested_match(...)`, `payload_text_match(...)`, `payload_text_any(...)`, and `payload_phrase_match(...)` subset
 - broader payload-key SQL `ORDER BY` pushdown beyond the admitted `payload:<path>` subset
 - broader aggregate/grouped SQL beyond the admitted scalar-facet subset

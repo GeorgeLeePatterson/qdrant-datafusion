@@ -87,6 +87,14 @@ e2e_test!(
 
 #[cfg(feature = "test-utils")]
 e2e_test!(
+    table_provider_insert_into_preserves_existing_ids,
+    tests::test_table_provider_insert_into_preserves_existing_ids,
+    TRACING_DIRECTIVES,
+    None
+);
+
+#[cfg(feature = "test-utils")]
+e2e_test!(
     table_provider_supported_scan_catalog_queries,
     tests::test_table_provider_supported_scan_catalog_queries,
     TRACING_DIRECTIVES,
@@ -1125,6 +1133,38 @@ error: {err}"
         .expect("dense insert batch")
     }
 
+    async fn create_write_context(
+        c: &Arc<QdrantContainer>,
+        collection_name: &str,
+        existing_points: Vec<PointStruct>,
+    ) -> Result<QdrantSessionContext> {
+        let client = create_qdrant_client(c)?;
+        create_scalar_collection(&client, collection_name).await?;
+        create_payload_index(
+            &client,
+            collection_name,
+            "rank",
+            FieldType::Integer,
+            qdrant_client::qdrant::IntegerIndexParamsBuilder::new(true, true).build(),
+        )
+        .await?;
+        if !existing_points.is_empty() {
+            drop(
+                client
+                    .upsert_points(UpsertPointsBuilder::new(collection_name, existing_points))
+                    .await?,
+            );
+        }
+
+        let table_provider = QdrantTableProvider::try_new(client.clone(), collection_name).await?;
+        let staging =
+            MemTable::try_new(dense_insert_batch().schema(), vec![vec![dense_insert_batch()]])?;
+        let ctx = QdrantSessionContext::from(SessionContext::new());
+        drop(ctx.session_context().register_table("vectors", Arc::new(table_provider))?);
+        drop(ctx.session_context().register_table("staging", Arc::new(staging))?);
+        Ok(ctx)
+    }
+
     async fn create_payload_index<IndexParams>(
         client: &Qdrant,
         collection_name: &str,
@@ -1582,24 +1622,8 @@ error: {err}"
     pub(super) async fn test_table_provider_insert_into_appends_rows(
         c: Arc<QdrantContainer>,
     ) -> Result<()> {
-        let client = create_qdrant_client(&c)?;
         let collection_name = "test_insert_into_appends_rows";
-        create_scalar_collection(&client, collection_name).await?;
-        create_payload_index(
-            &client,
-            collection_name,
-            "rank",
-            FieldType::Integer,
-            qdrant_client::qdrant::IntegerIndexParamsBuilder::new(true, true).build(),
-        )
-        .await?;
-
-        let table_provider = QdrantTableProvider::try_new(client.clone(), collection_name).await?;
-        let staging =
-            MemTable::try_new(dense_insert_batch().schema(), vec![vec![dense_insert_batch()]])?;
-        let ctx = QdrantSessionContext::from(SessionContext::new());
-        drop(ctx.session_context().register_table("vectors", Arc::new(table_provider))?);
-        drop(ctx.session_context().register_table("staging", Arc::new(staging))?);
+        let ctx = create_write_context(&c, collection_name, vec![]).await?;
 
         let insert_batches =
             ctx.sql(sql::writes::append::INSERT_SELECT.sql).await?.collect().await?;
@@ -1625,6 +1649,29 @@ error: {err}"
         Ok(())
     }
 
+    pub(super) async fn test_table_provider_insert_into_preserves_existing_ids(
+        c: Arc<QdrantContainer>,
+    ) -> Result<()> {
+        let collection_name = "test_insert_into_preserves_existing_ids";
+        let mut existing_payload = qdrant_client::Payload::new();
+        existing_payload.insert("rank", 99_i64);
+        let ctx = create_write_context(&c, collection_name, vec![PointStruct::new(
+            1,
+            Vector::new_dense(vec![0.2]),
+            existing_payload,
+        )])
+        .await?;
+
+        let _batches = ctx.sql(sql::writes::append::INSERT_SELECT.sql).await?.collect().await?;
+
+        let ranks = ctx.sql(sql::scan::projection::INSERT_VERIFY.sql).await?.collect().await?;
+        let rank_batch = ranks.into_iter().next().expect("rank batch");
+        assert_eq!(batch_u64_ids(&rank_batch, "id"), vec![1, 2]);
+        assert_eq!(batch_i64_values(&rank_batch, "rank"), vec![99, 20]);
+
+        Ok(())
+    }
+
     pub(super) async fn test_table_provider_supported_scan_catalog_queries(
         c: Arc<QdrantContainer>,
     ) -> Result<()> {
@@ -1646,17 +1693,10 @@ error: {err}"
     pub(super) async fn test_table_provider_supported_write_catalog_queries(
         c: Arc<QdrantContainer>,
     ) -> Result<()> {
-        let client = create_qdrant_client(&c)?;
-        let collection_name = "test_supported_write_catalog_queries";
-        create_scalar_collection(&client, collection_name).await?;
-        let table_provider = QdrantTableProvider::try_new(client.clone(), collection_name).await?;
-        let staging =
-            MemTable::try_new(dense_insert_batch().schema(), vec![vec![dense_insert_batch()]])?;
-        let ctx = QdrantSessionContext::from(SessionContext::new());
-        drop(ctx.session_context().register_table("vectors", Arc::new(table_provider))?);
-        drop(ctx.session_context().register_table("staging", Arc::new(staging))?);
-
         for case in sql::writes::append::ALL {
+            let collection_name =
+                format!("test_supported_write_append_{}", case.id.replace('.', "_"));
+            let ctx = create_write_context(&c, &collection_name, vec![]).await?;
             let (_batches, display) =
                 assert_supported_query_collects(&ctx, case.sql).await.map_err(|error| {
                     datafusion::error::DataFusionError::Execution(format!(
@@ -1665,6 +1705,65 @@ error: {err}"
                     ))
                 })?;
             assert!(display.contains("DataSinkExec"), "case={} display={display}", case.id);
+
+            let ranks = ctx.sql(sql::scan::projection::INSERT_VERIFY.sql).await?.collect().await?;
+            let rank_batch = ranks.into_iter().next().expect("rank batch");
+            let expected_ids = if case.id == sql::writes::append::RIGHT_SEMI_JOIN.id {
+                vec![1]
+            } else {
+                vec![1, 2]
+            };
+            assert_eq!(batch_u64_ids(&rank_batch, "id"), expected_ids, "case={}", case.id);
+            let expected_ranks = if case.id == sql::writes::append::TARGET_COLUMNS_OMIT_PAYLOAD.id {
+                vec![None, None]
+            } else if case.id == sql::writes::append::RIGHT_SEMI_JOIN.id {
+                vec![Some(10)]
+            } else {
+                vec![Some(10), Some(20)]
+            };
+            assert_eq!(
+                batch_optional_i64_values(&rank_batch, "rank"),
+                expected_ranks,
+                "case={}",
+                case.id
+            );
+        }
+
+        for case in sql::writes::overwrite::ALL {
+            let collection_name =
+                format!("test_supported_write_overwrite_{}", case.id.replace('.', "_"));
+            let mut existing_payload = qdrant_client::Payload::new();
+            existing_payload.insert("rank", 99_i64);
+            let ctx = create_write_context(&c, &collection_name, vec![PointStruct::new(
+                9,
+                Vector::new_dense(vec![0.2]),
+                existing_payload,
+            )])
+            .await?;
+            let (_batches, display) =
+                assert_supported_query_collects(&ctx, case.sql).await.map_err(|error| {
+                    datafusion::error::DataFusionError::Execution(format!(
+                        "supported overwrite catalog case={} sql={} error={error}",
+                        case.id, case.sql
+                    ))
+                })?;
+            assert!(display.contains("DataSinkExec"), "case={} display={display}", case.id);
+
+            let ranks = ctx.sql(sql::scan::projection::INSERT_VERIFY.sql).await?.collect().await?;
+            let rank_batch = ranks.into_iter().next().expect("rank batch");
+            assert_eq!(batch_u64_ids(&rank_batch, "id"), vec![1, 2], "case={}", case.id);
+            let expected_ranks =
+                if case.id == sql::writes::overwrite::TARGET_COLUMNS_OMIT_PAYLOAD.id {
+                    vec![None, None]
+                } else {
+                    vec![Some(10), Some(20)]
+                };
+            assert_eq!(
+                batch_optional_i64_values(&rank_batch, "rank"),
+                expected_ranks,
+                "case={}",
+                case.id
+            );
         }
 
         Ok(())
