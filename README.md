@@ -71,6 +71,7 @@ canonical carrier; missing values are not imputed during scan.
     - exact lowering currently admits one scalar keyword or lookup-capable integer payload field and one grouped query-family source among `qdrant_nearest_score(...)`, `qdrant_recommend_score(...)`, `qdrant_discover_score(...)`, or `qdrant_context_score(...)`,
       `ORDER BY payload:<path>[ DESC]` with optional trailing `, score DESC` as an explicit in-group tie-break,
       validates returned group ids against scalar payload values on hits, and keeps any outer `LIMIT` local
+    - broader grouped `DISTINCT ON` SQL that cannot truthfully map to `query_groups`, such as multi-key `DISTINCT ON`, now stays local above a normal `QdrantQueryExec` instead of failing
   - coordinated score composition through `qdrant_formula_score(...)` and `qdrant_fusion_score(...)`
     - exact lowering currently admits the narrow coordinated subset over retrieval relations: an id-preserving `FULL OUTER JOIN USING (id)` over admitted query-family score branches with effective `ORDER BY score DESC`
     - outer `LIMIT` is optional; when SQL omits it, the remote coordinated request omits `limit` and uses Qdrant's default result count

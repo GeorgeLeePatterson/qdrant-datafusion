@@ -1,6 +1,6 @@
 # Execution Tracker
 
-Last updated: 2026-04-07
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -352,6 +352,10 @@ Use it to resume work without replaying the full repository history.
     - `qdrant_fusion_score(...)` still admits the exact coordinated `FULL OUTER JOIN USING (id)` remote rewrite, but explicit `DBSF` inputs no longer require that path when SQL joins aligned branches locally through `INNER` / `LEFT` / `RIGHT` joins on `id`
     - the optimizer now materializes per-branch local normalized score contributions using the current qdrant DBSF mean / sample-stddev contract, rewrites the fusion surface to explicit local arithmetic, and leaves the outer SQL join local
     - `tests/catalog/mod.rs` now tracks `coordination.fusion.dbsf_inner_join`, `coordination.fusion.dbsf_left_join`, and `coordination.fusion.dbsf_right_join` as supported SQL; `coordination.fusion.cross_join` remains `ByDesign`
+62. `Q-063`: broader grouped `DISTINCT ON` SQL now localizes above normal query kernels instead of remaining a fatal grouped-retrieval gap.
+    - the exact remote grouped contract is still the current single-key `DISTINCT ON (payload:<path>)` subset that lowers to `QdrantQueryGroupsExec`
+    - broader grouped SQL such as multi-key `DISTINCT ON` now rewrites to a local `DistinctOn` shell above `QdrantQueryExec` when the underlying query branch can close independently
+    - `tests/catalog/mod.rs` now tracks `query.grouped.multi_key_subquery` as supported SQL instead of deferred inventory, and the grouped unsupported slice is empty again until a new grouped gap is discovered
 
 ## Next
 

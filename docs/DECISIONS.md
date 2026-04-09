@@ -1,6 +1,6 @@
 # Locked Decisions
 
-Last updated: 2026-04-07
+Last updated: 2026-04-09
 
 ## Core Constraints
 
@@ -198,6 +198,10 @@ Last updated: 2026-04-07
     - when a broader SQL join shape is still semantically meaningful locally, add an explicit local fallback instead of rejecting it for not matching the exact remote shape
     - method-specific behavior matters: local fallback is acceptable only when branch alignment is explicit and the real method semantics are implemented honestly; `RRF` and `DBSF` now both satisfy that bar on aligned local joins
     - by-design unsupported shapes such as `CROSS JOIN` should remain cataloged explicitly instead of being left as undocumented optimizer fallout
+36. Grouped retrieval should keep the exact remote `query_groups` contract narrow, but broader grouped SQL must localize instead of failing.
+    - only the current single-key `DISTINCT ON (payload:<path>)` subset should claim exact remote grouped semantics
+    - when grouped SQL cannot truthfully map to `query_groups`, for example multi-key `DISTINCT ON`, it should stay local above a normal `QdrantQueryExec`
+    - do not widen grouped exactness by silent shape drift; add explicit grouped SQL contracts if broader remote grouped semantics are admitted later
 
 ## Execution Ordering
 

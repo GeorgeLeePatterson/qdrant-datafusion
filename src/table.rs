@@ -3196,6 +3196,60 @@ mod tests {
     }
 
     #[test]
+    fn physical_plan_keeps_multi_key_distinct_on_local_above_qdrant_query_exec() {
+        let provider = QdrantTableProvider {
+            payload_schema: payload_schema([(
+                "tag",
+                PayloadSchemaInfo {
+                    data_type: qdrant_client::qdrant::PayloadSchemaType::Keyword as i32,
+                    params: Some(qdrant_client::qdrant::PayloadIndexParams {
+                        index_params: Some(
+                            qdrant_client::qdrant::payload_index_params::IndexParams::KeywordIndexParams(
+                                qdrant_client::qdrant::KeywordIndexParams::default(),
+                            ),
+                        ),
+                    }),
+                    points: None,
+                },
+            )]),
+            ..test_provider(Schema::new(vec![
+                Field::new(ID_FIELD_NAME, DataType::Utf8, false),
+                Field::new(PAYLOAD_FIELD_NAME, DataType::Utf8, true),
+                Field::new(
+                    "embedding",
+                    DataType::new_fixed_size_list(DataType::Float32, 2, false),
+                    true,
+                ),
+            ]))
+        };
+        let ctx = QdrantSessionContext::from(SessionContext::new());
+        drop(
+            ctx.session_context()
+                .register_table("vectors", Arc::new(provider))
+                .expect("register table"),
+        );
+        let dataframe = ctx
+            .sql(
+                "SELECT * FROM (SELECT DISTINCT ON (payload:tag, id) id, payload, \
+                 qdrant_nearest_score(embedding, 1.0, 0.0) AS score FROM vectors ORDER BY \
+                 payload:tag, id) grouped",
+            )
+            .now_or_never()
+            .expect("sql future is ready")
+            .expect("dataframe");
+        let plan = dataframe
+            .create_physical_plan()
+            .now_or_never()
+            .expect("plan future is ready")
+            .expect("physical plan");
+        let display = displayable(plan.as_ref()).indent(true).to_string();
+
+        assert!(display.contains("QdrantQueryExec"), "{display}");
+        assert!(display.contains("AggregateExec"), "{display}");
+        assert!(!display.contains("QdrantQueryGroupsExec"), "{display}");
+    }
+
+    #[test]
     fn physical_plan_uses_qdrant_query_batch_exec_for_union_all_of_nearest_queries() {
         let provider = test_provider(Schema::new(vec![
             Field::new(ID_FIELD_NAME, DataType::Utf8, false),

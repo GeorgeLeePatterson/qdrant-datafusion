@@ -157,6 +157,11 @@ impl ProcessingState {
             return kernel_state.absorb(plan, transformed);
         }
         if let Some(local_shell) =
+            self.op.clone().local_distinct_on_shell(self.source.clone(), &self.filters, &plan)?
+        {
+            return Ok(super::super::Analysis::new(local_shell, State::local(), true));
+        }
+        if let Some(local_shell) =
             self.op.clone().local_window_shell(self.source.clone(), &self.filters, &plan)?
         {
             return Ok(super::super::Analysis::new(local_shell, State::local(), true));

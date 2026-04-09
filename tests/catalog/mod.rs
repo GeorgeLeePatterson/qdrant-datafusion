@@ -2400,6 +2400,16 @@ pub(crate) mod supported {
                     ") grouped_b"
                 ),
             );
+            pub(crate) const MULTI_KEY_SUBQUERY: SqlCase = SqlCase::new(
+                "query.grouped.multi_key_subquery",
+                concat!(
+                    "SELECT * FROM (",
+                    "SELECT DISTINCT ON (payload:tag, id) id, payload, \
+                     qdrant_nearest_score(embedding, 1.0, 0.0) AS score ",
+                    "FROM vectors ORDER BY payload:tag, id",
+                    ") grouped"
+                ),
+            );
 
             pub(crate) const ALL: &[SqlCase] = &[
                 NEAREST_ASC,
@@ -2411,6 +2421,7 @@ pub(crate) mod supported {
                 SUBQUERY,
                 HAVING_SUBQUERY,
                 UNION_ALL_SUBQUERY,
+                MULTI_KEY_SUBQUERY,
                 CTE,
                 WINDOW_OVER_GROUPED,
             ];
@@ -2979,22 +2990,7 @@ pub(crate) mod unsupported {
 
         pub(crate) mod grouped {
             use super::UnsupportedSqlCase;
-
-            pub(crate) const MULTI_KEY_SUBQUERY: UnsupportedSqlCase = UnsupportedSqlCase::new(
-                "query.grouped.multi_key_subquery",
-                concat!(
-                    "SELECT * FROM (",
-                    "SELECT DISTINCT ON (payload:tag, id) id, payload, \
-                     qdrant_nearest_score(embedding, 1.0, 0.0) AS score ",
-                    "FROM vectors ORDER BY payload:tag, id",
-                    ") grouped"
-                ),
-                "Q-049",
-                "grouped retrieval still only admits the current single-key DISTINCT ON subset \
-                 that can close to a grouped kernel",
-                "qdrant processing must close to a kernel or stay region-owned",
-            );
-            pub(crate) const ALL: &[UnsupportedSqlCase] = &[MULTI_KEY_SUBQUERY];
+            pub(crate) const ALL: &[UnsupportedSqlCase] = &[];
         }
     }
 

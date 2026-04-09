@@ -7,7 +7,7 @@ use datafusion::common::{Column, DFSchemaRef, Result, plan_err};
 use datafusion::logical_expr::expr::BinaryExpr;
 use datafusion::logical_expr::utils::{conjunction, expr_to_columns, split_conjunction_owned};
 use datafusion::logical_expr::{
-    Distinct, Expr, Extension, LogicalPlan, LogicalPlanBuilder, Operator, SortExpr,
+    Distinct, DistinctOn, Expr, Extension, LogicalPlan, LogicalPlanBuilder, Operator, SortExpr,
 };
 
 use super::common::count_star_like;
@@ -297,6 +297,70 @@ impl QueryOp {
             .build()?
             .recompute_schema()
             .map(Some)
+    }
+
+    fn local_distinct_on_shell(
+        self,
+        source: Source,
+        filters: &FiltersState,
+        plan: &LogicalPlan,
+    ) -> Result<Option<LogicalPlan>> {
+        let LogicalPlan::Distinct(Distinct::On(distinct_on)) = plan else {
+            return Ok(None);
+        };
+        let mut shell =
+            LocalQueryShellBuilder::new(&self, &source, distinct_on.input.schema(), false);
+        let rewritten_on_expr = distinct_on
+            .on_expr
+            .iter()
+            .map(|expr| shell.rewrite_expr(expr))
+            .collect::<Result<Vec<_>>>()?;
+        let rewritten_select_expr = distinct_on
+            .select_expr
+            .iter()
+            .map(|expr| shell.rewrite_expr(expr))
+            .collect::<Result<Vec<_>>>()?;
+        let rewritten_sort_expr = distinct_on
+            .sort_expr
+            .as_ref()
+            .map(|sort_exprs| {
+                sort_exprs
+                    .iter()
+                    .map(|sort_expr| {
+                        Ok(SortExpr {
+                            expr:        shell.rewrite_expr(&sort_expr.expr)?,
+                            asc:         sort_expr.asc,
+                            nulls_first: sort_expr.nulls_first,
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()
+            })
+            .transpose()?;
+        let mut support_expr_inputs =
+            [rewritten_on_expr.clone(), rewritten_select_expr.clone()].concat();
+        if let Some(sort_exprs) = &rewritten_sort_expr {
+            support_expr_inputs.extend(sort_exprs.iter().map(|sort_expr| sort_expr.expr.clone()));
+        }
+        let support_plan = LogicalPlanBuilder::from(distinct_on.input.as_ref().clone())
+            .project(shell.support_exprs(&support_expr_inputs)?)?
+            .build()?;
+        let Some(query) = self.project(&source, &support_plan)? else {
+            return Ok(None);
+        };
+        let exact_filters = filters.exact(&source)?;
+        let kernel_plan = query_kernel_plan(
+            QueryKernel::new(source, exact_filters, query, None),
+            Arc::clone(support_plan.schema()),
+        );
+        Ok(Some(
+            LogicalPlan::Distinct(Distinct::On(DistinctOn::try_new(
+                rewritten_on_expr,
+                rewritten_select_expr,
+                rewritten_sort_expr,
+                Arc::new(kernel_plan),
+            )?))
+            .recompute_schema()?,
+        ))
     }
 
     fn distinct_on_kernel(
@@ -600,6 +664,18 @@ impl Op {
     ) -> Result<Option<LogicalPlan>> {
         match self {
             Self::Query(op) => op.local_window_shell(source, filters, plan),
+            Self::Facet(_) => Ok(None),
+        }
+    }
+
+    pub(super) fn local_distinct_on_shell(
+        self,
+        source: Source,
+        filters: &FiltersState,
+        plan: &LogicalPlan,
+    ) -> Result<Option<LogicalPlan>> {
+        match self {
+            Self::Query(op) => op.local_distinct_on_shell(source, filters, plan),
             Self::Facet(_) => Ok(None),
         }
     }

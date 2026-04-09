@@ -2557,7 +2557,9 @@ error: {err}"
                     ))
                 })?;
             assert!(
-                display.contains("QdrantQueryGroupsExec") || display.contains("WindowAggExec"),
+                display.contains("QdrantQueryGroupsExec")
+                    || display.contains("QdrantQueryExec")
+                    || display.contains("WindowAggExec"),
                 "{display}"
             );
         }

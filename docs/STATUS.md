@@ -157,6 +157,7 @@ Current branch reality:
       - group size `1`
       - grouped execution validates that returned group ids match scalar payload values on hits
       - any outer `LIMIT` remains local above the grouped exec
+      - broader grouped `DISTINCT ON` SQL now localizes above a normal `QdrantQueryExec` instead of failing, but only this single-key subset lowers exactly to `query_groups`
     - score output is only present when projected
     - retrieval kernels can now leave benign local projection shells, local aggregate shells, local window shells, and local residual filter shells above the closed qdrant query kernel instead of requiring fully remote-only projection/filter shapes, including later score projection above those local filter shells
     - when projected, aliases win; otherwise naming follows normal `DataFusion` expression naming
