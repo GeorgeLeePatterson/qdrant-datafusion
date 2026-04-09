@@ -196,7 +196,7 @@ Last updated: 2026-04-07
 35. Coordinated qdrant-specific combiners should widen through explicit local semantics, not by pretending broader remote exactness.
     - keep the exact coordinated remote rewrite narrow and tied to a validated qdrant contract
     - when a broader SQL join shape is still semantically meaningful locally, add an explicit local fallback instead of rejecting it for not matching the exact remote shape
-    - method-specific behavior matters: local `RRF` fallback is acceptable when branch alignment is explicit, while `DBSF` stays deferred until the real score-normalization contract is implemented
+    - method-specific behavior matters: local fallback is acceptable only when branch alignment is explicit and the real method semantics are implemented honestly; `RRF` and `DBSF` now both satisfy that bar on aligned local joins
     - by-design unsupported shapes such as `CROSS JOIN` should remain cataloged explicitly instead of being left as undocumented optimizer fallout
 
 ## Execution Ordering

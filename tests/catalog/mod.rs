@@ -2659,6 +2659,42 @@ pub(crate) mod supported {
                     "ORDER BY score DESC LIMIT 2"
                 ),
             );
+            pub(crate) const DBSF_INNER_JOIN: SqlCase = SqlCase::new(
+                "coordination.fusion.dbsf_inner_join",
+                concat!(
+                    "SELECT dense.id AS id, qdrant_fusion_score('DBSF', dense.score, \
+                     sparse.score) AS score FROM ",
+                    "(SELECT id, qdrant_nearest_score(embedding, 1.0, 0.0) AS score FROM vectors \
+                     ORDER BY score DESC LIMIT 5) dense ",
+                    "JOIN (SELECT id, qdrant_nearest_score(aux, 0.0, 1.0) AS score FROM vectors \
+                     ORDER BY score DESC LIMIT 5) sparse ON dense.id = sparse.id ",
+                    "ORDER BY score DESC LIMIT 2"
+                ),
+            );
+            pub(crate) const DBSF_LEFT_JOIN: SqlCase = SqlCase::new(
+                "coordination.fusion.dbsf_left_join",
+                concat!(
+                    "SELECT dense.id AS id, qdrant_fusion_score('DBSF', dense.score, \
+                     sparse.score) AS score FROM ",
+                    "(SELECT id, qdrant_nearest_score(embedding, 1.0, 0.0) AS score FROM vectors \
+                     ORDER BY score DESC LIMIT 5) dense ",
+                    "LEFT JOIN (SELECT id, qdrant_nearest_score(aux, 0.0, 1.0) AS score FROM \
+                     vectors ORDER BY score DESC LIMIT 5) sparse ON dense.id = sparse.id ",
+                    "ORDER BY score DESC LIMIT 2"
+                ),
+            );
+            pub(crate) const DBSF_RIGHT_JOIN: SqlCase = SqlCase::new(
+                "coordination.fusion.dbsf_right_join",
+                concat!(
+                    "SELECT sparse.id AS id, qdrant_fusion_score('DBSF', dense.score, \
+                     sparse.score) AS score FROM ",
+                    "(SELECT id, qdrant_nearest_score(embedding, 1.0, 0.0) AS score FROM vectors \
+                     ORDER BY score DESC LIMIT 5) dense ",
+                    "RIGHT JOIN (SELECT id, qdrant_nearest_score(aux, 0.0, 1.0) AS score FROM \
+                     vectors ORDER BY score DESC LIMIT 5) sparse ON dense.id = sparse.id ",
+                    "ORDER BY score DESC LIMIT 2"
+                ),
+            );
 
             pub(crate) const ALL: &[SqlCase] = &[
                 WITHOUT_LIMIT,
@@ -2668,6 +2704,9 @@ pub(crate) mod supported {
                 INNER_JOIN,
                 LEFT_JOIN,
                 RIGHT_JOIN,
+                DBSF_INNER_JOIN,
+                DBSF_LEFT_JOIN,
+                DBSF_RIGHT_JOIN,
             ];
         }
     }
@@ -2985,24 +3024,7 @@ pub(crate) mod unsupported {
                  intentionally pairs unrelated candidates and has no honest fusion meaning",
                 "unsupported coordinated qdrant_fusion_score shape",
             );
-            pub(crate) const DBSF_INNER_JOIN: UnsupportedSqlCase = UnsupportedSqlCase::new(
-                "coordination.fusion.dbsf_inner_join",
-                concat!(
-                    "SELECT dense.id AS id, qdrant_fusion_score('DBSF', dense.score, \
-                     sparse.score) AS score FROM ",
-                    "(SELECT id, qdrant_nearest_score(embedding, 1.0, 0.0) AS score FROM vectors \
-                     ORDER BY score DESC LIMIT 5) dense ",
-                    "JOIN (SELECT id, qdrant_nearest_score(aux, 0.0, 1.0) AS score FROM vectors \
-                     ORDER BY score DESC LIMIT 5) sparse ON dense.id = sparse.id ",
-                    "ORDER BY score DESC LIMIT 2"
-                ),
-                "Q-061",
-                "local fusion fallback currently widens only the explicit RRF subset; DBSF still \
-                 requires the admitted remote full-outer coordination path",
-                "unsupported coordinated qdrant_fusion_score shape",
-            );
-
-            pub(crate) const ALL: &[UnsupportedSqlCase] = &[CROSS_JOIN, DBSF_INNER_JOIN];
+            pub(crate) const ALL: &[UnsupportedSqlCase] = &[CROSS_JOIN];
         }
     }
 }

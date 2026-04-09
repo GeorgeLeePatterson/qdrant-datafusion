@@ -347,7 +347,11 @@ Use it to resume work without replaying the full repository history.
 60. `Q-061`: explicit `RRF` fusion now composes over aligned local joins when the score inputs come from independently-closable query branches.
     - `qdrant_fusion_score(...)` still admits the exact coordinated `FULL OUTER JOIN USING (id)` remote rewrite, but explicit `RRF` inputs no longer require that path when SQL joins aligned branches locally through `INNER` / `LEFT` / `RIGHT` joins on `id`
     - the optimizer now materializes per-branch local rank columns, rewrites the fusion surface to explicit local `RRF` arithmetic, and leaves the outer SQL join local
-    - `tests/catalog/mod.rs` now tracks `coordination.fusion.inner_join`, `coordination.fusion.left_join`, and `coordination.fusion.right_join` as supported SQL; `coordination.fusion.cross_join` remains `ByDesign`, and `coordination.fusion.dbsf_inner_join` stays deferred
+    - `tests/catalog/mod.rs` now tracks `coordination.fusion.inner_join`, `coordination.fusion.left_join`, and `coordination.fusion.right_join` as supported SQL
+61. `Q-062`: explicit `DBSF` fusion now composes over aligned local joins when the score inputs come from independently-closable query branches.
+    - `qdrant_fusion_score(...)` still admits the exact coordinated `FULL OUTER JOIN USING (id)` remote rewrite, but explicit `DBSF` inputs no longer require that path when SQL joins aligned branches locally through `INNER` / `LEFT` / `RIGHT` joins on `id`
+    - the optimizer now materializes per-branch local normalized score contributions using the current qdrant DBSF mean / sample-stddev contract, rewrites the fusion surface to explicit local arithmetic, and leaves the outer SQL join local
+    - `tests/catalog/mod.rs` now tracks `coordination.fusion.dbsf_inner_join`, `coordination.fusion.dbsf_left_join`, and `coordination.fusion.dbsf_right_join` as supported SQL; `coordination.fusion.cross_join` remains `ByDesign`
 
 ## Next
 

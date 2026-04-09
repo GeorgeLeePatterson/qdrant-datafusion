@@ -24,7 +24,7 @@ use qdrant_client::qdrant::{
 pub(crate) use self::context::ContextQuery;
 pub(crate) use self::discover::DiscoverQuery;
 pub(crate) use self::formula::FormulaQuery;
-pub(crate) use self::fusion::FusionQuery;
+pub(crate) use self::fusion::{FusionQuery, LocalFusionMethod};
 pub(crate) use self::nearest::NearestQuery;
 pub(crate) use self::nearest_with_mmr::NearestWithMmrQuery;
 pub(crate) use self::order_by::OrderByQuery;

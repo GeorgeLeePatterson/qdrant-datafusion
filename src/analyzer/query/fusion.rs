@@ -7,6 +7,12 @@ use crate::expr_fn::{FUSION_SCORE_FUNCTION_NAME, FusionCall};
 
 const DEFAULT_RRF_K: u32 = 1;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LocalFusionMethod {
+    Rrf { k: u32 },
+    Dbsf,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 enum FusionMethod {
     Default(Fusion),
@@ -60,11 +66,11 @@ impl FusionQuery {
 
     pub(crate) fn score_inputs(&self) -> &[Expr] { &self.score_inputs }
 
-    pub(crate) fn local_rrf_k(&self) -> Option<u32> {
+    pub(crate) fn local_fusion_method(&self) -> LocalFusionMethod {
         match &self.method {
-            FusionMethod::Default(Fusion::Rrf) => Some(DEFAULT_RRF_K),
-            FusionMethod::Rrf(rrf) => Some(rrf.k.unwrap_or(DEFAULT_RRF_K)),
-            FusionMethod::Default(Fusion::Dbsf) => None,
+            FusionMethod::Default(Fusion::Rrf) => LocalFusionMethod::Rrf { k: DEFAULT_RRF_K },
+            FusionMethod::Rrf(rrf) => LocalFusionMethod::Rrf { k: rrf.k.unwrap_or(DEFAULT_RRF_K) },
+            FusionMethod::Default(Fusion::Dbsf) => LocalFusionMethod::Dbsf,
         }
     }
 

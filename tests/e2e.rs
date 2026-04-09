@@ -2872,6 +2872,15 @@ error: {err}"
         let inner_join_sql = sql::coordination::fusion::INNER_JOIN.sql;
         let left_join_sql = sql::coordination::fusion::LEFT_JOIN.sql;
         let right_join_sql = sql::coordination::fusion::RIGHT_JOIN.sql;
+        let dbsf_canonical_sql =
+            "SELECT id, qdrant_fusion_score('DBSF', dense.score, sparse.score) AS score FROM \
+             (SELECT id, qdrant_nearest_score(embedding, 1.0, 0.0) AS score FROM vectors ORDER BY \
+             score DESC LIMIT 5) dense FULL OUTER JOIN (SELECT id, qdrant_nearest_score(aux, 0.0, \
+             1.0) AS score FROM vectors ORDER BY score DESC LIMIT 5) sparse USING (id) ORDER BY \
+             score DESC LIMIT 2";
+        let dbsf_inner_join_sql = sql::coordination::fusion::DBSF_INNER_JOIN.sql;
+        let dbsf_left_join_sql = sql::coordination::fusion::DBSF_LEFT_JOIN.sql;
+        let dbsf_right_join_sql = sql::coordination::fusion::DBSF_RIGHT_JOIN.sql;
 
         let (without_limit_rows, without_limit_display) =
             collect_scored_rows(&ctx, without_limit_sql).await?;
@@ -2884,6 +2893,14 @@ error: {err}"
         let (left_join_rows, left_join_display) = collect_scored_rows(&ctx, left_join_sql).await?;
         let (right_join_rows, right_join_display) =
             collect_scored_rows(&ctx, right_join_sql).await?;
+        let (dbsf_canonical_rows, dbsf_canonical_display) =
+            collect_scored_rows(&ctx, dbsf_canonical_sql).await?;
+        let (dbsf_inner_join_rows, dbsf_inner_join_display) =
+            collect_scored_rows(&ctx, dbsf_inner_join_sql).await?;
+        let (dbsf_left_join_rows, dbsf_left_join_display) =
+            collect_scored_rows(&ctx, dbsf_left_join_sql).await?;
+        let (dbsf_right_join_rows, dbsf_right_join_display) =
+            collect_scored_rows(&ctx, dbsf_right_join_sql).await?;
 
         assert_eq!(without_limit_rows.iter().map(|(id, _)| *id).collect::<Vec<_>>(), vec![1, 2, 3]);
         assert_f32_eq(without_limit_rows[0].1, canonical_rows[0].1);
@@ -2894,16 +2911,30 @@ error: {err}"
         assert_eq!(inner_join_rows, canonical_rows);
         assert_eq!(left_join_rows, canonical_rows);
         assert_eq!(right_join_rows, canonical_rows);
+        assert_eq!(dbsf_inner_join_rows, dbsf_canonical_rows);
+        assert_eq!(dbsf_left_join_rows, dbsf_canonical_rows);
+        assert_eq!(dbsf_right_join_rows, dbsf_canonical_rows);
 
-        for display in
-            [&without_limit_display, &canonical_display, &alias_display, &alias_threaded_display]
-        {
+        for display in [
+            &without_limit_display,
+            &canonical_display,
+            &alias_display,
+            &alias_threaded_display,
+            &dbsf_canonical_display,
+        ] {
             assert_eq!(display.matches("QdrantQueryExec").count(), 1, "{display}");
             assert!(display.contains("prefetch=2"), "{display}");
             assert!(!display.contains("JoinExec"), "{display}");
             assert!(!display.contains("HashJoinExec"), "{display}");
         }
-        for display in [&inner_join_display, &left_join_display, &right_join_display] {
+        for display in [
+            &inner_join_display,
+            &left_join_display,
+            &right_join_display,
+            &dbsf_inner_join_display,
+            &dbsf_left_join_display,
+            &dbsf_right_join_display,
+        ] {
             assert_eq!(display.matches("QdrantQueryExec").count(), 2, "{display}");
             assert!(display.contains("JoinExec") || display.contains("HashJoinExec"), "{display}");
             assert!(!display.contains("prefetch=2"), "{display}");

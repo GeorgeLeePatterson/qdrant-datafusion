@@ -3,17 +3,22 @@ use std::sync::Arc;
 
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::common::{Column, DFSchemaRef, Result, plan_err};
+use datafusion::functions_aggregate::average::avg_udaf;
+use datafusion::functions_aggregate::count::count_udaf;
+use datafusion::functions_aggregate::stddev::stddev_udaf;
 use datafusion::functions_window::expr_fn::row_number;
 use datafusion::logical_expr::expr_fn::{cast, when};
 use datafusion::logical_expr::utils::expr_to_columns;
-use datafusion::logical_expr::{Expr, Extension, Join, JoinType, LogicalPlan};
+use datafusion::logical_expr::{
+    Expr, Extension, Join, JoinType, LogicalPlan, WindowFunctionDefinition, expr,
+};
 use datafusion::optimizer::{OptimizerConfig, OptimizerRule};
 use datafusion::prelude::{col, lit};
 
 use super::kernel::KernelSpec;
 use super::node::KernelNode;
 use super::op::Op;
-use super::query::{FormulaQuery, FusionQuery, QueryPrefetchBranch};
+use super::query::{FormulaQuery, FusionQuery, LocalFusionMethod, QueryPrefetchBranch};
 use super::source::Source;
 use super::state::FiltersState;
 use super::surface::{QuerySurfaceCall, SurfaceCall};
@@ -100,8 +105,9 @@ enum JoinSide {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct LocalFusionInput {
-    side:             JoinSide,
-    hidden_rank_name: String,
+    side:                     JoinSide,
+    score_column:             Column,
+    hidden_contribution_name: String,
 }
 
 fn try_rewrite_single_branch_formula(plan: &LogicalPlan) -> Result<Option<LogicalPlan>> {
@@ -380,25 +386,29 @@ fn rewrite_local_fusion_plan(
     projection_exprs: &[Expr],
     sort_exprs: Option<&[datafusion::logical_expr::SortExpr]>,
 ) -> Result<Option<LogicalPlan>> {
-    let Some((fusion_query, rrf_k, inputs)) =
+    let Some((fusion_query, method, inputs)) =
         branch_local_fusion_rewrite(join, projection_exprs, sort_exprs)?
     else {
         return Ok(None);
     };
-    let left_hidden = inputs
-        .iter()
-        .find(|input| input.side == JoinSide::Left)
-        .map(|input| input.hidden_rank_name.as_str());
-    let right_hidden = inputs
-        .iter()
-        .find(|input| input.side == JoinSide::Right)
-        .map(|input| input.hidden_rank_name.as_str());
-    let left = match left_hidden {
-        Some(hidden_name) => Arc::new(fusion_projected_branch(join.left.as_ref(), hidden_name)?),
+    let left_input = inputs.iter().find(|input| input.side == JoinSide::Left);
+    let right_input = inputs.iter().find(|input| input.side == JoinSide::Right);
+    let left = match left_input {
+        Some(input) => Arc::new(fusion_projected_branch(
+            join.left.as_ref(),
+            &input.score_column,
+            &input.hidden_contribution_name,
+            method,
+        )?),
         None => Arc::clone(&join.left),
     };
-    let right = match right_hidden {
-        Some(hidden_name) => Arc::new(fusion_projected_branch(join.right.as_ref(), hidden_name)?),
+    let right = match right_input {
+        Some(input) => Arc::new(fusion_projected_branch(
+            join.right.as_ref(),
+            &input.score_column,
+            &input.hidden_contribution_name,
+            method,
+        )?),
         None => Arc::clone(&join.right),
     };
     let rewritten_join = Join::try_new(
@@ -413,7 +423,7 @@ fn rewrite_local_fusion_plan(
     )?;
     let rewritten_projection_exprs = projection_exprs
         .iter()
-        .map(|expr| rewrite_fusion_surface_to_local_expr(expr, &fusion_query, &inputs, rrf_k))
+        .map(|expr| rewrite_fusion_surface_to_local_expr(expr, &fusion_query, &inputs))
         .collect::<Result<Vec<_>>>()?;
     let rewritten_sort_exprs = sort_exprs
         .map(|exprs| {
@@ -425,7 +435,6 @@ fn rewrite_local_fusion_plan(
                             &sort_expr.expr,
                             &fusion_query,
                             &inputs,
-                            rrf_k,
                         )?,
                         asc:         sort_expr.asc,
                         nulls_first: sort_expr.nulls_first,
@@ -453,7 +462,7 @@ fn branch_local_fusion_rewrite(
     join: &Join,
     projection_exprs: &[Expr],
     sort_exprs: Option<&[datafusion::logical_expr::SortExpr]>,
-) -> Result<Option<(FusionQuery, u32, Vec<LocalFusionInput>)>> {
+) -> Result<Option<(FusionQuery, LocalFusionMethod, Vec<LocalFusionInput>)>> {
     if !supported_local_fusion_join(join) {
         return Ok(None);
     }
@@ -470,9 +479,7 @@ fn branch_local_fusion_rewrite(
     let Some(fusion_query) = fusion_query else {
         return Ok(None);
     };
-    let Some(rrf_k) = fusion_query.local_rrf_k() else {
-        return Ok(None);
-    };
+    let method = fusion_query.local_fusion_method();
 
     let Some((_, left_branch)) = query_branch_from_plan(join.left.as_ref())? else {
         return Ok(None);
@@ -501,10 +508,11 @@ fn branch_local_fusion_rewrite(
         }
         inputs.push(LocalFusionInput {
             side,
-            hidden_rank_name: unique_fusion_rank_output_name(&join.schema, side),
+            score_column: column,
+            hidden_contribution_name: unique_fusion_contribution_output_name(&join.schema, side),
         });
     }
-    Ok(Some((fusion_query, rrf_k, inputs)))
+    Ok(Some((fusion_query, method, inputs)))
 }
 
 fn collect_fusion_surface(expr: &Expr, fusion_query: &mut Option<FusionQuery>) -> Result<()> {
@@ -540,10 +548,10 @@ fn supported_local_fusion_join(join: &Join) -> bool {
         )
 }
 
-fn unique_fusion_rank_output_name(schema: &DFSchemaRef, side: JoinSide) -> String {
+fn unique_fusion_contribution_output_name(schema: &DFSchemaRef, side: JoinSide) -> String {
     let base = match side {
-        JoinSide::Left => "__qdrant_fusion_left_rank",
-        JoinSide::Right => "__qdrant_fusion_right_rank",
+        JoinSide::Left => "__qdrant_fusion_left_score",
+        JoinSide::Right => "__qdrant_fusion_right_score",
     };
     if schema.fields().iter().all(|field| field.name() != base) {
         return base.to_owned();
@@ -558,13 +566,61 @@ fn unique_fusion_rank_output_name(schema: &DFSchemaRef, side: JoinSide) -> Strin
     }
 }
 
-fn fusion_projected_branch(plan: &LogicalPlan, hidden_name: &str) -> Result<LogicalPlan> {
+fn fusion_projected_branch(
+    plan: &LogicalPlan,
+    score_column: &Column,
+    hidden_name: &str,
+    method: LocalFusionMethod,
+) -> Result<LogicalPlan> {
+    let (window_exprs, contribution_expr) = match method {
+        LocalFusionMethod::Rrf { k } => {
+            let rank_name = format!("{hidden_name}__rank");
+            (
+                vec![row_number().alias(rank_name.clone())],
+                local_rrf_contribution_expr(Expr::Column(Column::from_name(rank_name)), k)?,
+            )
+        }
+        LocalFusionMethod::Dbsf => {
+            let cast_score_expr = cast(
+                Expr::Column(score_column.clone()),
+                datafusion::arrow::datatypes::DataType::Float64,
+            );
+            let count_name = format!("{hidden_name}__count");
+            let mean_name = format!("{hidden_name}__mean");
+            let stddev_name = format!("{hidden_name}__stddev");
+            (
+                vec![
+                    Expr::from(expr::WindowFunction::new(
+                        WindowFunctionDefinition::AggregateUDF(count_udaf()),
+                        vec![cast_score_expr.clone()],
+                    ))
+                    .alias(count_name.clone()),
+                    Expr::from(expr::WindowFunction::new(
+                        WindowFunctionDefinition::AggregateUDF(avg_udaf()),
+                        vec![cast_score_expr.clone()],
+                    ))
+                    .alias(mean_name.clone()),
+                    Expr::from(expr::WindowFunction::new(
+                        WindowFunctionDefinition::AggregateUDF(stddev_udaf()),
+                        vec![cast_score_expr],
+                    ))
+                    .alias(stddev_name.clone()),
+                ],
+                local_dbsf_contribution_expr(
+                    Expr::Column(score_column.clone()),
+                    &Expr::Column(Column::from_name(count_name)),
+                    Expr::Column(Column::from_name(mean_name)),
+                    Expr::Column(Column::from_name(stddev_name)),
+                )?,
+            )
+        }
+    };
     let windowed = datafusion::logical_expr::LogicalPlanBuilder::from(plan.clone())
-        .window(vec![row_number().alias(hidden_name.to_owned())])?
+        .window(window_exprs)?
         .build()?;
     let mut projection_exprs =
         plan.schema().columns().into_iter().map(Expr::Column).collect::<Vec<_>>();
-    projection_exprs.push(Expr::Column(Column::from_name(hidden_name)));
+    projection_exprs.push(contribution_expr.alias(hidden_name.to_owned()));
     datafusion::logical_expr::LogicalPlanBuilder::from(windowed)
         .project(projection_exprs)?
         .build()
@@ -574,7 +630,6 @@ fn rewrite_fusion_surface_to_local_expr(
     expr: &Expr,
     target: &FusionQuery,
     inputs: &[LocalFusionInput],
-    rrf_k: u32,
 ) -> Result<Expr> {
     expr.clone()
         .transform_up(|nested| {
@@ -585,32 +640,54 @@ fn rewrite_fusion_surface_to_local_expr(
             if !query.same_semantics(target) {
                 return Ok(Transformed::no(nested));
             }
-            Ok(Transformed::yes(local_rrf_expr(rrf_k, inputs)?))
+            Ok(Transformed::yes(local_fusion_expr(inputs)?))
         })
         .map(|rewritten| rewritten.data)
 }
 
-fn local_rrf_expr(rrf_k: u32, inputs: &[LocalFusionInput]) -> Result<Expr> {
-    let mut combined = None;
-    for input in inputs {
-        let rank_expr = Expr::Column(Column::from_name(input.hidden_rank_name.clone()));
-        let contribution = when(rank_expr.clone().is_null(), lit(0.0_f32)).otherwise(cast(
-            lit(1.0_f64)
-                / (cast(rank_expr, datafusion::arrow::datatypes::DataType::Float64)
-                    + lit(f64::from(rrf_k))),
-            datafusion::arrow::datatypes::DataType::Float32,
-        ))?;
-        combined = Some(match combined {
+fn local_fusion_expr(inputs: &[LocalFusionInput]) -> Result<Expr> {
+    let combined = inputs.iter().fold(None, |combined, input| {
+        let contribution = when(
+            Expr::Column(Column::from_name(input.hidden_contribution_name.clone())).is_null(),
+            lit(0.0_f32),
+        )
+        .otherwise(Expr::Column(Column::from_name(input.hidden_contribution_name.clone())))
+        .expect("otherwise should build");
+        Some(match combined {
             Some(existing) => existing + contribution,
             None => contribution,
-        });
-    }
+        })
+    });
     combined.ok_or_else(|| {
         datafusion::error::DataFusionError::Plan(format!(
             "{FUSION_SCORE_FUNCTION_NAME} local fallback requires one or more explicit score \
              inputs"
         ))
     })
+}
+
+fn local_rrf_contribution_expr(rank_expr: Expr, rrf_k: u32) -> Result<Expr> {
+    when(rank_expr.clone().is_null(), lit(0.0_f32)).otherwise(cast(
+        lit(1.0_f64)
+            / (cast(rank_expr, datafusion::arrow::datatypes::DataType::Float64)
+                + lit(f64::from(rrf_k))),
+        datafusion::arrow::datatypes::DataType::Float32,
+    ))
+}
+
+fn local_dbsf_contribution_expr(
+    score_expr: Expr,
+    count_expr: &Expr,
+    mean_expr: Expr,
+    stddev_expr: Expr,
+) -> Result<Expr> {
+    when(count_expr.clone().eq(lit(1_i64)).or(stddev_expr.clone().eq(lit(0.0_f64))), lit(0.5_f32))
+        .otherwise(cast(
+            (cast(score_expr, datafusion::arrow::datatypes::DataType::Float64) - mean_expr
+                + lit(3.0_f64) * stddev_expr.clone())
+                / (lit(6.0_f64) * stddev_expr),
+            datafusion::arrow::datatypes::DataType::Float32,
+        ))
 }
 
 fn try_rewrite_sort_through_projection(plan: &LogicalPlan) -> Result<Option<LogicalPlan>> {

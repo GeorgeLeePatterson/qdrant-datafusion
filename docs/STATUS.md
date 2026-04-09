@@ -199,7 +199,11 @@ Current branch reality:
     - `qdrant_fusion_score(...)` still admits the exact coordinated `FULL OUTER JOIN USING (id)` remote rewrite for the current coordinated subset
     - explicit `RRF` score-column inputs now additionally admit a local fallback over aligned `INNER` / `LEFT` / `RIGHT` joins on `id`
     - the optimizer materializes per-branch local rank columns, rewrites the fusion surface to explicit local `RRF` arithmetic, and leaves the outer SQL join local
-    - `DBSF` remains on the exact coordinated remote path, and `CROSS JOIN` remains by-design unsupported because it does not align the same candidate across branches
+47. Explicit `DBSF` fusion now composes over aligned local joins when the score inputs come from independently-closable query branches.
+    - `qdrant_fusion_score(...)` still admits the exact coordinated `FULL OUTER JOIN USING (id)` remote rewrite for the current coordinated subset
+    - explicit `DBSF` score-column inputs now additionally admit a local fallback over aligned `INNER` / `LEFT` / `RIGHT` joins on `id`
+    - the optimizer now materializes per-branch local normalized score contributions using the same mean / sample-stddev contract as qdrant's current DBSF implementation, then leaves the outer SQL join local
+    - `CROSS JOIN` remains by-design unsupported because it does not align the same candidate across branches
 
 ## Current Code Ownership
 
