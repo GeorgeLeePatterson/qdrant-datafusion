@@ -57,6 +57,14 @@ e2e_test!(
 
 #[cfg(feature = "test-utils")]
 e2e_test!(
+    unsupported_write_replace_queries,
+    tests::test_unsupported_write_replace_queries,
+    TRACING_DIRECTIVES,
+    None
+);
+
+#[cfg(feature = "test-utils")]
+e2e_test!(
     unsupported_query_nearest_queries,
     tests::test_unsupported_query_nearest_queries,
     TRACING_DIRECTIVES,
@@ -523,6 +531,16 @@ mod tests {
     ) -> Result<()> {
         let ctx = create_write_context(&c, "test_unsupported_write_overwrite_queries").await?;
         for case in sql::writes::overwrite::ALL {
+            assert_unsupported_query(&ctx, *case).await?;
+        }
+        Ok(())
+    }
+
+    pub(super) async fn test_unsupported_write_replace_queries(
+        c: Arc<QdrantContainer>,
+    ) -> Result<()> {
+        let ctx = create_write_context(&c, "test_unsupported_write_replace_queries").await?;
+        for case in sql::writes::replace::ALL {
             assert_unsupported_query(&ctx, *case).await?;
         }
         Ok(())

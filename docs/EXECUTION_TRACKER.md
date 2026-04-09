@@ -17,7 +17,7 @@ Use it to resume work without replaying the full repository history.
    - canonical dense / multivector / sparse carriers
    - top-level nullable vector columns for heterogeneous named collections
    - current typed `qdrant-client` vector outputs only
-4. Canonical-schema `INSERT INTO` and `INSERT OVERWRITE` are now supported through `DataSinkExec` and a write-side Arrow/Qdrant serializer.
+4. Canonical-schema `INSERT INTO`, `REPLACE INTO`, and `INSERT OVERWRITE` are now supported through `DataSinkExec` and a write-side Arrow/Qdrant serializer.
 5. The broad SQL-native `Qdrant` capability surface is still intentionally incomplete, but the predicate algebra foundation, the first aggregate-like planner slices, the first public nearest-retrieval prototype, and the typed payload-access bridge are now in place.
 6. The next expansion round is now explicitly staged around the full `Qdrant` relation
    architecture rather than feature-by-feature node growth:
@@ -365,10 +365,15 @@ Use it to resume work without replaying the full repository history.
     - the remaining noncanonical append shapes without target columns now stay in the unsupported inventory as `InvalidInput`, not `Deferred`, because they violate the current public write contract rather than exposing a planned capability gap
     - docs now describe the write contract as “canonical-schema `INSERT INTO`, including the current target-column normalization path” instead of “logically equivalent upstream schema only”
 65. `Q-066`: canonical write semantics now distinguish qdrant insert-only append from collection-clearing overwrite.
-    - `QdrantTableProvider::insert_into` now admits `InsertOp::Append` and `InsertOp::Overwrite` on the canonical provider schema while still rejecting `Replace`
+    - `QdrantTableProvider::insert_into` now distinguishes `InsertOp::Append` from `InsertOp::Overwrite` on the canonical provider schema instead of collapsing both onto one write contract
     - on the validated current qdrant runtime line, `INSERT INTO` uses qdrant's `InsertOnly` behavior, preserving existing ids while inserting new ids instead of overwriting them
     - `INSERT OVERWRITE` now clears the collection first through `delete_points(Filter::default())`, then writes canonical rows through the same sink path
     - `tests/catalog/mod.rs` now mirrors supported and unsupported overwrite SQL directly, so the remaining noncanonical overwrite shapes stay explicit as `InvalidInput` or `Upstream`
+66. `Q-067`: canonical replace semantics now land on the same deliberate sink boundary instead of staying artificially unsupported.
+    - `QdrantTableProvider::insert_into` now admits `InsertOp::Replace` on the canonical provider schema instead of rejecting it at the provider boundary
+    - `REPLACE INTO` now uses qdrant's `Upsert` behavior on the validated runtime line, replacing colliding ids while inserting new ids
+    - `tests/catalog/mod.rs` now mirrors supported and unsupported replace SQL directly across the same source-plan matrix as append, so replace no longer remains an underclaimed gap in the write surface
+    - direct e2e now proves colliding ids are overwritten rather than preserved on the replace path
 
 ## Next
 
@@ -409,7 +414,7 @@ When the next implementation round starts:
    - top-level nullable vector columns
    - paginated `scroll`
    - current typed `qdrant-client` APIs only
-3. keep the write contract explicit: canonical `INSERT INTO` / `INSERT OVERWRITE` only unless broader semantics are deliberately specified
+3. keep the write contract explicit: canonical `INSERT INTO` / `REPLACE INTO` / `INSERT OVERWRITE` only unless broader semantics are deliberately specified
    - current admitted write reshaping is only the `DataFusion` target-column normalization path into the canonical provider schema
 4. use `DataFusion` primary-source idioms before inventing project-local traversal or rewrite patterns
 5. admit only explicit pushdown subsets; reject unsupported cases cleanly instead of approximating them

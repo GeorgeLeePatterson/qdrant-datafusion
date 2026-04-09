@@ -95,6 +95,14 @@ e2e_test!(
 
 #[cfg(feature = "test-utils")]
 e2e_test!(
+    table_provider_replace_into_overwrites_existing_ids,
+    tests::test_table_provider_replace_into_overwrites_existing_ids,
+    TRACING_DIRECTIVES,
+    None
+);
+
+#[cfg(feature = "test-utils")]
+e2e_test!(
     table_provider_supported_scan_catalog_queries,
     tests::test_table_provider_supported_scan_catalog_queries,
     TRACING_DIRECTIVES,
@@ -1672,6 +1680,29 @@ error: {err}"
         Ok(())
     }
 
+    pub(super) async fn test_table_provider_replace_into_overwrites_existing_ids(
+        c: Arc<QdrantContainer>,
+    ) -> Result<()> {
+        let collection_name = "test_replace_into_overwrites_existing_ids";
+        let mut existing_payload = qdrant_client::Payload::new();
+        existing_payload.insert("rank", 99_i64);
+        let ctx = create_write_context(&c, collection_name, vec![PointStruct::new(
+            1,
+            Vector::new_dense(vec![0.2]),
+            existing_payload,
+        )])
+        .await?;
+
+        let _batches = ctx.sql(sql::writes::replace::INSERT_SELECT.sql).await?.collect().await?;
+
+        let ranks = ctx.sql(sql::scan::projection::INSERT_VERIFY.sql).await?.collect().await?;
+        let rank_batch = ranks.into_iter().next().expect("rank batch");
+        assert_eq!(batch_u64_ids(&rank_batch, "id"), vec![1, 2]);
+        assert_eq!(batch_i64_values(&rank_batch, "rank"), vec![10, 20]);
+
+        Ok(())
+    }
+
     pub(super) async fn test_table_provider_supported_scan_catalog_queries(
         c: Arc<QdrantContainer>,
     ) -> Result<()> {
@@ -1690,80 +1721,141 @@ error: {err}"
         Ok(())
     }
 
+    async fn assert_supported_append_write_case(
+        c: &Arc<QdrantContainer>,
+        case: SqlCase,
+    ) -> Result<()> {
+        let collection_name = format!("test_supported_write_append_{}", case.id.replace('.', "_"));
+        let ctx = create_write_context(c, &collection_name, vec![]).await?;
+        let (_batches, display) =
+            assert_supported_query_collects(&ctx, case.sql).await.map_err(|error| {
+                datafusion::error::DataFusionError::Execution(format!(
+                    "supported write catalog case={} sql={} error={error}",
+                    case.id, case.sql
+                ))
+            })?;
+        assert!(display.contains("DataSinkExec"), "case={} display={display}", case.id);
+
+        let ranks = ctx.sql(sql::scan::projection::INSERT_VERIFY.sql).await?.collect().await?;
+        let rank_batch = ranks.into_iter().next().expect("rank batch");
+        let expected_ids =
+            if case.id == sql::writes::append::RIGHT_SEMI_JOIN.id { vec![1] } else { vec![1, 2] };
+        assert_eq!(batch_u64_ids(&rank_batch, "id"), expected_ids, "case={}", case.id);
+        let expected_ranks = if case.id == sql::writes::append::TARGET_COLUMNS_OMIT_PAYLOAD.id {
+            vec![None, None]
+        } else if case.id == sql::writes::append::RIGHT_SEMI_JOIN.id {
+            vec![Some(10)]
+        } else {
+            vec![Some(10), Some(20)]
+        };
+        assert_eq!(
+            batch_optional_i64_values(&rank_batch, "rank"),
+            expected_ranks,
+            "case={}",
+            case.id
+        );
+
+        Ok(())
+    }
+
+    async fn assert_supported_overwrite_write_case(
+        c: &Arc<QdrantContainer>,
+        case: SqlCase,
+    ) -> Result<()> {
+        let collection_name =
+            format!("test_supported_write_overwrite_{}", case.id.replace('.', "_"));
+        let mut existing_payload = qdrant_client::Payload::new();
+        existing_payload.insert("rank", 99_i64);
+        let ctx = create_write_context(c, &collection_name, vec![PointStruct::new(
+            9,
+            Vector::new_dense(vec![0.2]),
+            existing_payload,
+        )])
+        .await?;
+        let (_batches, display) =
+            assert_supported_query_collects(&ctx, case.sql).await.map_err(|error| {
+                datafusion::error::DataFusionError::Execution(format!(
+                    "supported overwrite catalog case={} sql={} error={error}",
+                    case.id, case.sql
+                ))
+            })?;
+        assert!(display.contains("DataSinkExec"), "case={} display={display}", case.id);
+
+        let ranks = ctx.sql(sql::scan::projection::INSERT_VERIFY.sql).await?.collect().await?;
+        let rank_batch = ranks.into_iter().next().expect("rank batch");
+        assert_eq!(batch_u64_ids(&rank_batch, "id"), vec![1, 2], "case={}", case.id);
+        let expected_ranks = if case.id == sql::writes::overwrite::TARGET_COLUMNS_OMIT_PAYLOAD.id {
+            vec![None, None]
+        } else {
+            vec![Some(10), Some(20)]
+        };
+        assert_eq!(
+            batch_optional_i64_values(&rank_batch, "rank"),
+            expected_ranks,
+            "case={}",
+            case.id
+        );
+
+        Ok(())
+    }
+
+    async fn assert_supported_replace_write_case(
+        c: &Arc<QdrantContainer>,
+        case: SqlCase,
+    ) -> Result<()> {
+        let collection_name = format!("test_supported_write_replace_{}", case.id.replace('.', "_"));
+        let mut existing_payload = qdrant_client::Payload::new();
+        existing_payload.insert("rank", 99_i64);
+        let ctx = create_write_context(c, &collection_name, vec![PointStruct::new(
+            1,
+            Vector::new_dense(vec![0.2]),
+            existing_payload,
+        )])
+        .await?;
+        let (_batches, display) =
+            assert_supported_query_collects(&ctx, case.sql).await.map_err(|error| {
+                datafusion::error::DataFusionError::Execution(format!(
+                    "supported replace catalog case={} sql={} error={error}",
+                    case.id, case.sql
+                ))
+            })?;
+        assert!(display.contains("DataSinkExec"), "case={} display={display}", case.id);
+
+        let ranks = ctx.sql(sql::scan::projection::INSERT_VERIFY.sql).await?.collect().await?;
+        let rank_batch = ranks.into_iter().next().expect("rank batch");
+        let expected_ids =
+            if case.id == sql::writes::replace::RIGHT_SEMI_JOIN.id { vec![1] } else { vec![1, 2] };
+        assert_eq!(batch_u64_ids(&rank_batch, "id"), expected_ids, "case={}", case.id);
+        let expected_ranks = if case.id == sql::writes::replace::TARGET_COLUMNS_OMIT_PAYLOAD.id {
+            vec![None, None]
+        } else if case.id == sql::writes::replace::RIGHT_SEMI_JOIN.id {
+            vec![Some(10)]
+        } else {
+            vec![Some(10), Some(20)]
+        };
+        assert_eq!(
+            batch_optional_i64_values(&rank_batch, "rank"),
+            expected_ranks,
+            "case={}",
+            case.id
+        );
+
+        Ok(())
+    }
+
     pub(super) async fn test_table_provider_supported_write_catalog_queries(
         c: Arc<QdrantContainer>,
     ) -> Result<()> {
         for case in sql::writes::append::ALL {
-            let collection_name =
-                format!("test_supported_write_append_{}", case.id.replace('.', "_"));
-            let ctx = create_write_context(&c, &collection_name, vec![]).await?;
-            let (_batches, display) =
-                assert_supported_query_collects(&ctx, case.sql).await.map_err(|error| {
-                    datafusion::error::DataFusionError::Execution(format!(
-                        "supported write catalog case={} sql={} error={error}",
-                        case.id, case.sql
-                    ))
-                })?;
-            assert!(display.contains("DataSinkExec"), "case={} display={display}", case.id);
-
-            let ranks = ctx.sql(sql::scan::projection::INSERT_VERIFY.sql).await?.collect().await?;
-            let rank_batch = ranks.into_iter().next().expect("rank batch");
-            let expected_ids = if case.id == sql::writes::append::RIGHT_SEMI_JOIN.id {
-                vec![1]
-            } else {
-                vec![1, 2]
-            };
-            assert_eq!(batch_u64_ids(&rank_batch, "id"), expected_ids, "case={}", case.id);
-            let expected_ranks = if case.id == sql::writes::append::TARGET_COLUMNS_OMIT_PAYLOAD.id {
-                vec![None, None]
-            } else if case.id == sql::writes::append::RIGHT_SEMI_JOIN.id {
-                vec![Some(10)]
-            } else {
-                vec![Some(10), Some(20)]
-            };
-            assert_eq!(
-                batch_optional_i64_values(&rank_batch, "rank"),
-                expected_ranks,
-                "case={}",
-                case.id
-            );
+            assert_supported_append_write_case(&c, *case).await?;
         }
 
         for case in sql::writes::overwrite::ALL {
-            let collection_name =
-                format!("test_supported_write_overwrite_{}", case.id.replace('.', "_"));
-            let mut existing_payload = qdrant_client::Payload::new();
-            existing_payload.insert("rank", 99_i64);
-            let ctx = create_write_context(&c, &collection_name, vec![PointStruct::new(
-                9,
-                Vector::new_dense(vec![0.2]),
-                existing_payload,
-            )])
-            .await?;
-            let (_batches, display) =
-                assert_supported_query_collects(&ctx, case.sql).await.map_err(|error| {
-                    datafusion::error::DataFusionError::Execution(format!(
-                        "supported overwrite catalog case={} sql={} error={error}",
-                        case.id, case.sql
-                    ))
-                })?;
-            assert!(display.contains("DataSinkExec"), "case={} display={display}", case.id);
+            assert_supported_overwrite_write_case(&c, *case).await?;
+        }
 
-            let ranks = ctx.sql(sql::scan::projection::INSERT_VERIFY.sql).await?.collect().await?;
-            let rank_batch = ranks.into_iter().next().expect("rank batch");
-            assert_eq!(batch_u64_ids(&rank_batch, "id"), vec![1, 2], "case={}", case.id);
-            let expected_ranks =
-                if case.id == sql::writes::overwrite::TARGET_COLUMNS_OMIT_PAYLOAD.id {
-                    vec![None, None]
-                } else {
-                    vec![Some(10), Some(20)]
-                };
-            assert_eq!(
-                batch_optional_i64_values(&rank_batch, "rank"),
-                expected_ranks,
-                "case={}",
-                case.id
-            );
+        for case in sql::writes::replace::ALL {
+            assert_supported_replace_write_case(&c, *case).await?;
         }
 
         Ok(())

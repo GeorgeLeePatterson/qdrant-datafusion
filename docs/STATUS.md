@@ -17,13 +17,14 @@ Current branch reality:
 4. Vector columns use canonical carriers with top-level nullable scan fields.
 5. Missing per-row named vectors become `NULL`, not execution errors.
 6. Deprecated `qdrant-client` response fields are not part of the implementation surface.
-7. Canonical-schema `INSERT INTO` and `INSERT OVERWRITE` are now supported on the qdrant table schema through `DataSinkExec`.
+7. Canonical-schema `INSERT INTO`, `REPLACE INTO`, and `INSERT OVERWRITE` are now supported on the qdrant table schema through `DataSinkExec`.
 8. A shared `Qdrant` semantics layer plus provider-owned scan-pushdown model now exists for projection, payload access, filters, ordering, limit, and continuation.
 9. Write-side Arrow/Qdrant serialization now exists for the canonical provider schema.
-   - `INSERT INTO` and `INSERT OVERWRITE` both lower through a `QdrantInsertSink` / `DataSinkExec` path
+   - `INSERT INTO`, `REPLACE INTO`, and `INSERT OVERWRITE` all lower through a `QdrantInsertSink` / `DataSinkExec` path
    - the current admitted write contract is explicit: `DataFusion` must present the canonical qdrant table schema at the sink boundary
    - explicit target-column inserts are admitted when `DataFusion` normalizes them into that schema, including reordered target columns and omission of nullable `payload`
    - on the validated current qdrant runtime line, `INSERT INTO` preserves existing ids while inserting new ids
+   - on the validated current qdrant runtime line, `REPLACE INTO` replaces colliding ids while inserting new ids
    - `INSERT OVERWRITE` clears the collection first, then writes canonical rows through the same sink path
 10. `ORDER BY id ASC` is admitted as an exact physical sort pushdown case.
 11. The single-node payload-key ordered-scroll runtime contract is now validated for integer, float, and datetime payload indexes.
@@ -231,10 +232,10 @@ Current branch reality:
    - collection-config to Arrow schema translation plus `Qdrant` point to Arrow record-batch
      materialization and record-batch to `Qdrant` point serialization
 8. `src/table/insert.rs`
-   - canonical `INSERT INTO` / `INSERT OVERWRITE` sink implementation over the canonical provider schema
+   - canonical `INSERT INTO` / `REPLACE INTO` / `INSERT OVERWRITE` sink implementation over the canonical provider schema
 9. `tests/e2e.rs`
    - integration coverage for the admitted scan baseline, typed payload access, aggregate-like
-     slices, current query-family surfaces, and canonical-schema inserts
+     slices, current query-family surfaces, and canonical-schema writes
 
 ## Operational Notes
 

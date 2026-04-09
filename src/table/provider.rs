@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::catalog::Session;
-use datafusion::common::{SchemaExt, not_impl_err};
+use datafusion::common::SchemaExt;
 use datafusion::datasource::TableType;
 use datafusion::datasource::sink::DataSinkExec;
 use datafusion::error::Result as DataFusionResult;
@@ -71,9 +71,6 @@ impl datafusion::catalog::TableProvider for QdrantTableProvider {
         insert_op: InsertOp,
     ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
         self.schema().logically_equivalent_names_and_types(&input.schema())?;
-        if insert_op == InsertOp::Replace {
-            return not_impl_err!("{insert_op} not implemented for Qdrant tables yet");
-        }
         let sink = QdrantInsertSink::new(
             Arc::clone(&self.client),
             self.table.table().to_owned(),

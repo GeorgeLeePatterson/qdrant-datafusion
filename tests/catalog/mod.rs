@@ -1166,6 +1166,123 @@ pub(crate) mod supported {
             pub(crate) const ALL: &[SqlCase] =
                 &[INSERT_SELECT, TARGET_COLUMNS_OMIT_PAYLOAD, TARGET_COLUMNS_REORDERED];
         }
+
+        pub(crate) mod replace {
+            use super::SqlCase;
+
+            pub(crate) const INSERT_SELECT: SqlCase = SqlCase::new(
+                "writes.replace.insert_select",
+                "REPLACE INTO vectors SELECT id, payload, vector FROM staging",
+            );
+            pub(crate) const TARGET_COLUMNS_FULL: SqlCase = SqlCase::new(
+                "writes.replace.target_columns_full",
+                "REPLACE INTO vectors (id, payload, vector) SELECT id, payload, vector FROM \
+                 staging",
+            );
+            pub(crate) const TARGET_COLUMNS_OMIT_PAYLOAD: SqlCase = SqlCase::new(
+                "writes.replace.target_columns_omit_payload",
+                "REPLACE INTO vectors (id, vector) SELECT id, vector FROM staging",
+            );
+            pub(crate) const TARGET_COLUMNS_REORDERED: SqlCase = SqlCase::new(
+                "writes.replace.target_columns_reordered",
+                "REPLACE INTO vectors (vector, id, payload) SELECT vector, id, payload FROM \
+                 staging",
+            );
+            pub(crate) const SUBQUERY: SqlCase = SqlCase::new(
+                "writes.replace.subquery",
+                "REPLACE INTO vectors SELECT * FROM (SELECT id, payload, vector FROM staging) \
+                 staged",
+            );
+            pub(crate) const UNION_ALL: SqlCase = SqlCase::new(
+                "writes.replace.union_all",
+                "REPLACE INTO vectors SELECT * FROM staging UNION ALL SELECT * FROM staging",
+            );
+            pub(crate) const WINDOW_SUBQUERY: SqlCase = SqlCase::new(
+                "writes.replace.window_subquery",
+                "REPLACE INTO vectors SELECT id, payload, vector FROM (SELECT id, payload, \
+                 vector, ROW_NUMBER() OVER (ORDER BY id) AS row_num FROM staging) staged",
+            );
+            pub(crate) const ORDERED_SUBQUERY: SqlCase = SqlCase::new(
+                "writes.replace.ordered_subquery",
+                "REPLACE INTO vectors SELECT id, payload, vector FROM (SELECT id, payload, vector \
+                 FROM staging ORDER BY id) staged",
+            );
+            pub(crate) const JOIN: SqlCase = SqlCase::new(
+                "writes.replace.join",
+                "REPLACE INTO vectors SELECT s.id, s.payload, s.vector FROM staging s JOIN \
+                 staging t ON s.id = t.id",
+            );
+            pub(crate) const JOIN_USING: SqlCase = SqlCase::new(
+                "writes.replace.join_using",
+                "REPLACE INTO vectors SELECT id, s.payload, s.vector FROM staging s JOIN staging \
+                 t USING (id)",
+            );
+            pub(crate) const LEFT_JOIN: SqlCase = SqlCase::new(
+                "writes.replace.left_join",
+                "REPLACE INTO vectors SELECT s.id, s.payload, s.vector FROM staging s LEFT JOIN \
+                 staging t ON s.id = t.id",
+            );
+            pub(crate) const RIGHT_JOIN: SqlCase = SqlCase::new(
+                "writes.replace.right_join",
+                "REPLACE INTO vectors SELECT t.id, t.payload, t.vector FROM staging s RIGHT JOIN \
+                 staging t ON s.id = t.id",
+            );
+            pub(crate) const FULL_JOIN: SqlCase = SqlCase::new(
+                "writes.replace.full_join",
+                "REPLACE INTO vectors SELECT s.id, s.payload, s.vector FROM staging s FULL OUTER \
+                 JOIN staging t ON s.id = t.id WHERE s.id IS NOT NULL",
+            );
+            pub(crate) const CROSS_JOIN: SqlCase = SqlCase::new(
+                "writes.replace.cross_join",
+                "REPLACE INTO vectors SELECT s.id, s.payload, s.vector FROM staging s CROSS JOIN \
+                 staging t WHERE s.id = t.id",
+            );
+            pub(crate) const LEFT_SEMI_JOIN: SqlCase = SqlCase::new(
+                "writes.replace.left_semi_join",
+                "REPLACE INTO vectors SELECT s.id, s.payload, s.vector FROM staging s LEFT SEMI \
+                 JOIN staging t ON s.id = t.id",
+            );
+            pub(crate) const LEFT_ANTI_JOIN: SqlCase = SqlCase::new(
+                "writes.replace.left_anti_join",
+                "REPLACE INTO vectors SELECT s.id, s.payload, s.vector FROM staging s LEFT ANTI \
+                 JOIN (SELECT id FROM staging WHERE id = '9') t ON s.id = t.id",
+            );
+            pub(crate) const RIGHT_SEMI_JOIN: SqlCase = SqlCase::new(
+                "writes.replace.right_semi_join",
+                "REPLACE INTO vectors SELECT t.id, t.payload, t.vector FROM (SELECT id FROM \
+                 staging WHERE id = '1') s RIGHT SEMI JOIN staging t ON s.id = t.id",
+            );
+            pub(crate) const RIGHT_ANTI_JOIN: SqlCase = SqlCase::new(
+                "writes.replace.right_anti_join",
+                "REPLACE INTO vectors SELECT t.id, t.payload, t.vector FROM (SELECT id FROM \
+                 staging WHERE id = '9') s RIGHT ANTI JOIN staging t ON s.id = t.id",
+            );
+            pub(crate) const UNION_DISTINCT: SqlCase = SqlCase::new(
+                "writes.replace.union_distinct",
+                "REPLACE INTO vectors SELECT * FROM staging UNION SELECT * FROM staging",
+            );
+            pub(crate) const ALL: &[SqlCase] = &[
+                INSERT_SELECT,
+                TARGET_COLUMNS_FULL,
+                TARGET_COLUMNS_OMIT_PAYLOAD,
+                TARGET_COLUMNS_REORDERED,
+                SUBQUERY,
+                UNION_ALL,
+                WINDOW_SUBQUERY,
+                ORDERED_SUBQUERY,
+                JOIN,
+                JOIN_USING,
+                LEFT_JOIN,
+                RIGHT_JOIN,
+                FULL_JOIN,
+                CROSS_JOIN,
+                LEFT_SEMI_JOIN,
+                LEFT_ANTI_JOIN,
+                RIGHT_SEMI_JOIN,
+                RIGHT_ANTI_JOIN,
+                UNION_DISTINCT,
+            ];
+        }
     }
 
     pub(crate) mod query {
@@ -3039,6 +3156,76 @@ pub(crate) mod unsupported {
 
             pub(crate) const ALL: &[UnsupportedSqlCase] =
                 &[SCHEMA_MISMATCH, EXTRA_COLUMN, CTE_INSERT];
+        }
+
+        pub(crate) mod replace {
+            use super::UnsupportedSqlCase;
+
+            pub(crate) const SCHEMA_MISMATCH: UnsupportedSqlCase = UnsupportedSqlCase::invalid(
+                "writes.replace.schema_mismatch",
+                "REPLACE INTO vectors SELECT id, vector FROM staging",
+                "without explicit target columns, replace input must still match the canonical \
+                 provider schema exactly",
+                "Column count doesn't match insert query!",
+            );
+            pub(crate) const SUBQUERY_SCHEMA_MISMATCH: UnsupportedSqlCase =
+                UnsupportedSqlCase::invalid(
+                    "writes.replace.subquery_schema_mismatch",
+                    "REPLACE INTO vectors SELECT * FROM (SELECT id, vector FROM staging) staged",
+                    "without explicit target columns, replace input must still match the \
+                     canonical provider schema exactly",
+                    "Column count doesn't match insert query!",
+                );
+            pub(crate) const CTE_INSERT: UnsupportedSqlCase = UnsupportedSqlCase::upstream(
+                "writes.replace.cte_insert",
+                "WITH staged AS (SELECT id, payload, vector FROM staging) REPLACE INTO vectors \
+                 SELECT * FROM staged",
+                "DataFusion's current parser still does not admit REPLACE INTO after a preceding \
+                 CTE in this shape",
+                "found: REPLACE",
+            );
+            pub(crate) const UNION_ALL_SCHEMA_MISMATCH: UnsupportedSqlCase =
+                UnsupportedSqlCase::invalid(
+                    "writes.replace.union_all_schema_mismatch",
+                    "REPLACE INTO vectors SELECT id, vector FROM staging UNION ALL SELECT id, \
+                     vector FROM staging",
+                    "without explicit target columns, replace input must still match the \
+                     canonical provider schema exactly",
+                    "Column count doesn't match insert query!",
+                );
+            pub(crate) const EXTRA_COLUMN: UnsupportedSqlCase = UnsupportedSqlCase::invalid(
+                "writes.replace.extra_column",
+                "REPLACE INTO vectors SELECT id, payload, vector, id AS copy_id FROM staging",
+                "without explicit target columns, replace input must still match the canonical \
+                 provider schema exactly",
+                "Column count doesn't match insert query!",
+            );
+            pub(crate) const WINDOW_EXTRA_COLUMN: UnsupportedSqlCase = UnsupportedSqlCase::invalid(
+                "writes.replace.window_extra_column",
+                "REPLACE INTO vectors SELECT id, payload, vector, ROW_NUMBER() OVER (ORDER BY id) \
+                 AS row_num FROM staging",
+                "without explicit target columns, replace input must still match the canonical \
+                 provider schema exactly",
+                "Column count doesn't match insert query!",
+            );
+            pub(crate) const EXISTS_EXTRA_COLUMN: UnsupportedSqlCase = UnsupportedSqlCase::invalid(
+                "writes.replace.exists_extra_column",
+                "REPLACE INTO vectors SELECT id, payload, vector, EXISTS (SELECT 1 FROM staging \
+                 other WHERE other.id = staging.id) AS seen FROM staging",
+                "without explicit target columns, replace input must still match the canonical \
+                 provider schema exactly",
+                "Column count doesn't match insert query!",
+            );
+
+            pub(crate) const ALL: &[UnsupportedSqlCase] = &[
+                SCHEMA_MISMATCH,
+                SUBQUERY_SCHEMA_MISMATCH,
+                CTE_INSERT,
+                UNION_ALL_SCHEMA_MISMATCH,
+                EXTRA_COLUMN,
+                WINDOW_EXTRA_COLUMN,
+                EXISTS_EXTRA_COLUMN,
+            ];
         }
     }
 
