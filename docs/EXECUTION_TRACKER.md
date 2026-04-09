@@ -356,6 +356,10 @@ Use it to resume work without replaying the full repository history.
     - the exact remote grouped contract is still the current single-key `DISTINCT ON (payload:<path>)` subset that lowers to `QdrantQueryGroupsExec`
     - broader grouped SQL such as multi-key `DISTINCT ON` now rewrites to a local `DistinctOn` shell above `QdrantQueryExec` when the underlying query branch can close independently
     - `tests/catalog/mod.rs` now tracks `query.grouped.multi_key_subquery` as supported SQL instead of deferred inventory, and the grouped unsupported slice is empty again until a new grouped gap is discovered
+63. `Q-064`: the current exact grouped query-family subset is broader than the old nearest / recommend / discover / context inventory.
+    - `tests/catalog/mod.rs` now tracks grouped `qdrant_sample_score(...)`, `qdrant_nearest_with_mmr_score(...)`, and `qdrant_relevance_feedback_score(...)` as supported SQL
+    - focused e2e now proves those grouped query kinds still lower to `QdrantQueryGroupsExec` with one row per tag and no local sort
+    - docs now promote the exact grouped query-family subset to the fuller current list instead of underclaiming the existing kernel surface
 
 ## Next
 

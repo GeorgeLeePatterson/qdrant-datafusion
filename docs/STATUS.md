@@ -152,7 +152,7 @@ Current branch reality:
       - required naive strategy coefficients
     - current grouped-nearest admitted scope is:
       - `SELECT DISTINCT ON (payload:<path>)` over one scalar keyword or lookup-capable integer payload field
-      - one grouped retrieval source among `qdrant_nearest_score(...)`, `qdrant_recommend_score(...)`, `qdrant_discover_score(...)`, or `qdrant_context_score(...)`
+      - one grouped retrieval source among `qdrant_nearest_score(...)`, `qdrant_sample_score(...)`, `qdrant_recommend_score(...)`, `qdrant_discover_score(...)`, `qdrant_context_score(...)`, `qdrant_nearest_with_mmr_score(...)`, or `qdrant_relevance_feedback_score(...)`
       - `ORDER BY payload:<path>[ DESC]`, with optional trailing `, score DESC` as an explicit in-group tie-break
       - group size `1`
       - grouped execution validates that returned group ids match scalar payload values on hits

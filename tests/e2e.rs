@@ -2636,11 +2636,20 @@ error: {err}"
             ("recommend", sql::query::grouped::RECOMMEND.sql),
             ("discover", sql::query::grouped::DISCOVER.sql),
             ("context", sql::query::grouped::CONTEXT.sql),
+            ("sample", sql::query::grouped::SAMPLE.sql),
+            ("mmr", sql::query::grouped::MMR.sql),
+            ("relevance", sql::query::grouped::RELEVANCE.sql),
         ];
 
         for (label, sql) in grouped_cases {
             let (rows, display) = collect_grouped_scored_rows(&ctx, sql).await?;
             let tag_ids = rows.iter().map(|(tag, id, _)| (tag.clone(), *id)).collect::<Vec<_>>();
+            let tags = rows.iter().map(|(tag, _, _)| tag.clone()).collect::<Vec<_>>();
+            assert_eq!(
+                tags,
+                vec!["blue".to_owned(), "green".to_owned(), "red".to_owned()],
+                "label={label} rows={rows:?}"
+            );
             match label {
                 "context" => {
                     assert_eq!(

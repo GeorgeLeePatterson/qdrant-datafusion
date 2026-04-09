@@ -68,7 +68,7 @@ canonical carrier; missing values are not imputed during scan.
       `struct(example, score)` entries, an optional `LIMIT`, and required naive
       strategy coefficients; when SQL omits `LIMIT`, the remote request uses Qdrant's default result count and omitted projected score ordering uses Qdrant's native score-desc result order
   - grouped query-family top-1 via `DISTINCT ON (payload:<path>)`, with outer `LIMIT` kept local after exact grouped retrieval
-    - exact lowering currently admits one scalar keyword or lookup-capable integer payload field and one grouped query-family source among `qdrant_nearest_score(...)`, `qdrant_recommend_score(...)`, `qdrant_discover_score(...)`, or `qdrant_context_score(...)`,
+    - exact lowering currently admits one scalar keyword or lookup-capable integer payload field and one grouped query-family source among `qdrant_nearest_score(...)`, `qdrant_sample_score(...)`, `qdrant_recommend_score(...)`, `qdrant_discover_score(...)`, `qdrant_context_score(...)`, `qdrant_nearest_with_mmr_score(...)`, or `qdrant_relevance_feedback_score(...)`,
       `ORDER BY payload:<path>[ DESC]` with optional trailing `, score DESC` as an explicit in-group tie-break,
       validates returned group ids against scalar payload values on hits, and keeps any outer `LIMIT` local
     - broader grouped `DISTINCT ON` SQL that cannot truthfully map to `query_groups`, such as multi-key `DISTINCT ON`, now stays local above a normal `QdrantQueryExec` instead of failing

@@ -2341,6 +2341,36 @@ pub(crate) mod supported {
                     ") grouped"
                 ),
             );
+            pub(crate) const SAMPLE: SqlCase = SqlCase::new(
+                "query.grouped.sample",
+                concat!(
+                    "SELECT id, payload:tag AS tag, score FROM (",
+                    "SELECT DISTINCT ON (payload:tag) id, payload, qdrant_sample_score() AS score ",
+                    "FROM vectors ORDER BY payload:tag",
+                    ") grouped"
+                ),
+            );
+            pub(crate) const MMR: SqlCase = SqlCase::new(
+                "query.grouped.mmr",
+                concat!(
+                    "SELECT id, payload:tag AS tag, score FROM (",
+                    "SELECT DISTINCT ON (payload:tag) id, payload, \
+                     qdrant_nearest_with_mmr_score(embedding, 0.9, 8, 1.0, 0.0) AS score ",
+                    "FROM vectors ORDER BY payload:tag",
+                    ") grouped"
+                ),
+            );
+            pub(crate) const RELEVANCE: SqlCase = SqlCase::new(
+                "query.grouped.relevance",
+                concat!(
+                    "SELECT id, payload:tag AS tag, score FROM (",
+                    "SELECT DISTINCT ON (payload:tag) id, payload, \
+                     qdrant_relevance_feedback_score(embedding, [1.0, 0.0], [struct([1.0, 0.0], \
+                     1.0), struct([0.0, 1.0], -0.5)], 1.0, 0.5, 0.25) AS score ",
+                    "FROM vectors ORDER BY payload:tag",
+                    ") grouped"
+                ),
+            );
             pub(crate) const CTE: SqlCase = SqlCase::new(
                 "query.grouped.cte",
                 concat!(
@@ -2418,6 +2448,9 @@ pub(crate) mod supported {
                 RECOMMEND,
                 DISCOVER,
                 CONTEXT,
+                SAMPLE,
+                MMR,
+                RELEVANCE,
                 SUBQUERY,
                 HAVING_SUBQUERY,
                 UNION_ALL_SUBQUERY,
