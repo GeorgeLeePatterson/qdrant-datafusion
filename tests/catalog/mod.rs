@@ -2623,9 +2623,52 @@ pub(crate) mod supported {
                     "USING (id)) ranked) final ORDER BY final.score DESC LIMIT 2"
                 ),
             );
+            pub(crate) const INNER_JOIN: SqlCase = SqlCase::new(
+                "coordination.fusion.inner_join",
+                concat!(
+                    "SELECT dense.id AS id, qdrant_fusion_score('RRF', dense.score, sparse.score) \
+                     AS score FROM ",
+                    "(SELECT id, qdrant_nearest_score(embedding, 1.0, 0.0) AS score FROM vectors \
+                     ORDER BY score DESC LIMIT 5) dense ",
+                    "JOIN (SELECT id, qdrant_nearest_score(aux, 0.0, 1.0) AS score FROM vectors \
+                     ORDER BY score DESC LIMIT 5) sparse ON dense.id = sparse.id ",
+                    "ORDER BY score DESC LIMIT 2"
+                ),
+            );
+            pub(crate) const LEFT_JOIN: SqlCase = SqlCase::new(
+                "coordination.fusion.left_join",
+                concat!(
+                    "SELECT dense.id AS id, qdrant_fusion_score('RRF', dense.score, sparse.score) \
+                     AS score FROM ",
+                    "(SELECT id, qdrant_nearest_score(embedding, 1.0, 0.0) AS score FROM vectors \
+                     ORDER BY score DESC LIMIT 5) dense ",
+                    "LEFT JOIN (SELECT id, qdrant_nearest_score(aux, 0.0, 1.0) AS score FROM \
+                     vectors ORDER BY score DESC LIMIT 5) sparse ON dense.id = sparse.id ",
+                    "ORDER BY score DESC LIMIT 2"
+                ),
+            );
+            pub(crate) const RIGHT_JOIN: SqlCase = SqlCase::new(
+                "coordination.fusion.right_join",
+                concat!(
+                    "SELECT sparse.id AS id, qdrant_fusion_score('RRF', dense.score, \
+                     sparse.score) AS score FROM ",
+                    "(SELECT id, qdrant_nearest_score(embedding, 1.0, 0.0) AS score FROM vectors \
+                     ORDER BY score DESC LIMIT 5) dense ",
+                    "RIGHT JOIN (SELECT id, qdrant_nearest_score(aux, 0.0, 1.0) AS score FROM \
+                     vectors ORDER BY score DESC LIMIT 5) sparse ON dense.id = sparse.id ",
+                    "ORDER BY score DESC LIMIT 2"
+                ),
+            );
 
-            pub(crate) const ALL: &[SqlCase] =
-                &[WITHOUT_LIMIT, CANONICAL, ALIAS_WRAPPED, ALIAS_THREADING];
+            pub(crate) const ALL: &[SqlCase] = &[
+                WITHOUT_LIMIT,
+                CANONICAL,
+                ALIAS_WRAPPED,
+                ALIAS_THREADING,
+                INNER_JOIN,
+                LEFT_JOIN,
+                RIGHT_JOIN,
+            ];
         }
     }
 }
@@ -2927,39 +2970,7 @@ pub(crate) mod unsupported {
 
         pub(crate) mod fusion {
             use super::UnsupportedSqlCase;
-            pub(crate) const INNER_JOIN: UnsupportedSqlCase = UnsupportedSqlCase::new(
-                "coordination.fusion.inner_join",
-                concat!(
-                    "SELECT dense.id AS id, qdrant_fusion_score('RRF', dense.score, sparse.score) \
-                     AS score FROM ",
-                    "(SELECT id, qdrant_nearest_score(embedding, 1.0, 0.0) AS score FROM vectors \
-                     ORDER BY score DESC LIMIT 5) dense ",
-                    "JOIN (SELECT id, qdrant_nearest_score(aux, 0.0, 1.0) AS score FROM vectors \
-                     ORDER BY score DESC LIMIT 5) sparse ON dense.id = sparse.id ",
-                    "ORDER BY score DESC LIMIT 2"
-                ),
-                "Q-038",
-                "coordinated fusion rewrite remains intentionally narrow outside admitted \
-                 full-outer coordination",
-                "unsupported coordinated qdrant_fusion_score shape",
-            );
-            pub(crate) const LEFT_JOIN: UnsupportedSqlCase = UnsupportedSqlCase::new(
-                "coordination.fusion.left_join",
-                concat!(
-                    "SELECT dense.id AS id, qdrant_fusion_score('RRF', dense.score, sparse.score) \
-                     AS score FROM ",
-                    "(SELECT id, qdrant_nearest_score(embedding, 1.0, 0.0) AS score FROM vectors \
-                     ORDER BY score DESC LIMIT 5) dense ",
-                    "LEFT JOIN (SELECT id, qdrant_nearest_score(aux, 0.0, 1.0) AS score FROM \
-                     vectors ORDER BY score DESC LIMIT 5) sparse ON dense.id = sparse.id ",
-                    "ORDER BY score DESC LIMIT 2"
-                ),
-                "Q-038",
-                "coordinated fusion rewrite remains intentionally narrow outside admitted \
-                 full-outer coordination",
-                "unsupported coordinated qdrant_fusion_score shape",
-            );
-            pub(crate) const CROSS_JOIN: UnsupportedSqlCase = UnsupportedSqlCase::new(
+            pub(crate) const CROSS_JOIN: UnsupportedSqlCase = UnsupportedSqlCase::by_design(
                 "coordination.fusion.cross_join",
                 concat!(
                     "SELECT dense.id AS id, qdrant_fusion_score('RRF', dense.score, sparse.score) \
@@ -2970,30 +2981,28 @@ pub(crate) mod unsupported {
                      vectors ORDER BY score DESC LIMIT 5) sparse ",
                     "ORDER BY score DESC LIMIT 2"
                 ),
-                "Q-038",
-                "coordinated fusion rewrite remains intentionally narrow outside admitted \
-                 full-outer coordination",
+                "qdrant_fusion_score requires aligned candidate rows across branches; CROSS JOIN \
+                 intentionally pairs unrelated candidates and has no honest fusion meaning",
                 "unsupported coordinated qdrant_fusion_score shape",
             );
-            pub(crate) const RIGHT_JOIN: UnsupportedSqlCase = UnsupportedSqlCase::new(
-                "coordination.fusion.right_join",
+            pub(crate) const DBSF_INNER_JOIN: UnsupportedSqlCase = UnsupportedSqlCase::new(
+                "coordination.fusion.dbsf_inner_join",
                 concat!(
-                    "SELECT sparse.id AS id, qdrant_fusion_score('RRF', dense.score, \
+                    "SELECT dense.id AS id, qdrant_fusion_score('DBSF', dense.score, \
                      sparse.score) AS score FROM ",
                     "(SELECT id, qdrant_nearest_score(embedding, 1.0, 0.0) AS score FROM vectors \
                      ORDER BY score DESC LIMIT 5) dense ",
-                    "RIGHT JOIN (SELECT id, qdrant_nearest_score(aux, 0.0, 1.0) AS score FROM \
-                     vectors ORDER BY score DESC LIMIT 5) sparse ON dense.id = sparse.id ",
+                    "JOIN (SELECT id, qdrant_nearest_score(aux, 0.0, 1.0) AS score FROM vectors \
+                     ORDER BY score DESC LIMIT 5) sparse ON dense.id = sparse.id ",
                     "ORDER BY score DESC LIMIT 2"
                 ),
-                "Q-038",
-                "coordinated fusion rewrite remains intentionally narrow outside admitted \
-                 full-outer coordination",
+                "Q-061",
+                "local fusion fallback currently widens only the explicit RRF subset; DBSF still \
+                 requires the admitted remote full-outer coordination path",
                 "unsupported coordinated qdrant_fusion_score shape",
             );
 
-            pub(crate) const ALL: &[UnsupportedSqlCase] =
-                &[INNER_JOIN, LEFT_JOIN, CROSS_JOIN, RIGHT_JOIN];
+            pub(crate) const ALL: &[UnsupportedSqlCase] = &[CROSS_JOIN, DBSF_INNER_JOIN];
         }
     }
 }

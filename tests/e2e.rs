@@ -2869,6 +2869,9 @@ error: {err}"
         let canonical_sql = sql::coordination::fusion::CANONICAL.sql;
         let alias_wrapped_sql = sql::coordination::fusion::ALIAS_WRAPPED.sql;
         let alias_threaded_sql = sql::coordination::fusion::ALIAS_THREADING.sql;
+        let inner_join_sql = sql::coordination::fusion::INNER_JOIN.sql;
+        let left_join_sql = sql::coordination::fusion::LEFT_JOIN.sql;
+        let right_join_sql = sql::coordination::fusion::RIGHT_JOIN.sql;
 
         let (without_limit_rows, without_limit_display) =
             collect_scored_rows(&ctx, without_limit_sql).await?;
@@ -2876,6 +2879,11 @@ error: {err}"
         let (alias_rows, alias_display) = collect_scored_rows(&ctx, alias_wrapped_sql).await?;
         let (alias_threaded_rows, alias_threaded_display) =
             collect_scored_rows(&ctx, alias_threaded_sql).await?;
+        let (inner_join_rows, inner_join_display) =
+            collect_scored_rows(&ctx, inner_join_sql).await?;
+        let (left_join_rows, left_join_display) = collect_scored_rows(&ctx, left_join_sql).await?;
+        let (right_join_rows, right_join_display) =
+            collect_scored_rows(&ctx, right_join_sql).await?;
 
         assert_eq!(without_limit_rows.iter().map(|(id, _)| *id).collect::<Vec<_>>(), vec![1, 2, 3]);
         assert_f32_eq(without_limit_rows[0].1, canonical_rows[0].1);
@@ -2883,6 +2891,9 @@ error: {err}"
         assert!(without_limit_rows[2].1 <= without_limit_rows[1].1);
         assert_scored_rows_eq(&canonical_rows, &alias_rows);
         assert_scored_rows_eq(&canonical_rows, &alias_threaded_rows);
+        assert_eq!(inner_join_rows, canonical_rows);
+        assert_eq!(left_join_rows, canonical_rows);
+        assert_eq!(right_join_rows, canonical_rows);
 
         for display in
             [&without_limit_display, &canonical_display, &alias_display, &alias_threaded_display]
@@ -2891,6 +2902,11 @@ error: {err}"
             assert!(display.contains("prefetch=2"), "{display}");
             assert!(!display.contains("JoinExec"), "{display}");
             assert!(!display.contains("HashJoinExec"), "{display}");
+        }
+        for display in [&inner_join_display, &left_join_display, &right_join_display] {
+            assert_eq!(display.matches("QdrantQueryExec").count(), 2, "{display}");
+            assert!(display.contains("JoinExec") || display.contains("HashJoinExec"), "{display}");
+            assert!(!display.contains("prefetch=2"), "{display}");
         }
 
         Ok(())

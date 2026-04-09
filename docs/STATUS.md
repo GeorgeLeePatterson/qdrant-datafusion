@@ -195,6 +195,11 @@ Current branch reality:
     - `qdrant_formula_score(...)` still admits the exact coordinated `FULL OUTER JOIN USING (id)` remote rewrite, but it no longer requires that path when qdrant-only leaves belong to one join branch
     - the current optimizer now rewrites that formula onto the owning branch, lowers it with a single prefetch descriptor, and leaves the outer SQL join local
     - exact integer payload filters now also accept integral float literals, which closes the `qdrant_condition(qdrant_payload_num('rank') > 0)` path without weakening fractional exactness
+46. Explicit `RRF` fusion now composes over aligned local joins when the score inputs come from independently-closable query branches.
+    - `qdrant_fusion_score(...)` still admits the exact coordinated `FULL OUTER JOIN USING (id)` remote rewrite for the current coordinated subset
+    - explicit `RRF` score-column inputs now additionally admit a local fallback over aligned `INNER` / `LEFT` / `RIGHT` joins on `id`
+    - the optimizer materializes per-branch local rank columns, rewrites the fusion surface to explicit local `RRF` arithmetic, and leaves the outer SQL join local
+    - `DBSF` remains on the exact coordinated remote path, and `CROSS JOIN` remains by-design unsupported because it does not align the same candidate across branches
 
 ## Current Code Ownership
 

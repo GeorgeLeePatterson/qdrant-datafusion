@@ -4397,6 +4397,46 @@ mod tests {
     }
 
     #[test]
+    fn physical_plan_composes_local_rrf_fusion_over_inner_join() {
+        let provider = test_provider(Schema::new(vec![
+            Field::new(ID_FIELD_NAME, DataType::Utf8, false),
+            Field::new(
+                "embedding",
+                DataType::new_fixed_size_list(DataType::Float32, 2, false),
+                true,
+            ),
+            Field::new("aux", DataType::new_fixed_size_list(DataType::Float32, 2, false), true),
+        ]));
+        let ctx = QdrantSessionContext::from(SessionContext::new());
+        drop(
+            ctx.session_context()
+                .register_table("vectors", Arc::new(provider))
+                .expect("register table"),
+        );
+        let dataframe = ctx
+            .sql(
+                "SELECT dense.id AS id, qdrant_fusion_score('RRF', dense.score, sparse.score) AS \
+                 score FROM (SELECT id, qdrant_nearest_score(embedding, 1.0, 0.0) AS score FROM \
+                 vectors ORDER BY score DESC LIMIT 5) dense JOIN (SELECT id, \
+                 qdrant_nearest_score(aux, 0.0, 1.0) AS score FROM vectors ORDER BY score DESC \
+                 LIMIT 5) sparse ON dense.id = sparse.id ORDER BY score DESC LIMIT 2",
+            )
+            .now_or_never()
+            .expect("sql future is ready")
+            .expect("dataframe");
+        let plan = dataframe
+            .create_physical_plan()
+            .now_or_never()
+            .expect("plan future is ready")
+            .expect("physical plan");
+        let display = displayable(plan.as_ref()).indent(true).to_string();
+
+        assert_eq!(display.matches("QdrantQueryExec").count(), 2, "{display}");
+        assert!(display.contains("JoinExec") || display.contains("HashJoinExec"), "{display}");
+        assert!(!display.contains("prefetch=2"), "{display}");
+    }
+
+    #[test]
     fn physical_plan_errors_clearly_for_non_column_explicit_fusion_inputs() {
         let provider = test_provider(Schema::new(vec![
             Field::new(ID_FIELD_NAME, DataType::Utf8, false),

@@ -5,6 +5,8 @@ use qdrant_client::qdrant::{Fusion, Query, Rrf, query};
 use super::{QueryDescriptor, string_literal, u32_literal};
 use crate::expr_fn::{FUSION_SCORE_FUNCTION_NAME, FusionCall};
 
+const DEFAULT_RRF_K: u32 = 1;
+
 #[derive(Debug, Clone, PartialEq)]
 enum FusionMethod {
     Default(Fusion),
@@ -57,6 +59,14 @@ impl FusionQuery {
     pub(crate) fn has_explicit_inputs(&self) -> bool { !self.score_inputs.is_empty() }
 
     pub(crate) fn score_inputs(&self) -> &[Expr] { &self.score_inputs }
+
+    pub(crate) fn local_rrf_k(&self) -> Option<u32> {
+        match &self.method {
+            FusionMethod::Default(Fusion::Rrf) => Some(DEFAULT_RRF_K),
+            FusionMethod::Rrf(rrf) => Some(rrf.k.unwrap_or(DEFAULT_RRF_K)),
+            FusionMethod::Default(Fusion::Dbsf) => None,
+        }
+    }
 
     pub(super) fn descriptor(&self, prefetch_count: usize) -> Result<QueryDescriptor> {
         if prefetch_count == 0 {

@@ -193,6 +193,11 @@ Last updated: 2026-04-07
     - each major namespace should carry explicit subquery-shaped inventory on both the supported and unsupported sides, so locality-sensitive gaps are reviewable as SQL rather than rediscovered by analyzer audit
     - broader SQL syntax families such as `CTE`, `UNION ALL`, `UNNEST`, `WINDOW`, and non-`FULL OUTER JOIN` composition should appear in the catalogs whenever they materially interact with qdrant admission behavior
     - unsupported catalog entries should be explicitly classified as `Deferred`, `ByDesign`, `Upstream`, or `InvalidInput`, so “not yet”, “not intended”, and “not our limitation” are visible without code inspection
+35. Coordinated qdrant-specific combiners should widen through explicit local semantics, not by pretending broader remote exactness.
+    - keep the exact coordinated remote rewrite narrow and tied to a validated qdrant contract
+    - when a broader SQL join shape is still semantically meaningful locally, add an explicit local fallback instead of rejecting it for not matching the exact remote shape
+    - method-specific behavior matters: local `RRF` fallback is acceptable when branch alignment is explicit, while `DBSF` stays deferred until the real score-normalization contract is implemented
+    - by-design unsupported shapes such as `CROSS JOIN` should remain cataloged explicitly instead of being left as undocumented optimizer fallout
 
 ## Execution Ordering
 

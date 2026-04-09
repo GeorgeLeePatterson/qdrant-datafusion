@@ -3,10 +3,12 @@ use std::sync::Arc;
 
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::common::{Column, DFSchemaRef, Result, plan_err};
+use datafusion::functions_window::expr_fn::row_number;
+use datafusion::logical_expr::expr_fn::{cast, when};
 use datafusion::logical_expr::utils::expr_to_columns;
 use datafusion::logical_expr::{Expr, Extension, Join, JoinType, LogicalPlan};
 use datafusion::optimizer::{OptimizerConfig, OptimizerRule};
-use datafusion::prelude::col;
+use datafusion::prelude::{col, lit};
 
 use super::kernel::KernelSpec;
 use super::node::KernelNode;
@@ -18,8 +20,8 @@ use super::surface::{QuerySurfaceCall, SurfaceCall};
 use crate::arrow::schema::ID_FIELD_NAME;
 use crate::expr_fn::{
     ConditionCall, DatetimeValueCall, DecayCall, FORMULA_SCORE_FUNCTION_NAME,
-    FUSION_SCORE_FUNCTION_NAME, FormulaCall, GeoDistanceCall, PayloadDatetimeCall, PayloadNumCall,
-    payload_access_expr,
+    FUSION_SCORE_FUNCTION_NAME, FormulaCall, FusionCall, GeoDistanceCall, PayloadDatetimeCall,
+    PayloadNumCall, payload_access_expr,
 };
 use crate::qdrant::{QdrantPayloadAccess, QdrantPayloadPath};
 
@@ -78,15 +80,28 @@ impl OptimizerRule for CoordinatedCombiners {
                 Ok(Transformed::no(plan))
             }
         })?;
+        let transformed = transformed.data.transform_up(|plan| {
+            if let Some(rewritten) = try_rewrite_local_fusion(&plan)? {
+                Ok(Transformed::yes(rewritten))
+            } else {
+                Ok(Transformed::no(plan))
+            }
+        })?;
         reject_unlowered_coordinated_combiners(&transformed.data)?;
         Ok(transformed)
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum JoinSide {
     Left,
     Right,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LocalFusionInput {
+    side:             JoinSide,
+    hidden_rank_name: String,
 }
 
 fn try_rewrite_single_branch_formula(plan: &LogicalPlan) -> Result<Option<LogicalPlan>> {
@@ -340,6 +355,262 @@ fn unique_formula_output_name(schema: &DFSchemaRef) -> String {
         }
         index += 1;
     }
+}
+
+fn try_rewrite_local_fusion(plan: &LogicalPlan) -> Result<Option<LogicalPlan>> {
+    let LogicalPlan::Projection(projection) = plan else {
+        return Ok(None);
+    };
+    match projection.input.as_ref() {
+        LogicalPlan::Sort(sort) => {
+            let LogicalPlan::Join(join) = sort.input.as_ref() else {
+                return Ok(None);
+            };
+            rewrite_local_fusion_plan(join, projection.expr.as_slice(), Some(sort.expr.as_slice()))
+        }
+        LogicalPlan::Join(join) => {
+            rewrite_local_fusion_plan(join, projection.expr.as_slice(), None)
+        }
+        _ => Ok(None),
+    }
+}
+
+fn rewrite_local_fusion_plan(
+    join: &Join,
+    projection_exprs: &[Expr],
+    sort_exprs: Option<&[datafusion::logical_expr::SortExpr]>,
+) -> Result<Option<LogicalPlan>> {
+    let Some((fusion_query, rrf_k, inputs)) =
+        branch_local_fusion_rewrite(join, projection_exprs, sort_exprs)?
+    else {
+        return Ok(None);
+    };
+    let left_hidden = inputs
+        .iter()
+        .find(|input| input.side == JoinSide::Left)
+        .map(|input| input.hidden_rank_name.as_str());
+    let right_hidden = inputs
+        .iter()
+        .find(|input| input.side == JoinSide::Right)
+        .map(|input| input.hidden_rank_name.as_str());
+    let left = match left_hidden {
+        Some(hidden_name) => Arc::new(fusion_projected_branch(join.left.as_ref(), hidden_name)?),
+        None => Arc::clone(&join.left),
+    };
+    let right = match right_hidden {
+        Some(hidden_name) => Arc::new(fusion_projected_branch(join.right.as_ref(), hidden_name)?),
+        None => Arc::clone(&join.right),
+    };
+    let rewritten_join = Join::try_new(
+        left,
+        right,
+        join.on.clone(),
+        join.filter.clone(),
+        join.join_type,
+        join.join_constraint,
+        join.null_equality,
+        join.null_aware,
+    )?;
+    let rewritten_projection_exprs = projection_exprs
+        .iter()
+        .map(|expr| rewrite_fusion_surface_to_local_expr(expr, &fusion_query, &inputs, rrf_k))
+        .collect::<Result<Vec<_>>>()?;
+    let rewritten_sort_exprs = sort_exprs
+        .map(|exprs| {
+            exprs
+                .iter()
+                .map(|sort_expr| {
+                    Ok(datafusion::logical_expr::SortExpr {
+                        expr:        rewrite_fusion_surface_to_local_expr(
+                            &sort_expr.expr,
+                            &fusion_query,
+                            &inputs,
+                            rrf_k,
+                        )?,
+                        asc:         sort_expr.asc,
+                        nulls_first: sort_expr.nulls_first,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()
+        })
+        .transpose()?;
+
+    let mut plan = LogicalPlan::Join(rewritten_join);
+    if let Some(sort_exprs) = rewritten_sort_exprs {
+        plan = LogicalPlan::Sort(datafusion::logical_expr::logical_plan::Sort {
+            expr:  sort_exprs,
+            input: Arc::new(plan),
+            fetch: None,
+        });
+    }
+    plan = datafusion::logical_expr::LogicalPlanBuilder::from(plan)
+        .project(rewritten_projection_exprs)?
+        .build()?;
+    plan.recompute_schema().map(Some)
+}
+
+fn branch_local_fusion_rewrite(
+    join: &Join,
+    projection_exprs: &[Expr],
+    sort_exprs: Option<&[datafusion::logical_expr::SortExpr]>,
+) -> Result<Option<(FusionQuery, u32, Vec<LocalFusionInput>)>> {
+    if !supported_local_fusion_join(join) {
+        return Ok(None);
+    }
+
+    let mut fusion_query = None;
+    for expr in projection_exprs {
+        collect_fusion_surface(expr, &mut fusion_query)?;
+    }
+    if let Some(exprs) = sort_exprs {
+        for expr in exprs {
+            collect_fusion_surface(&expr.expr, &mut fusion_query)?;
+        }
+    }
+    let Some(fusion_query) = fusion_query else {
+        return Ok(None);
+    };
+    let Some(rrf_k) = fusion_query.local_rrf_k() else {
+        return Ok(None);
+    };
+
+    let Some((_, left_branch)) = query_branch_from_plan(join.left.as_ref())? else {
+        return Ok(None);
+    };
+    let Some((_, right_branch)) = query_branch_from_plan(join.right.as_ref())? else {
+        return Ok(None);
+    };
+
+    let mut seen_sides = BTreeSet::new();
+    let mut inputs = Vec::with_capacity(fusion_query.score_inputs().len());
+    for score_input in fusion_query.score_inputs() {
+        let expr = score_input.clone().unalias_nested().data;
+        let Expr::Column(column) = expr else {
+            return Ok(None);
+        };
+        let side = match (
+            score_output_matches(&left_branch.score_output_columns, &column),
+            score_output_matches(&right_branch.score_output_columns, &column),
+        ) {
+            (true, false) => JoinSide::Left,
+            (false, true) => JoinSide::Right,
+            _ => return Ok(None),
+        };
+        if !seen_sides.insert(side) {
+            return Ok(None);
+        }
+        inputs.push(LocalFusionInput {
+            side,
+            hidden_rank_name: unique_fusion_rank_output_name(&join.schema, side),
+        });
+    }
+    Ok(Some((fusion_query, rrf_k, inputs)))
+}
+
+fn collect_fusion_surface(expr: &Expr, fusion_query: &mut Option<FusionQuery>) -> Result<()> {
+    let mut found = None;
+    let _ = expr.apply(|node| {
+        let Some(call) = FusionCall::from_expr(node)? else {
+            return Ok(TreeNodeRecursion::Continue);
+        };
+        found = Some(FusionQuery::try_from(call)?);
+        Ok(TreeNodeRecursion::Jump)
+    })?;
+    let Some(found_query) = found else {
+        return Ok(());
+    };
+    if let Some(existing) = fusion_query {
+        if !existing.same_semantics(&found_query) {
+            return Ok(());
+        }
+    } else {
+        *fusion_query = Some(found_query);
+    }
+    Ok(())
+}
+
+fn supported_local_fusion_join(join: &Join) -> bool {
+    matches!(join.join_type, JoinType::Inner | JoinType::Left | JoinType::Right)
+        && join.filter.is_none()
+        && join.on.len() == 1
+        && matches!(
+            (&join.on[0].0, &join.on[0].1),
+            (Expr::Column(left), Expr::Column(right))
+                if left.name == ID_FIELD_NAME && right.name == ID_FIELD_NAME
+        )
+}
+
+fn unique_fusion_rank_output_name(schema: &DFSchemaRef, side: JoinSide) -> String {
+    let base = match side {
+        JoinSide::Left => "__qdrant_fusion_left_rank",
+        JoinSide::Right => "__qdrant_fusion_right_rank",
+    };
+    if schema.fields().iter().all(|field| field.name() != base) {
+        return base.to_owned();
+    }
+    let mut index = 0_usize;
+    loop {
+        let candidate = format!("{base}_{index}");
+        if schema.fields().iter().all(|field| field.name().as_str() != candidate) {
+            return candidate;
+        }
+        index += 1;
+    }
+}
+
+fn fusion_projected_branch(plan: &LogicalPlan, hidden_name: &str) -> Result<LogicalPlan> {
+    let windowed = datafusion::logical_expr::LogicalPlanBuilder::from(plan.clone())
+        .window(vec![row_number().alias(hidden_name.to_owned())])?
+        .build()?;
+    let mut projection_exprs =
+        plan.schema().columns().into_iter().map(Expr::Column).collect::<Vec<_>>();
+    projection_exprs.push(Expr::Column(Column::from_name(hidden_name)));
+    datafusion::logical_expr::LogicalPlanBuilder::from(windowed)
+        .project(projection_exprs)?
+        .build()
+}
+
+fn rewrite_fusion_surface_to_local_expr(
+    expr: &Expr,
+    target: &FusionQuery,
+    inputs: &[LocalFusionInput],
+    rrf_k: u32,
+) -> Result<Expr> {
+    expr.clone()
+        .transform_up(|nested| {
+            let Some(call) = FusionCall::from_expr(&nested)? else {
+                return Ok(Transformed::no(nested));
+            };
+            let query = FusionQuery::try_from(call)?;
+            if !query.same_semantics(target) {
+                return Ok(Transformed::no(nested));
+            }
+            Ok(Transformed::yes(local_rrf_expr(rrf_k, inputs)?))
+        })
+        .map(|rewritten| rewritten.data)
+}
+
+fn local_rrf_expr(rrf_k: u32, inputs: &[LocalFusionInput]) -> Result<Expr> {
+    let mut combined = None;
+    for input in inputs {
+        let rank_expr = Expr::Column(Column::from_name(input.hidden_rank_name.clone()));
+        let contribution = when(rank_expr.clone().is_null(), lit(0.0_f32)).otherwise(cast(
+            lit(1.0_f64)
+                / (cast(rank_expr, datafusion::arrow::datatypes::DataType::Float64)
+                    + lit(f64::from(rrf_k))),
+            datafusion::arrow::datatypes::DataType::Float32,
+        ))?;
+        combined = Some(match combined {
+            Some(existing) => existing + contribution,
+            None => contribution,
+        });
+    }
+    combined.ok_or_else(|| {
+        datafusion::error::DataFusionError::Plan(format!(
+            "{FUSION_SCORE_FUNCTION_NAME} local fallback requires one or more explicit score \
+             inputs"
+        ))
+    })
 }
 
 fn try_rewrite_sort_through_projection(plan: &LogicalPlan) -> Result<Option<LogicalPlan>> {

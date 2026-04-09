@@ -344,6 +344,10 @@ Use it to resume work without replaying the full repository history.
     - the optimizer now rewrites the formula onto that branch, lowers it with a single prefetch descriptor, and leaves the outer SQL join local
     - exact integer payload filters now accept integral float literals, which closes the `qdrant_condition(qdrant_payload_num('rank') > 0)` loop without weakening fractional exactness
     - `tests/catalog/mod.rs` now tracks `coordination.formula.inner_join_qdrant_only_leaf` as supported SQL instead of deferred inventory
+60. `Q-061`: explicit `RRF` fusion now composes over aligned local joins when the score inputs come from independently-closable query branches.
+    - `qdrant_fusion_score(...)` still admits the exact coordinated `FULL OUTER JOIN USING (id)` remote rewrite, but explicit `RRF` inputs no longer require that path when SQL joins aligned branches locally through `INNER` / `LEFT` / `RIGHT` joins on `id`
+    - the optimizer now materializes per-branch local rank columns, rewrites the fusion surface to explicit local `RRF` arithmetic, and leaves the outer SQL join local
+    - `tests/catalog/mod.rs` now tracks `coordination.fusion.inner_join`, `coordination.fusion.left_join`, and `coordination.fusion.right_join` as supported SQL; `coordination.fusion.cross_join` remains `ByDesign`, and `coordination.fusion.dbsf_inner_join` stays deferred
 
 ## Next
 
