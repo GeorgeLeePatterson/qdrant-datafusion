@@ -248,7 +248,7 @@ Use it to resume work without replaying the full repository history.
 39. `Q-041`: Append-only `INSERT INTO` now lands on a deliberate write contract.
     - `QdrantTableProvider::insert_into` now follows the standard `DataFusion` `DataSinkExec` pattern
     - write-side Arrow/Qdrant serialization now converts canonical provider rows into `PointStruct` values
-    - the current admitted contract is explicit: append-only only, with upstream schemas logically equivalent to the qdrant table schema
+    - the current admitted contract is explicit: append-only only, with `DataFusion` required to present the canonical qdrant table schema at the sink boundary
     - planner coverage now proves the physical plan lowers to `QdrantInsertSink` and unit coverage proves dense / named / sparse write serialization
 40. `Q-043`: Ordered payload-key scroll exactness is now explicitly guarded by cluster metadata, closing the `Q-017` validation gap.
     - `QdrantTableProvider::try_new` now consults `collection_cluster_info`
@@ -360,6 +360,10 @@ Use it to resume work without replaying the full repository history.
     - `tests/catalog/mod.rs` now tracks grouped `qdrant_sample_score(...)`, `qdrant_nearest_with_mmr_score(...)`, and `qdrant_relevance_feedback_score(...)` as supported SQL
     - focused e2e now proves those grouped query kinds still lower to `QdrantQueryGroupsExec` with one row per tag and no local sort
     - docs now promote the exact grouped query-family subset to the fuller current list instead of underclaiming the existing kernel surface
+64. `Q-065`: append-only writes now admit the current `DataFusion` target-column normalization path instead of underclaiming the write surface.
+    - `tests/catalog/mod.rs` now tracks explicit target-column `INSERT INTO` cases as supported SQL, including reordered target columns and omission of nullable `payload`
+    - the remaining noncanonical append shapes without target columns now stay in the unsupported inventory as `InvalidInput`, not `Deferred`, because they violate the current public write contract rather than exposing a planned capability gap
+    - docs now describe the write contract as “append-only into the canonical provider schema, including the current target-column normalization path” instead of “logically equivalent upstream schema only”
 
 ## Next
 
@@ -401,6 +405,7 @@ When the next implementation round starts:
    - paginated `scroll`
    - current typed `qdrant-client` APIs only
 3. keep the write contract explicit: append-only only unless broader semantics are deliberately specified
+   - current admitted write reshaping is only the `DataFusion` target-column normalization path into the canonical provider schema
 4. use `DataFusion` primary-source idioms before inventing project-local traversal or rewrite patterns
 5. admit only explicit pushdown subsets; reject unsupported cases cleanly instead of approximating them
    - when widening behavior, prefer one shared invariant-based recognizer over duplicated local shape checks

@@ -1,6 +1,6 @@
 # Status Snapshot
 
-Last updated: 2026-04-07
+Last updated: 2026-04-09
 
 ## Summary
 
@@ -21,7 +21,8 @@ Current branch reality:
 8. A shared `Qdrant` semantics layer plus provider-owned scan-pushdown model now exists for projection, payload access, filters, ordering, limit, and continuation.
 9. Write-side Arrow/Qdrant serialization now exists for the canonical provider schema.
    - append-only `INSERT INTO` lowers through a `QdrantInsertSink` / `DataSinkExec` path
-   - the current admitted write contract is explicit: upstream input must be logically equivalent to the qdrant table schema
+   - the current admitted write contract is explicit: `DataFusion` must present the canonical qdrant table schema at the sink boundary
+   - explicit target-column inserts are admitted when `DataFusion` normalizes them into that schema, including reordered target columns and omission of nullable `payload`
 10. `ORDER BY id ASC` is admitted as an exact physical sort pushdown case.
 11. The single-node payload-key ordered-scroll runtime contract is now validated for integer, float, and datetime payload indexes.
 12. Ordered continuation lowering is implemented internally through `order_by`, `start_from`, and boundary-ID exclusion.

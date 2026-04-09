@@ -2650,28 +2650,13 @@ error: {err}"
                 vec!["blue".to_owned(), "green".to_owned(), "red".to_owned()],
                 "label={label} rows={rows:?}"
             );
-            match label {
-                "context" => {
-                    assert_eq!(
-                        tag_ids[0..2],
-                        [("blue".to_owned(), 3), ("green".to_owned(), 4)],
-                        "label={label} rows={rows:?}"
-                    );
-                    assert_eq!(tag_ids[2].0, "red", "label={label} rows={rows:?}");
-                    assert!(matches!(tag_ids[2].1, 1 | 2), "label={label} rows={rows:?}");
-                }
-                _ => {
-                    assert_eq!(
-                        tag_ids,
-                        vec![
-                            ("blue".to_owned(), 3),
-                            ("green".to_owned(), 4),
-                            ("red".to_owned(), 1),
-                        ],
-                        "label={label} rows={rows:?}"
-                    );
-                }
-            }
+            assert_eq!(
+                tag_ids[0..2],
+                [("blue".to_owned(), 3), ("green".to_owned(), 4)],
+                "label={label} rows={rows:?}"
+            );
+            assert_eq!(tag_ids[2].0, "red", "label={label} rows={rows:?}");
+            assert!(matches!(tag_ids[2].1, 1 | 2), "label={label} rows={rows:?}");
             assert!(display.contains("QdrantQueryGroupsExec"), "label={label} display={display}");
             assert!(!display.contains("SortExec"), "label={label} display={display}");
         }

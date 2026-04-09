@@ -1038,6 +1038,18 @@ pub(crate) mod supported {
                 "writes.append.insert_select",
                 "INSERT INTO vectors SELECT id, payload, vector FROM staging",
             );
+            pub(crate) const TARGET_COLUMNS_FULL: SqlCase = SqlCase::new(
+                "writes.append.target_columns_full",
+                "INSERT INTO vectors (id, payload, vector) SELECT id, payload, vector FROM staging",
+            );
+            pub(crate) const TARGET_COLUMNS_OMIT_PAYLOAD: SqlCase = SqlCase::new(
+                "writes.append.target_columns_omit_payload",
+                "INSERT INTO vectors (id, vector) SELECT id, vector FROM staging",
+            );
+            pub(crate) const TARGET_COLUMNS_REORDERED: SqlCase = SqlCase::new(
+                "writes.append.target_columns_reordered",
+                "INSERT INTO vectors (vector, id, payload) SELECT vector, id, payload FROM staging",
+            );
             pub(crate) const SUBQUERY: SqlCase = SqlCase::new(
                 "writes.append.subquery",
                 "INSERT INTO vectors SELECT * FROM (SELECT id, payload, vector FROM staging) \
@@ -1113,6 +1125,9 @@ pub(crate) mod supported {
             );
             pub(crate) const ALL: &[SqlCase] = &[
                 INSERT_SELECT,
+                TARGET_COLUMNS_FULL,
+                TARGET_COLUMNS_OMIT_PAYLOAD,
+                TARGET_COLUMNS_REORDERED,
                 SUBQUERY,
                 UNION_ALL,
                 WINDOW_SUBQUERY,
@@ -2909,20 +2924,21 @@ pub(crate) mod unsupported {
         pub(crate) mod append {
             use super::UnsupportedSqlCase;
 
-            pub(crate) const SCHEMA_MISMATCH: UnsupportedSqlCase = UnsupportedSqlCase::new(
+            pub(crate) const SCHEMA_MISMATCH: UnsupportedSqlCase = UnsupportedSqlCase::invalid(
                 "writes.append.schema_mismatch",
                 "INSERT INTO vectors SELECT id, vector FROM staging",
-                "Q-041",
-                "insert_into requires schema-equivalent append input today",
+                "without explicit target columns, append input must still match the canonical \
+                 provider schema exactly",
                 "Column count doesn't match insert query!",
             );
-            pub(crate) const SUBQUERY_SCHEMA_MISMATCH: UnsupportedSqlCase = UnsupportedSqlCase::new(
-                "writes.append.subquery_schema_mismatch",
-                "INSERT INTO vectors SELECT * FROM (SELECT id, vector FROM staging) staged",
-                "Q-041",
-                "insert_into requires schema-equivalent append input today",
-                "Column count doesn't match insert query!",
-            );
+            pub(crate) const SUBQUERY_SCHEMA_MISMATCH: UnsupportedSqlCase =
+                UnsupportedSqlCase::invalid(
+                    "writes.append.subquery_schema_mismatch",
+                    "INSERT INTO vectors SELECT * FROM (SELECT id, vector FROM staging) staged",
+                    "without explicit target columns, append input must still match the canonical \
+                     provider schema exactly",
+                    "Column count doesn't match insert query!",
+                );
             pub(crate) const CTE_INSERT: UnsupportedSqlCase = UnsupportedSqlCase::upstream(
                 "writes.append.cte_insert",
                 "WITH staged AS (SELECT id, payload, vector FROM staging) INSERT INTO vectors \
@@ -2931,35 +2947,35 @@ pub(crate) mod unsupported {
                 "not implemented yet",
             );
             pub(crate) const UNION_ALL_SCHEMA_MISMATCH: UnsupportedSqlCase =
-                UnsupportedSqlCase::new(
+                UnsupportedSqlCase::invalid(
                     "writes.append.union_all_schema_mismatch",
                     "INSERT INTO vectors SELECT id, vector FROM staging UNION ALL SELECT id, \
                      vector FROM staging",
-                    "Q-041",
-                    "insert_into requires schema-equivalent append input today",
+                    "without explicit target columns, append input must still match the canonical \
+                     provider schema exactly",
                     "Column count doesn't match insert query!",
                 );
-            pub(crate) const EXTRA_COLUMN: UnsupportedSqlCase = UnsupportedSqlCase::new(
+            pub(crate) const EXTRA_COLUMN: UnsupportedSqlCase = UnsupportedSqlCase::invalid(
                 "writes.append.extra_column",
                 "INSERT INTO vectors SELECT id, payload, vector, id AS copy_id FROM staging",
-                "Q-041",
-                "insert_into requires schema-equivalent append input today",
+                "without explicit target columns, append input must still match the canonical \
+                 provider schema exactly",
                 "Column count doesn't match insert query!",
             );
-            pub(crate) const WINDOW_EXTRA_COLUMN: UnsupportedSqlCase = UnsupportedSqlCase::new(
+            pub(crate) const WINDOW_EXTRA_COLUMN: UnsupportedSqlCase = UnsupportedSqlCase::invalid(
                 "writes.append.window_extra_column",
                 "INSERT INTO vectors SELECT id, payload, vector, ROW_NUMBER() OVER (ORDER BY id) \
                  AS row_num FROM staging",
-                "Q-041",
-                "insert_into requires schema-equivalent append input today",
+                "without explicit target columns, append input must still match the canonical \
+                 provider schema exactly",
                 "Column count doesn't match insert query!",
             );
-            pub(crate) const EXISTS_EXTRA_COLUMN: UnsupportedSqlCase = UnsupportedSqlCase::new(
+            pub(crate) const EXISTS_EXTRA_COLUMN: UnsupportedSqlCase = UnsupportedSqlCase::invalid(
                 "writes.append.exists_extra_column",
                 "INSERT INTO vectors SELECT id, payload, vector, EXISTS (SELECT 1 FROM staging \
                  other WHERE other.id = staging.id) AS seen FROM staging",
-                "Q-041",
-                "insert_into requires schema-equivalent append input today",
+                "without explicit target columns, append input must still match the canonical \
+                 provider schema exactly",
                 "Column count doesn't match insert query!",
             );
 

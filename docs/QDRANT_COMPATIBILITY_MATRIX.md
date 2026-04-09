@@ -1,6 +1,6 @@
 # Qdrant Compatibility Matrix
 
-Last updated: 2026-04-06
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -96,7 +96,7 @@ This matrix is derived from:
 | Aggregation / grouping | `with_lookup` on groups | group builders | grouped retrieval enrichment | `Later` | Depends on grouped retrieval surface. |
 | Aggregation / grouping | search matrix pairs | `search_matrix_pairs` | similarity-graph / pair relation | `Later` | Interesting, but specialized. |
 | Aggregation / grouping | search matrix offsets | `search_matrix_offsets` | sparse similarity-matrix relation | `Later` | Same as above. |
-| Mutation | point upsert | `upsert_points`, `upsert_points_chunked` | append-only `INSERT INTO` on the canonical provider schema | `Current` | Current write support is narrow and deliberate: `QdrantTableProvider::insert_into` lowers append-only writes through `DataSinkExec` when the upstream schema is logically equivalent to the qdrant table schema. Broader `MERGE`-like or reshaping writes remain later. |
+| Mutation | point upsert | `upsert_points`, `upsert_points_chunked` | append-only `INSERT INTO` on the canonical provider schema | `Current` | Current write support is narrow and deliberate: `QdrantTableProvider::insert_into` lowers append-only writes through `DataSinkExec` when `DataFusion` produces the canonical qdrant table schema. Explicit target-column inserts are already part of that contract when `DataFusion` normalizes reordered columns or omitted nullable `payload` back into the canonical schema. Broader `MERGE`-like or richer reshaping writes remain later. |
 | Mutation | point delete | `delete_points` | `DELETE` | `Later` | Same as above. |
 | Mutation | vector update / delete | `update_vectors`, `delete_vectors` | `UPDATE` | `Later` | Requires a row identity and mutation contract first. |
 | Mutation | payload set / overwrite / delete / clear | payload mutation APIs | `UPDATE` | `Later` | Needs payload-structure policy and write semantics. |
