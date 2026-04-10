@@ -1283,6 +1283,57 @@ pub(crate) mod supported {
                 UNION_DISTINCT,
             ];
         }
+
+        pub(crate) mod delete {
+            use super::SqlCase;
+
+            pub(crate) const DELETE_ALL: SqlCase =
+                SqlCase::new("writes.delete.delete_all", "DELETE FROM vectors");
+            pub(crate) const ID_EQ: SqlCase =
+                SqlCase::new("writes.delete.id_eq", "DELETE FROM vectors WHERE id = '1'");
+            pub(crate) const PAYLOAD_RANGE: SqlCase = SqlCase::new(
+                "writes.delete.payload_range",
+                "DELETE FROM vectors WHERE payload:rank >= 20",
+            );
+            pub(crate) const TAG_IN: SqlCase = SqlCase::new(
+                "writes.delete.tag_in",
+                "DELETE FROM vectors WHERE payload:tag IN ('blue')",
+            );
+            pub(crate) const TEXT_MATCH: SqlCase = SqlCase::new(
+                "writes.delete.text_match",
+                "DELETE FROM vectors WHERE payload_text_match(payload:description, 'good')",
+            );
+            pub(crate) const GEO_BBOX: SqlCase = SqlCase::new(
+                "writes.delete.geo_bbox",
+                "DELETE FROM vectors WHERE payload_geo_within_bbox(payload:location, -0.5, -0.5, \
+                 0.5, 0.5)",
+            );
+            pub(crate) const NESTED_MATCH: SqlCase = SqlCase::new(
+                "writes.delete.nested_match",
+                "DELETE FROM vectors WHERE payload_nested_match(payload:metadata, payload:rank = \
+                 20)",
+            );
+            pub(crate) const VALUES_COUNT: SqlCase = SqlCase::new(
+                "writes.delete.values_count",
+                "DELETE FROM vectors WHERE payload_values_count(payload:metadata) > 1",
+            );
+            pub(crate) const NO_MATCH: SqlCase = SqlCase::new(
+                "writes.delete.no_match",
+                "DELETE FROM vectors WHERE payload:rank > 100",
+            );
+
+            pub(crate) const ALL: &[SqlCase] = &[
+                DELETE_ALL,
+                ID_EQ,
+                PAYLOAD_RANGE,
+                TAG_IN,
+                TEXT_MATCH,
+                GEO_BBOX,
+                NESTED_MATCH,
+                VALUES_COUNT,
+                NO_MATCH,
+            ];
+        }
     }
 
     pub(crate) mod query {
@@ -3226,6 +3277,39 @@ pub(crate) mod unsupported {
                 WINDOW_EXTRA_COLUMN,
                 EXISTS_EXTRA_COLUMN,
             ];
+        }
+
+        pub(crate) mod delete {
+            use super::UnsupportedSqlCase;
+
+            pub(crate) const RAW_PAYLOAD_ARITHMETIC: UnsupportedSqlCase =
+                UnsupportedSqlCase::deferred(
+                    "writes.delete.raw_payload_arithmetic",
+                    "DELETE FROM vectors WHERE payload:rank + 1 > 20",
+                    "Q-068",
+                    "delete currently requires exact qdrant filter lowering and does not yet \
+                     localize residual arithmetic predicates",
+                    "unsupported pushed filter",
+                );
+            pub(crate) const RAW_PAYLOAD_FUNCTION: UnsupportedSqlCase =
+                UnsupportedSqlCase::deferred(
+                    "writes.delete.raw_payload_function",
+                    "DELETE FROM vectors WHERE ABS(payload:rank) > 20",
+                    "Q-068",
+                    "delete currently requires exact qdrant filter lowering and does not yet \
+                     localize residual scalar function predicates",
+                    "unsupported pushed filter",
+                );
+            pub(crate) const JOIN_DELETE: UnsupportedSqlCase = UnsupportedSqlCase::upstream(
+                "writes.delete.join_delete",
+                "DELETE FROM vectors USING vectors other WHERE vectors.id = other.id",
+                "DataFusion rejects joined DELETE forms before provider planning on this USING \
+                 surface",
+                "Using clause not supported",
+            );
+
+            pub(crate) const ALL: &[UnsupportedSqlCase] =
+                &[RAW_PAYLOAD_ARITHMETIC, RAW_PAYLOAD_FUNCTION, JOIN_DELETE];
         }
     }
 

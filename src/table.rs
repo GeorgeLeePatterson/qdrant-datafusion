@@ -1,4 +1,5 @@
 //! `DataFusion` `TableProvider` implementation for `Qdrant` vector database collections.
+mod delete;
 mod exec;
 mod insert;
 mod provider;
@@ -331,6 +332,7 @@ mod tests {
         qdrant_recommend_score_with_strategy,
     };
     use crate::qdrant::QdrantPayloadSchema;
+    use crate::table::delete::QdrantDeleteExec;
     use crate::table::scan_spec::QdrantPayloadOrdering;
 
     fn test_provider(schema: Schema) -> QdrantTableProvider {
@@ -502,6 +504,19 @@ mod tests {
             return qdrant_count(projection.input());
         }
         panic!("expected qdrant count exec in plan:\n{}", displayable(plan.as_ref()).indent(true));
+    }
+
+    fn qdrant_delete(plan: &Arc<dyn ExecutionPlan>) -> &QdrantDeleteExec {
+        if let Some(delete) = plan.as_any().downcast_ref::<QdrantDeleteExec>() {
+            return delete;
+        }
+        if let Some(cooperative) = plan.as_any().downcast_ref::<CooperativeExec>() {
+            return qdrant_delete(cooperative.input());
+        }
+        if let Some(projection) = plan.as_any().downcast_ref::<ProjectionExec>() {
+            return qdrant_delete(projection.input());
+        }
+        panic!("expected qdrant delete exec in plan:\n{}", displayable(plan.as_ref()).indent(true));
     }
 
     fn qdrant_facet(plan: &Arc<dyn ExecutionPlan>) -> &QdrantFacetExec {
@@ -2903,6 +2918,53 @@ mod tests {
             display.contains("QdrantInsertSink: collection=vectors, op=Replace Into"),
             "{display}"
         );
+    }
+
+    #[test]
+    fn physical_plan_builds_qdrant_delete_exec_for_exact_filter() {
+        let provider = QdrantTableProvider {
+            payload_schema: payload_schema([(
+                "rank",
+                PayloadSchemaInfo {
+                    data_type: qdrant_client::qdrant::PayloadSchemaType::Integer as i32,
+                    params: Some(qdrant_client::qdrant::PayloadIndexParams {
+                        index_params: Some(
+                            qdrant_client::qdrant::payload_index_params::IndexParams::IntegerIndexParams(
+                                IntegerIndexParamsBuilder::new(true, true).build(),
+                            ),
+                        ),
+                    }),
+                    points: None,
+                },
+            )]),
+            ..test_provider(Schema::new(vec![
+                Field::new(ID_FIELD_NAME, DataType::Utf8, false),
+                Field::new(PAYLOAD_FIELD_NAME, DataType::Utf8, true),
+                Field::new(
+                    "vector",
+                    DataType::new_fixed_size_list(DataType::Float32, 1, false),
+                    true,
+                ),
+            ]))
+        };
+        let ctx = SessionContext::new();
+        drop(ctx.register_table("vectors", Arc::new(provider)).expect("register qdrant table"));
+
+        let dataframe = ctx
+            .sql("DELETE FROM vectors WHERE payload:rank >= 20")
+            .now_or_never()
+            .expect("sql future is ready")
+            .expect("delete dataframe");
+        let plan = dataframe
+            .create_physical_plan()
+            .now_or_never()
+            .expect("plan future is ready")
+            .expect("delete physical plan");
+        let display = displayable(plan.as_ref()).indent(true).to_string();
+        let _delete = qdrant_delete(&plan);
+
+        assert!(display.contains("QdrantDeleteExec"), "{display}");
+        assert!(display.contains("filter_leaves=1"), "{display}");
     }
 
     #[test]

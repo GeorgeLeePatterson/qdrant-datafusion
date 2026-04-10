@@ -17,7 +17,7 @@ Use it to resume work without replaying the full repository history.
    - canonical dense / multivector / sparse carriers
    - top-level nullable vector columns for heterogeneous named collections
    - current typed `qdrant-client` vector outputs only
-4. Canonical-schema `INSERT INTO`, `REPLACE INTO`, and `INSERT OVERWRITE` are now supported through `DataSinkExec` and a write-side Arrow/Qdrant serializer.
+4. Canonical-schema `INSERT INTO`, `REPLACE INTO`, `INSERT OVERWRITE`, and exact `DELETE` are now supported on the provider-owned mutation boundary.
 5. The broad SQL-native `Qdrant` capability surface is still intentionally incomplete, but the predicate algebra foundation, the first aggregate-like planner slices, the first public nearest-retrieval prototype, and the typed payload-access bridge are now in place.
 6. The next expansion round is now explicitly staged around the full `Qdrant` relation
    architecture rather than feature-by-feature node growth:
@@ -374,6 +374,12 @@ Use it to resume work without replaying the full repository history.
     - `REPLACE INTO` now uses qdrant's `Upsert` behavior on the validated runtime line, replacing colliding ids while inserting new ids
     - `tests/catalog/mod.rs` now mirrors supported and unsupported replace SQL directly across the same source-plan matrix as append, so replace no longer remains an underclaimed gap in the write surface
     - direct e2e now proves colliding ids are overwritten rather than preserved on the replace path
+67. `Q-068`: exact canonical `DELETE` now lands on the same provider-owned mutation boundary.
+    - `QdrantTableProvider::delete_from` is now implemented on the canonical provider table instead of staying deferred
+    - `DELETE FROM ...` currently reuses the existing exact qdrant filter algebra, counts exact matches first through qdrant `count(exact=true)`, then deletes through `delete_points` with the same filter
+    - empty `DELETE FROM vectors` is admitted and deletes all rows through the same boundary
+    - `tests/catalog/mod.rs` now mirrors supported and unsupported `writes.delete.*` SQL directly so delete widening is visible alongside the other mutation surfaces
+    - broader residual/local delete semantics remain explicit deferred inventory rather than hidden coercion
 
 ## Next
 
@@ -414,7 +420,7 @@ When the next implementation round starts:
    - top-level nullable vector columns
    - paginated `scroll`
    - current typed `qdrant-client` APIs only
-3. keep the write contract explicit: canonical `INSERT INTO` / `REPLACE INTO` / `INSERT OVERWRITE` only unless broader semantics are deliberately specified
+3. keep the mutation contract explicit: canonical `INSERT INTO` / `REPLACE INTO` / `INSERT OVERWRITE` / exact `DELETE` only unless broader semantics are deliberately specified
    - current admitted write reshaping is only the `DataFusion` target-column normalization path into the canonical provider schema
 4. use `DataFusion` primary-source idioms before inventing project-local traversal or rewrite patterns
 5. admit only explicit pushdown subsets; reject unsupported cases cleanly instead of approximating them

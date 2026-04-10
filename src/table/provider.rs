@@ -12,6 +12,7 @@ use datafusion::logical_expr::dml::InsertOp;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::Expr;
 
+use super::delete::QdrantDeleteExec;
 use super::insert::QdrantInsertSink;
 use super::{QdrantScanExec, QdrantScanSpec, QdrantTableProvider};
 use crate::qdrant::filter::QdrantFilters;
@@ -78,5 +79,18 @@ impl datafusion::catalog::TableProvider for QdrantTableProvider {
             insert_op,
         );
         Ok(Arc::new(DataSinkExec::new(input, Arc::new(sink), None)))
+    }
+
+    async fn delete_from(
+        &self,
+        _state: &dyn Session,
+        filters: Vec<Expr>,
+    ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+        let filters = QdrantFilters::try_new(&self.schema, &self.payload_schema, &filters)?;
+        Ok(Arc::new(QdrantDeleteExec::new(
+            Arc::clone(&self.client),
+            self.table.table().to_owned(),
+            filters,
+        )))
     }
 }

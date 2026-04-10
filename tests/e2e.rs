@@ -103,6 +103,14 @@ e2e_test!(
 
 #[cfg(feature = "test-utils")]
 e2e_test!(
+    table_provider_delete_from_removes_matching_rows,
+    tests::test_table_provider_delete_from_removes_matching_rows,
+    TRACING_DIRECTIVES,
+    None
+);
+
+#[cfg(feature = "test-utils")]
+e2e_test!(
     table_provider_supported_scan_catalog_queries,
     tests::test_table_provider_supported_scan_catalog_queries,
     TRACING_DIRECTIVES,
@@ -381,7 +389,7 @@ mod tests {
     use datafusion::arrow::array::types::Float32Type;
     use datafusion::arrow::array::{
         Array, ArrayRef, BooleanArray, FixedSizeListArray, Float32Array, Float64Array, Int64Array,
-        StringArray, StructArray,
+        StringArray, StructArray, UInt64Array,
     };
     use datafusion::arrow::datatypes::DataType;
     use datafusion::arrow::record_batch::RecordBatch;
@@ -997,6 +1005,17 @@ error: {err}"
             .expect("int64 array")
             .iter()
             .map(|value| value.expect("non-null int64 value"))
+            .collect()
+    }
+
+    fn batch_u64_values(batch: &RecordBatch, column: &str) -> Vec<u64> {
+        batch
+            .column(batch.schema().index_of(column).expect("uint64 column"))
+            .as_any()
+            .downcast_ref::<UInt64Array>()
+            .expect("uint64 array")
+            .iter()
+            .map(|value| value.expect("non-null uint64 value"))
             .collect()
     }
 
@@ -1639,7 +1658,7 @@ error: {err}"
         let inserted = insert_batch
             .column(insert_batch.schema().index_of("count").expect("count column"))
             .as_any()
-            .downcast_ref::<datafusion::arrow::array::UInt64Array>()
+            .downcast_ref::<UInt64Array>()
             .expect("count array");
         assert_eq!(inserted.value(0), 2);
 
@@ -1699,6 +1718,24 @@ error: {err}"
         let rank_batch = ranks.into_iter().next().expect("rank batch");
         assert_eq!(batch_u64_ids(&rank_batch, "id"), vec![1, 2]);
         assert_eq!(batch_i64_values(&rank_batch, "rank"), vec![10, 20]);
+
+        Ok(())
+    }
+
+    pub(super) async fn test_table_provider_delete_from_removes_matching_rows(
+        c: Arc<QdrantContainer>,
+    ) -> Result<()> {
+        let ctx = create_catalog_scan_context(&c, "test_delete_from_removes_matching_rows").await?;
+
+        let delete_batches =
+            ctx.sql(sql::writes::delete::PAYLOAD_RANGE.sql).await?.collect().await?;
+        let delete_batch = delete_batches.into_iter().next().expect("delete result batch");
+        assert_eq!(batch_u64_values(&delete_batch, "count"), vec![2]);
+
+        let remaining = ctx.sql(sql::scan::projection::INSERT_VERIFY.sql).await?.collect().await?;
+        let remaining_batch = remaining.into_iter().next().expect("remaining batch");
+        assert_eq!(batch_u64_ids(&remaining_batch, "id"), vec![2]);
+        assert_eq!(batch_i64_values(&remaining_batch, "rank"), vec![10]);
 
         Ok(())
     }
@@ -1843,6 +1880,50 @@ error: {err}"
         Ok(())
     }
 
+    async fn assert_supported_delete_write_case(
+        c: &Arc<QdrantContainer>,
+        case: SqlCase,
+    ) -> Result<()> {
+        let collection_name = format!("test_supported_write_delete_{}", case.id.replace('.', "_"));
+        let ctx = create_catalog_scan_context(c, &collection_name).await?;
+        let (batches, display) =
+            assert_supported_query_collects(&ctx, case.sql).await.map_err(|error| {
+                datafusion::error::DataFusionError::Execution(format!(
+                    "supported delete catalog case={} sql={} error={error}",
+                    case.id, case.sql
+                ))
+            })?;
+        assert!(display.contains("QdrantDeleteExec"), "case={} display={display}", case.id);
+
+        let delete_batch = batches.into_iter().next().expect("delete result batch");
+        let remaining = ctx.sql(sql::scan::projection::INSERT_VERIFY.sql).await?.collect().await?;
+        let remaining_ids =
+            remaining.into_iter().next().map_or_else(Vec::new, |batch| batch_u64_ids(&batch, "id"));
+
+        let (expected_count, expected_remaining_ids) = match case.id {
+            id if id == sql::writes::delete::DELETE_ALL.id => (3, vec![]),
+            id if id == sql::writes::delete::ID_EQ.id => (1, vec![2, 3]),
+            id if id == sql::writes::delete::PAYLOAD_RANGE.id => (2, vec![2]),
+            id if id == sql::writes::delete::TAG_IN.id => (2, vec![1]),
+            id if id == sql::writes::delete::TEXT_MATCH.id => (2, vec![2]),
+            id if id == sql::writes::delete::GEO_BBOX.id => (1, vec![2, 3]),
+            id if id == sql::writes::delete::NESTED_MATCH.id => (1, vec![1, 2]),
+            id if id == sql::writes::delete::VALUES_COUNT.id => (2, vec![2]),
+            id if id == sql::writes::delete::NO_MATCH.id => (0, vec![1, 2, 3]),
+            _ => panic!("unexpected delete catalog case {}", case.id),
+        };
+
+        assert_eq!(
+            batch_u64_values(&delete_batch, "count"),
+            vec![expected_count],
+            "case={}",
+            case.id
+        );
+        assert_eq!(remaining_ids, expected_remaining_ids, "case={}", case.id);
+
+        Ok(())
+    }
+
     pub(super) async fn test_table_provider_supported_write_catalog_queries(
         c: Arc<QdrantContainer>,
     ) -> Result<()> {
@@ -1856,6 +1937,10 @@ error: {err}"
 
         for case in sql::writes::replace::ALL {
             assert_supported_replace_write_case(&c, *case).await?;
+        }
+
+        for case in sql::writes::delete::ALL {
+            assert_supported_delete_write_case(&c, *case).await?;
         }
 
         Ok(())
