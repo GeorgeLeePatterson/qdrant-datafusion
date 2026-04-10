@@ -1284,6 +1284,45 @@ pub(crate) mod supported {
             ];
         }
 
+        pub(crate) mod update {
+            use super::SqlCase;
+
+            pub(crate) const PAYLOAD_LITERAL_EXACT: SqlCase = SqlCase::new(
+                "writes.update.payload_literal_exact",
+                "UPDATE vectors SET payload = '{\"rank\":99}' WHERE payload:rank >= 20",
+            );
+            pub(crate) const PAYLOAD_LITERAL_RESIDUAL_ARITHMETIC: SqlCase = SqlCase::new(
+                "writes.update.payload_literal_residual_arithmetic",
+                "UPDATE vectors SET payload = '{\"rank\":77}' WHERE payload:rank + 1 > 20",
+            );
+            pub(crate) const PAYLOAD_LITERAL_RESIDUAL_FUNCTION: SqlCase = SqlCase::new(
+                "writes.update.payload_literal_residual_function",
+                "UPDATE vectors SET payload = '{\"rank\":66}' WHERE ABS(payload:rank) > 15",
+            );
+            pub(crate) const PAYLOAD_CASE_ASSIGNMENT: SqlCase = SqlCase::new(
+                "writes.update.payload_case_assignment",
+                "UPDATE vectors SET payload = CASE WHEN id = '1' THEN '{\"rank\":50}' ELSE \
+                 '{\"rank\":60}' END WHERE payload:rank >= 20",
+            );
+            pub(crate) const PAYLOAD_NULL: SqlCase = SqlCase::new(
+                "writes.update.payload_null",
+                "UPDATE vectors SET payload = NULL WHERE id = '2'",
+            );
+            pub(crate) const PAYLOAD_LITERAL_ALL: SqlCase = SqlCase::new(
+                "writes.update.payload_literal_all",
+                "UPDATE vectors SET payload = '{\"rank\":1}'",
+            );
+
+            pub(crate) const ALL: &[SqlCase] = &[
+                PAYLOAD_LITERAL_EXACT,
+                PAYLOAD_LITERAL_RESIDUAL_ARITHMETIC,
+                PAYLOAD_LITERAL_RESIDUAL_FUNCTION,
+                PAYLOAD_CASE_ASSIGNMENT,
+                PAYLOAD_NULL,
+                PAYLOAD_LITERAL_ALL,
+            ];
+        }
+
         pub(crate) mod delete {
             use super::SqlCase;
 
@@ -3310,6 +3349,36 @@ pub(crate) mod unsupported {
 
             pub(crate) const ALL: &[UnsupportedSqlCase] =
                 &[RAW_PAYLOAD_ARITHMETIC, RAW_PAYLOAD_FUNCTION, JOIN_DELETE];
+        }
+
+        pub(crate) mod update {
+            use super::UnsupportedSqlCase;
+
+            pub(crate) const ID_ASSIGNMENT: UnsupportedSqlCase = UnsupportedSqlCase::deferred(
+                "writes.update.id_assignment",
+                "UPDATE vectors SET id = '9' WHERE id = '1'",
+                "Q-069",
+                "current update executes as canonical row rewrite over stable qdrant ids, so key \
+                 mutation semantics remain deferred",
+                "updating 'id' is not supported",
+            );
+            pub(crate) const INVALID_PAYLOAD_JSON: UnsupportedSqlCase = UnsupportedSqlCase::invalid(
+                "writes.update.invalid_payload_json",
+                "UPDATE vectors SET payload = 'not-json' WHERE id = '1'",
+                "payload updates still target the canonical JSON-text payload column contract",
+                "payload column contains invalid JSON object",
+            );
+            pub(crate) const UPDATE_FROM: UnsupportedSqlCase = UnsupportedSqlCase::upstream(
+                "writes.update.update_from",
+                "UPDATE vectors SET payload = other.payload FROM staging other WHERE vectors.id = \
+                 other.id",
+                "DataFusion still rejects UPDATE ... FROM before provider planning on the current \
+                 dependency line",
+                "UPDATE ... FROM is not supported",
+            );
+
+            pub(crate) const ALL: &[UnsupportedSqlCase] =
+                &[ID_ASSIGNMENT, INVALID_PAYLOAD_JSON, UPDATE_FROM];
         }
     }
 

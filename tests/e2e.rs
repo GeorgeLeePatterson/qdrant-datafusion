@@ -111,6 +111,14 @@ e2e_test!(
 
 #[cfg(feature = "test-utils")]
 e2e_test!(
+    table_provider_update_rewrites_matching_rows,
+    tests::test_table_provider_update_rewrites_matching_rows,
+    TRACING_DIRECTIVES,
+    None
+);
+
+#[cfg(feature = "test-utils")]
+e2e_test!(
     table_provider_supported_scan_catalog_queries,
     tests::test_table_provider_supported_scan_catalog_queries,
     TRACING_DIRECTIVES,
@@ -1740,6 +1748,31 @@ error: {err}"
         Ok(())
     }
 
+    pub(super) async fn test_table_provider_update_rewrites_matching_rows(
+        c: Arc<QdrantContainer>,
+    ) -> Result<()> {
+        let ctx = create_catalog_scan_context(&c, "test_update_rewrites_matching_rows").await?;
+
+        let update_batches = ctx
+            .sql(sql::writes::update::PAYLOAD_LITERAL_RESIDUAL_ARITHMETIC.sql)
+            .await?
+            .collect()
+            .await?;
+        let update_batch = update_batches.into_iter().next().expect("update result batch");
+        assert_eq!(batch_u64_values(&update_batch, "count"), vec![2]);
+
+        let remaining = ctx.sql(sql::scan::projection::INSERT_VERIFY.sql).await?.collect().await?;
+        let remaining_batch = remaining.into_iter().next().expect("remaining batch");
+        assert_eq!(batch_u64_ids(&remaining_batch, "id"), vec![1, 2, 3]);
+        assert_eq!(batch_optional_i64_values(&remaining_batch, "rank"), vec![
+            Some(77),
+            Some(10),
+            Some(77)
+        ]);
+
+        Ok(())
+    }
+
     pub(super) async fn test_table_provider_supported_scan_catalog_queries(
         c: Arc<QdrantContainer>,
     ) -> Result<()> {
@@ -1924,6 +1957,55 @@ error: {err}"
         Ok(())
     }
 
+    async fn assert_supported_update_write_case(
+        c: &Arc<QdrantContainer>,
+        case: SqlCase,
+    ) -> Result<()> {
+        let collection_name = format!("test_supported_write_update_{}", case.id.replace('.', "_"));
+        let ctx = create_catalog_scan_context(c, &collection_name).await?;
+        let (batches, display) =
+            assert_supported_query_collects(&ctx, case.sql).await.map_err(|error| {
+                datafusion::error::DataFusionError::Execution(format!(
+                    "supported update catalog case={} sql={} error={error}",
+                    case.id, case.sql
+                ))
+            })?;
+        assert!(display.contains("QdrantUpdateExec"), "case={} display={display}", case.id);
+
+        let update_batch = batches.into_iter().next().expect("update result batch");
+        let remaining = ctx.sql(sql::scan::projection::INSERT_VERIFY.sql).await?.collect().await?;
+        let remaining_batch = remaining.into_iter().next().expect("remaining batch");
+        let expected = match case.id {
+            id if id == sql::writes::update::PAYLOAD_LITERAL_EXACT.id => {
+                (2, vec![Some(99), Some(10), Some(99)])
+            }
+            id if id == sql::writes::update::PAYLOAD_LITERAL_RESIDUAL_ARITHMETIC.id => {
+                (2, vec![Some(77), Some(10), Some(77)])
+            }
+            id if id == sql::writes::update::PAYLOAD_LITERAL_RESIDUAL_FUNCTION.id => {
+                (2, vec![Some(66), Some(10), Some(66)])
+            }
+            id if id == sql::writes::update::PAYLOAD_CASE_ASSIGNMENT.id => {
+                (2, vec![Some(50), Some(10), Some(60)])
+            }
+            id if id == sql::writes::update::PAYLOAD_NULL.id => (1, vec![Some(30), None, Some(20)]),
+            id if id == sql::writes::update::PAYLOAD_LITERAL_ALL.id => {
+                (3, vec![Some(1), Some(1), Some(1)])
+            }
+            _ => panic!("unexpected update catalog case {}", case.id),
+        };
+
+        assert_eq!(batch_u64_values(&update_batch, "count"), vec![expected.0], "case={}", case.id);
+        assert_eq!(
+            batch_optional_i64_values(&remaining_batch, "rank"),
+            expected.1,
+            "case={}",
+            case.id
+        );
+
+        Ok(())
+    }
+
     pub(super) async fn test_table_provider_supported_write_catalog_queries(
         c: Arc<QdrantContainer>,
     ) -> Result<()> {
@@ -1941,6 +2023,10 @@ error: {err}"
 
         for case in sql::writes::delete::ALL {
             assert_supported_delete_write_case(&c, *case).await?;
+        }
+
+        for case in sql::writes::update::ALL {
+            assert_supported_update_write_case(&c, *case).await?;
         }
 
         Ok(())

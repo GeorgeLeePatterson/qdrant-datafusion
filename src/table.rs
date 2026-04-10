@@ -5,6 +5,7 @@ mod insert;
 mod provider;
 pub(crate) mod scan_spec;
 mod scroll;
+mod update;
 
 use std::sync::Arc;
 
@@ -334,6 +335,7 @@ mod tests {
     use crate::qdrant::QdrantPayloadSchema;
     use crate::table::delete::QdrantDeleteExec;
     use crate::table::scan_spec::QdrantPayloadOrdering;
+    use crate::table::update::QdrantUpdateExec;
 
     fn test_provider(schema: Schema) -> QdrantTableProvider {
         QdrantTableProvider {
@@ -517,6 +519,19 @@ mod tests {
             return qdrant_delete(projection.input());
         }
         panic!("expected qdrant delete exec in plan:\n{}", displayable(plan.as_ref()).indent(true));
+    }
+
+    fn qdrant_update(plan: &Arc<dyn ExecutionPlan>) -> &QdrantUpdateExec {
+        if let Some(update) = plan.as_any().downcast_ref::<QdrantUpdateExec>() {
+            return update;
+        }
+        if let Some(cooperative) = plan.as_any().downcast_ref::<CooperativeExec>() {
+            return qdrant_update(cooperative.input());
+        }
+        if let Some(projection) = plan.as_any().downcast_ref::<ProjectionExec>() {
+            return qdrant_update(projection.input());
+        }
+        panic!("expected qdrant update exec in plan:\n{}", displayable(plan.as_ref()).indent(true));
     }
 
     fn qdrant_facet(plan: &Arc<dyn ExecutionPlan>) -> &QdrantFacetExec {
@@ -2965,6 +2980,58 @@ mod tests {
 
         assert!(display.contains("QdrantDeleteExec"), "{display}");
         assert!(display.contains("filter_leaves=1"), "{display}");
+    }
+
+    #[test]
+    fn physical_plan_builds_qdrant_update_exec_for_exact_and_residual_filters() {
+        let provider = QdrantTableProvider {
+            payload_schema: payload_schema([(
+                "rank",
+                PayloadSchemaInfo {
+                    data_type: qdrant_client::qdrant::PayloadSchemaType::Integer as i32,
+                    params: Some(qdrant_client::qdrant::PayloadIndexParams {
+                        index_params: Some(
+                            qdrant_client::qdrant::payload_index_params::IndexParams::IntegerIndexParams(
+                                IntegerIndexParamsBuilder::new(true, true).build(),
+                            ),
+                        ),
+                    }),
+                    points: None,
+                },
+            )]),
+            ..test_provider(Schema::new(vec![
+                Field::new(ID_FIELD_NAME, DataType::Utf8, false),
+                Field::new(PAYLOAD_FIELD_NAME, DataType::Utf8, true),
+                Field::new(
+                    "vector",
+                    DataType::new_fixed_size_list(DataType::Float32, 1, false),
+                    true,
+                ),
+            ]))
+        };
+        let ctx = SessionContext::new();
+        drop(ctx.register_table("vectors", Arc::new(provider)).expect("register qdrant table"));
+
+        let dataframe = ctx
+            .sql(
+                "UPDATE vectors SET payload = '{\"rank\":99}' WHERE payload:rank >= 20 AND \
+                 character_length(id) > 0",
+            )
+            .now_or_never()
+            .expect("sql future is ready")
+            .expect("update dataframe");
+        let plan = dataframe
+            .create_physical_plan()
+            .now_or_never()
+            .expect("plan future is ready")
+            .expect("update physical plan");
+        let display = displayable(plan.as_ref()).indent(true).to_string();
+        let _update = qdrant_update(&plan);
+
+        assert!(display.contains("QdrantUpdateExec"), "{display}");
+        assert!(display.contains("assignments=1"), "{display}");
+        assert!(display.contains("filter_leaves=1"), "{display}");
+        assert!(display.contains("residual_filters=1"), "{display}");
     }
 
     #[test]

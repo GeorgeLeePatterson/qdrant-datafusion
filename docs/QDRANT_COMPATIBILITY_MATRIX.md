@@ -1,6 +1,6 @@
 # Qdrant Compatibility Matrix
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -100,8 +100,9 @@ This matrix is derived from:
 | Mutation | point insert-only | `upsert_points` with `InsertOnly` | canonical-schema `INSERT INTO` | `Current` | `INSERT INTO` now uses qdrant's `InsertOnly` update mode on the validated runtime line, preserving existing ids while inserting new ids. This remains intentionally narrower than generic SQL append semantics because the backend owns the duplicate-id contract. |
 | Mutation | collection-wide pre-clear | `delete_points` | canonical-schema `INSERT OVERWRITE` | `Current` | `INSERT OVERWRITE` now clears the collection first through `delete_points(Filter::default())`, then writes canonical rows through the same insert sink. |
 | Mutation | point delete | `count`, `delete_points` | exact `DELETE` | `Current` | Canonical provider-table `DELETE FROM ...` now lowers through `QdrantTableProvider::delete_from`. The current admitted subset is exact only: filters must lower through the existing qdrant filter algebra, the provider counts exact matches first through `count(exact=true)`, then deletes through `delete_points` with the same filter. Empty `DELETE FROM vectors` is admitted and deletes all rows. Broader delete shapes that would require local residual predicate execution remain deferred. |
-| Mutation | vector update / delete | `update_vectors`, `delete_vectors` | `UPDATE` | `Later` | Requires a row identity and mutation contract first. |
-| Mutation | payload set / overwrite / delete / clear | payload mutation APIs | `UPDATE` | `Later` | Needs payload-structure policy and write semantics. |
+| Mutation | provider-table row rewrite update | `scroll`, `upsert_points` | canonical row-rewrite `UPDATE` | `Current` | `QdrantTableProvider::update` now executes provider-table `UPDATE` as a stable-id row rewrite on the canonical schema. Exact admitted filters lower through the existing qdrant filter algebra, residual predicates stay local over scrolled candidate rows, and matched rows are rewritten through `upsert_points`. The current mirrored SQL inventory covers payload rewrites, `CASE`, `NULL`, and whole-table update; `id` assignment stays deferred and `UPDATE ... FROM` is still upstream unsupported. |
+| Mutation | vector update / delete | `update_vectors`, `delete_vectors` | `UPDATE` | `Later` | Canonical `UPDATE` now exists through stable-id row rewrite first. Backend-specific vector-only mutation APIs still need a separate partial-mutation contract. |
+| Mutation | payload set / overwrite / delete / clear | payload mutation APIs | `UPDATE` | `Later` | Canonical `UPDATE` now exists through stable-id row rewrite first, but backend payload-patch APIs still need an explicit payload-structure policy and partial-mutation contract. |
 | Mutation | batched update | `UpdateBatchPointsBuilder` | DML batching | `Later` | Only after base write semantics exist. |
 | Administration | collection create / update / delete | collection APIs | DDL / admin | `Out` | Better handled by admin tooling or a separate crate/layer. |
 | Administration | field-index management | `create_field_index`, delete-field-index builder | DDL / admin | `Out` | Important operationally, but not a good first responsibility for this SQL scan crate. |
@@ -208,7 +209,7 @@ Now that the first retrieval relation exists:
 
 1. broader grouped retrieval variants
 2. search-matrix APIs
-3. write semantics
+3. broader mutation semantics and backend-specific partial mutation APIs
 4. collection / index / alias / snapshot / cluster administration
 
 ## Recommended Implementation Order

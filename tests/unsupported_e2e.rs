@@ -73,6 +73,14 @@ e2e_test!(
 
 #[cfg(feature = "test-utils")]
 e2e_test!(
+    unsupported_write_update_queries,
+    tests::test_unsupported_write_update_queries,
+    TRACING_DIRECTIVES,
+    None
+);
+
+#[cfg(feature = "test-utils")]
+e2e_test!(
     unsupported_query_nearest_queries,
     tests::test_unsupported_query_nearest_queries,
     TRACING_DIRECTIVES,
@@ -559,6 +567,19 @@ mod tests {
     ) -> Result<()> {
         let ctx = create_scan_boundary_context(&c, "test_unsupported_write_delete_queries").await?;
         for case in sql::writes::delete::ALL {
+            assert_unsupported_query(&ctx, *case).await?;
+        }
+        Ok(())
+    }
+
+    pub(super) async fn test_unsupported_write_update_queries(
+        c: Arc<QdrantContainer>,
+    ) -> Result<()> {
+        let ctx = create_scan_boundary_context(&c, "test_unsupported_write_update_queries").await?;
+        let staging =
+            MemTable::try_new(dense_insert_batch().schema(), vec![vec![dense_insert_batch()]])?;
+        drop(ctx.session_context().register_table("staging", Arc::new(staging))?);
+        for case in sql::writes::update::ALL {
             assert_unsupported_query(&ctx, *case).await?;
         }
         Ok(())

@@ -1,6 +1,6 @@
 # Execution Tracker
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -17,7 +17,7 @@ Use it to resume work without replaying the full repository history.
    - canonical dense / multivector / sparse carriers
    - top-level nullable vector columns for heterogeneous named collections
    - current typed `qdrant-client` vector outputs only
-4. Canonical-schema `INSERT INTO`, `REPLACE INTO`, `INSERT OVERWRITE`, and exact `DELETE` are now supported on the provider-owned mutation boundary.
+4. Canonical-schema `INSERT INTO`, `REPLACE INTO`, `INSERT OVERWRITE`, exact `DELETE`, and canonical row-rewrite `UPDATE` are now supported on the provider-owned mutation boundary.
 5. The broad SQL-native `Qdrant` capability surface is still intentionally incomplete, but the predicate algebra foundation, the first aggregate-like planner slices, the first public nearest-retrieval prototype, and the typed payload-access bridge are now in place.
 6. The next expansion round is now explicitly staged around the full `Qdrant` relation
    architecture rather than feature-by-feature node growth:
@@ -380,6 +380,12 @@ Use it to resume work without replaying the full repository history.
     - empty `DELETE FROM vectors` is admitted and deletes all rows through the same boundary
     - `tests/catalog/mod.rs` now mirrors supported and unsupported `writes.delete.*` SQL directly so delete widening is visible alongside the other mutation surfaces
     - broader residual/local delete semantics remain explicit deferred inventory rather than hidden coercion
+68. `Q-069`: canonical row-rewrite `UPDATE` now lands on the same provider-owned mutation boundary.
+    - `QdrantTableProvider::update` is now implemented on the canonical provider table instead of staying deferred
+    - `UPDATE ... SET ...` currently keeps stable ids, pushes exact admitted qdrant filters through the existing filter algebra, and leaves non-pushdownable predicates as local residual filters over the materialized candidate rows before rewriting matched rows through the canonical provider schema
+    - the current mirrored SQL inventory covers exact-filter and residual-filter payload rewrites, `CASE` assignment, `NULL`, and whole-table update
+    - `tests/catalog/mod.rs` now mirrors supported and unsupported `writes.update.*` SQL directly so the remaining `id`-assignment and `UPDATE ... FROM` boundaries stay visible instead of becoming stale prose
+    - broader key-mutation and backend-specific partial mutation semantics remain explicit deferred inventory rather than hidden coercion
 
 ## Next
 
@@ -420,8 +426,9 @@ When the next implementation round starts:
    - top-level nullable vector columns
    - paginated `scroll`
    - current typed `qdrant-client` APIs only
-3. keep the mutation contract explicit: canonical `INSERT INTO` / `REPLACE INTO` / `INSERT OVERWRITE` / exact `DELETE` only unless broader semantics are deliberately specified
+3. keep the mutation contract explicit: canonical `INSERT INTO` / `REPLACE INTO` / `INSERT OVERWRITE` / exact `DELETE` / row-rewrite `UPDATE` only unless broader semantics are deliberately specified
    - current admitted write reshaping is only the `DataFusion` target-column normalization path into the canonical provider schema
+   - current admitted update keeps stable ids and uses exact-plus-residual filter handling over the canonical provider row contract
 4. use `DataFusion` primary-source idioms before inventing project-local traversal or rewrite patterns
 5. admit only explicit pushdown subsets; reject unsupported cases cleanly instead of approximating them
    - when widening behavior, prefer one shared invariant-based recognizer over duplicated local shape checks

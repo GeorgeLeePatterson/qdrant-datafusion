@@ -1,6 +1,6 @@
 # Status Snapshot
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Summary
 
@@ -17,9 +17,9 @@ Current branch reality:
 4. Vector columns use canonical carriers with top-level nullable scan fields.
 5. Missing per-row named vectors become `NULL`, not execution errors.
 6. Deprecated `qdrant-client` response fields are not part of the implementation surface.
-7. Canonical-schema `INSERT INTO`, `REPLACE INTO`, `INSERT OVERWRITE`, and exact `DELETE` are now supported on the qdrant table schema.
+7. Canonical-schema `INSERT INTO`, `REPLACE INTO`, `INSERT OVERWRITE`, exact `DELETE`, and canonical row-rewrite `UPDATE` are now supported on the qdrant table schema.
 8. A shared `Qdrant` semantics layer plus provider-owned scan-pushdown model now exists for projection, payload access, filters, ordering, limit, and continuation.
-9. Write-side Arrow/Qdrant serialization plus provider-owned exact delete now exist for the canonical provider schema.
+9. Write-side Arrow/Qdrant serialization plus provider-owned exact delete and row-rewrite update now exist for the canonical provider schema.
    - `INSERT INTO`, `REPLACE INTO`, and `INSERT OVERWRITE` all lower through a `QdrantInsertSink` / `DataSinkExec` path
    - the current admitted write contract is explicit: `DataFusion` must present the canonical qdrant table schema at the sink boundary
    - explicit target-column inserts are admitted when `DataFusion` normalizes them into that schema, including reordered target columns and omission of nullable `payload`
@@ -27,6 +27,8 @@ Current branch reality:
    - on the validated current qdrant runtime line, `REPLACE INTO` replaces colliding ids while inserting new ids
    - `INSERT OVERWRITE` clears the collection first, then writes canonical rows through the same sink path
    - exact `DELETE FROM ...` now lowers through `QdrantDeleteExec`, counts exact matches first, and deletes through the same exact qdrant filter algebra already used by scan pushdown
+   - `UPDATE ... SET ...` now lowers through `QdrantUpdateExec` as a stable-id row rewrite over the canonical provider schema
+   - exact admitted qdrant filters lower remotely on that update path while non-pushdownable predicates stay as local residual filters over the materialized candidate rows before rewrite
 10. `ORDER BY id ASC` is admitted as an exact physical sort pushdown case.
 11. The single-node payload-key ordered-scroll runtime contract is now validated for integer, float, and datetime payload indexes.
 12. Ordered continuation lowering is implemented internally through `order_by`, `start_from`, and boundary-ID exclusion.
@@ -232,8 +234,8 @@ Current branch reality:
 7. `src/arrow/schema.rs`, `src/arrow/deserialize.rs`, `src/arrow/serialize.rs`
    - collection-config to Arrow schema translation plus `Qdrant` point to Arrow record-batch
      materialization and record-batch to `Qdrant` point serialization
-8. `src/table/insert.rs`, `src/table/delete.rs`
-   - canonical `INSERT INTO` / `REPLACE INTO` / `INSERT OVERWRITE` sink implementation plus exact `DELETE` execution over the canonical provider table
+8. `src/table/insert.rs`, `src/table/delete.rs`, `src/table/update.rs`
+   - canonical `INSERT INTO` / `REPLACE INTO` / `INSERT OVERWRITE` sink implementation plus exact `DELETE` execution and row-rewrite `UPDATE` execution over the canonical provider table
 9. `tests/e2e.rs`
    - integration coverage for the admitted scan baseline, typed payload access, aggregate-like
      slices, current query-family surfaces, and canonical-schema mutations
