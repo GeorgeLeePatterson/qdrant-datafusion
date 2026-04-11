@@ -207,6 +207,14 @@ e2e_test!(
 
 #[cfg(feature = "test-utils")]
 e2e_test!(
+    table_provider_pushes_down_keyword_facet_through_literal_alias_shells,
+    tests::test_table_provider_pushes_down_keyword_facet_through_literal_alias_shells,
+    TRACING_DIRECTIVES,
+    None
+);
+
+#[cfg(feature = "test-utils")]
+e2e_test!(
     table_provider_pushes_down_keyword_facet_through_payload_alias_cte,
     tests::test_table_provider_pushes_down_keyword_facet_through_payload_alias_cte,
     TRACING_DIRECTIVES,
@@ -566,9 +574,13 @@ mod tests {
         sql::scan::aggregates::WINDOW_OVER_FACET_SUBQUERY,
         sql::scan::aggregates::COUNT_PAYLOAD_ALIAS_SUBQUERY_EXACT,
         sql::scan::aggregates::COUNT_ID_ALIAS_SUBQUERY_EXACT,
+        sql::scan::aggregates::COUNT_LITERAL_ALIAS_SUBQUERY_EXACT,
+        sql::scan::aggregates::COUNT_LITERAL_ALIAS_CTE_EXACT,
         sql::scan::aggregates::TAG_FACET_SUBQUERY_EXACT,
         sql::scan::aggregates::TAG_FACET_COUNT_ID_EXACT,
+        sql::scan::aggregates::TAG_FACET_LITERAL_ALIAS_SUBQUERY_EXACT,
         sql::scan::aggregates::TAG_FACET_CTE_EXACT,
+        sql::scan::aggregates::TAG_FACET_LITERAL_ALIAS_CTE_EXACT,
         sql::scan::aggregates::SUBQUERY,
         sql::scan::aggregates::CTE,
     ];
@@ -4047,6 +4059,8 @@ error: {err}"
             sql::scan::aggregates::COUNT_ONE_RANK_GTE,
             sql::scan::aggregates::COUNT_ID_RANK_GTE,
             sql::scan::aggregates::COUNT_ID_ALIAS_SUBQUERY_EXACT,
+            sql::scan::aggregates::COUNT_LITERAL_ALIAS_SUBQUERY_EXACT,
+            sql::scan::aggregates::COUNT_LITERAL_ALIAS_CTE_EXACT,
         ] {
             let (values, display) = collect_i64_rows(&ctx, case.sql, "total").await?;
             assert_eq!(values, vec![2], "case={} display={display}", case.id);
@@ -4180,6 +4194,31 @@ error: {err}"
         assert!(!display.contains("SortExec"), "{display}");
         assert!(!display.contains("GlobalLimitExec"), "{display}");
         assert!(!display.contains("LocalLimitExec"), "{display}");
+
+        Ok(())
+    }
+
+    pub(super) async fn test_table_provider_pushes_down_keyword_facet_through_literal_alias_shells(
+        c: Arc<QdrantContainer>,
+    ) -> Result<()> {
+        let ctx = create_catalog_scan_context(&c, "test_tag_facet_literal_alias_exact").await?;
+        for case in [
+            sql::scan::aggregates::TAG_FACET_LITERAL_ALIAS_SUBQUERY_EXACT,
+            sql::scan::aggregates::TAG_FACET_LITERAL_ALIAS_CTE_EXACT,
+        ] {
+            let (rows, display) = collect_string_i64_rows(&ctx, case.sql, "tag", "total").await?;
+            assert_eq!(
+                rows,
+                vec![("blue".to_owned(), 2), ("red".to_owned(), 1)],
+                "case={} display={display}",
+                case.id
+            );
+            assert!(display.contains("QdrantFacetExec"), "case={} display={display}", case.id);
+            assert!(!display.contains("AggregateExec"), "case={} display={display}", case.id);
+            assert!(!display.contains("SortExec"), "case={} display={display}", case.id);
+            assert!(!display.contains("GlobalLimitExec"), "case={} display={display}", case.id);
+            assert!(!display.contains("LocalLimitExec"), "case={} display={display}", case.id);
+        }
 
         Ok(())
     }

@@ -217,11 +217,11 @@ impl SourceState {
                 drop(projected_payload_paths.insert(name, path));
                 continue;
             }
-            if self.non_null_column_for_expr(expr) {
+            if self.non_null_projection_expr(expr) {
                 let _ = projected_non_null_columns.insert(name);
                 continue;
             }
-            if !projection_passthrough_column(expr) {
+            if !projection_preserves_source_state(expr) {
                 return None;
             }
         }
@@ -265,9 +265,11 @@ impl SourceState {
         !self.projected_payload_paths.is_empty()
     }
 
-    fn non_null_column_for_expr(&self, expr: &Expr) -> bool {
-        match expr.clone().unalias_nested().data {
+    fn non_null_projection_expr(&self, expr: &Expr) -> bool {
+        match expr {
+            Expr::Alias(alias) => self.non_null_projection_expr(&alias.expr),
             Expr::Column(column) => self.projected_non_null_columns.contains(&column.name),
+            Expr::Literal(value, _) => !value.is_null(),
             _ => false,
         }
     }
@@ -318,6 +320,10 @@ impl AggregateSurface {
     }
 }
 
-fn projection_passthrough_column(expr: &Expr) -> bool {
-    matches!(expr.clone().unalias_nested().data, Expr::Column(_))
+fn projection_preserves_source_state(expr: &Expr) -> bool {
+    match expr {
+        Expr::Alias(alias) => projection_preserves_source_state(&alias.expr),
+        Expr::Column(_) | Expr::Literal(_, _) => true,
+        _ => false,
+    }
 }

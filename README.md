@@ -64,8 +64,9 @@ canonical carrier; missing values are not imputed during scan.
   - facet key outputs now follow the authoritative payload scalar type on the current runtime line:
     keyword as `Utf8`, bool as `Boolean`, and lookup-capable integer as `Int64`
   - current exact grouped-count forms use the same row-count-preserving `COUNT(...)` subset as exact point count
-  - exact row-count kernels now also survive benign payload-alias and non-null `id` alias
-    subquery / `CTE` shells instead of dropping back to local aggregate execution
+  - exact row-count kernels now also survive benign payload-alias, non-null `id` alias, and
+    non-null literal alias subquery / `CTE` shells instead of dropping back to local aggregate
+    execution
 - a generic public `QdrantOpNode` / `QdrantOp` layer now exists above the shared kernel family
   for the current query-family retrieval prototypes
 - current exact row-count, scalar facet, and current query-family retrieval slices now lower
@@ -132,7 +133,7 @@ canonical carrier; missing values are not imputed during scan.
     - same-collection raw `EXCEPT DISTINCT` branches over exact filters
     - all currently rewrite to a single filtered scan
   - those extracted child kernels now also compose upward in the same analyzer pass:
-    - exact `COUNT(*)` and exact scalar-facet grouped counts can still replace the larger parent
+    - exact `COUNT(...)` and exact scalar-facet grouped counts can still replace the larger parent
       subtree after a mergeable child region collapses to one scan-local kernel
   - redundant `DISTINCT` over a raw full-row `Qdrant` scan is now dropped because row identity
     already includes unique `id`
@@ -154,7 +155,7 @@ canonical carrier; missing values are not imputed during scan.
 - fully implicit arithmetic and similar typed SQL over raw `payload:<path>` when `DataFusion` must infer the payload scalar type during SQL planning; use `payload(payload:<path>, 'Type')` or an explicit `CAST(...)` today
 - broader `Qdrant`-specific UDF, UDAF, or UDTF surface beyond the current retrieval marker UDFs and typed `payload(...)` helper
 - broader SQL-native coordination / fusion / grouped-query semantics beyond the current admitted coordinated full-outer-join subset and `DISTINCT ON` grouped query-family subset
-- broader planner rewrites beyond the narrow exact `COUNT(*)` / facet slices
+- broader planner rewrites beyond the narrow exact `COUNT(...)` / facet slices
 
 ## Basic Usage
 

@@ -1029,6 +1029,16 @@ pub(crate) mod supported {
                 "SELECT COUNT(vector_id) AS total FROM (SELECT id AS vector_id FROM vectors WHERE \
                  payload:rank >= 20) filtered",
             );
+            pub(crate) const COUNT_LITERAL_ALIAS_SUBQUERY_EXACT: SqlCase = SqlCase::new(
+                "scan.aggregates.count_literal_alias_subquery_exact",
+                "SELECT COUNT(marker) AS total FROM (SELECT 1 AS marker FROM vectors WHERE \
+                 payload:rank >= 20) filtered",
+            );
+            pub(crate) const COUNT_LITERAL_ALIAS_CTE_EXACT: SqlCase = SqlCase::new(
+                "scan.aggregates.count_literal_alias_cte_exact",
+                "WITH filtered AS (SELECT 1 AS marker FROM vectors WHERE payload:rank >= 20) \
+                 SELECT COUNT(marker) AS total FROM filtered",
+            );
             pub(crate) const TAG_FACET_SUBQUERY_EXACT: SqlCase = SqlCase::new(
                 "scan.aggregates.tag_facet_subquery_exact",
                 "SELECT tag, COUNT(*) AS total FROM (SELECT payload:tag AS tag FROM vectors) \
@@ -1039,10 +1049,20 @@ pub(crate) mod supported {
                 "SELECT payload:tag AS tag, COUNT(id) AS total FROM vectors GROUP BY payload:tag \
                  ORDER BY total DESC LIMIT 2",
             );
+            pub(crate) const TAG_FACET_LITERAL_ALIAS_SUBQUERY_EXACT: SqlCase = SqlCase::new(
+                "scan.aggregates.tag_facet_literal_alias_subquery_exact",
+                "SELECT tag, COUNT(marker) AS total FROM (SELECT payload:tag AS tag, 1 AS marker \
+                 FROM vectors) grouped GROUP BY tag ORDER BY total DESC LIMIT 2",
+            );
             pub(crate) const TAG_FACET_CTE_EXACT: SqlCase = SqlCase::new(
                 "scan.aggregates.tag_facet_cte_exact",
                 "WITH base AS (SELECT payload:tag AS tag FROM vectors) SELECT tag, COUNT(*) AS \
                  total FROM base GROUP BY tag ORDER BY total DESC LIMIT 2",
+            );
+            pub(crate) const TAG_FACET_LITERAL_ALIAS_CTE_EXACT: SqlCase = SqlCase::new(
+                "scan.aggregates.tag_facet_literal_alias_cte_exact",
+                "WITH base AS (SELECT payload:tag AS tag, 1 AS marker FROM vectors) SELECT tag, \
+                 COUNT(marker) AS total FROM base GROUP BY tag ORDER BY total DESC LIMIT 2",
             );
             pub(crate) const TAG_GROUP_LOCAL: SqlCase = SqlCase::local_fallback(
                 "scan.aggregates.tag_group_local",
@@ -1101,9 +1121,13 @@ pub(crate) mod supported {
                 TAG_FACET_LIMIT_ONLY,
                 COUNT_PAYLOAD_ALIAS_SUBQUERY_EXACT,
                 COUNT_ID_ALIAS_SUBQUERY_EXACT,
+                COUNT_LITERAL_ALIAS_SUBQUERY_EXACT,
+                COUNT_LITERAL_ALIAS_CTE_EXACT,
                 TAG_FACET_SUBQUERY_EXACT,
                 TAG_FACET_COUNT_ID_EXACT,
+                TAG_FACET_LITERAL_ALIAS_SUBQUERY_EXACT,
                 TAG_FACET_CTE_EXACT,
+                TAG_FACET_LITERAL_ALIAS_CTE_EXACT,
                 TAG_GROUP_LOCAL,
                 HAVING_FACET,
                 WINDOW_OVER_FACET_SUBQUERY,

@@ -426,13 +426,23 @@ Use it to resume work without replaying the full repository history.
       planner/analyzer boundary instead of localizing immediately
     - `tests/catalog/mod.rs`, `tests/e2e.rs`, and `src/table.rs` now prove direct and aliased
       `COUNT(id)` / `COUNT(1)` plus grouped `COUNT(id)` on the exact kernel path
+74. `Q-075`: exact aggregate-like kernels now survive benign literal-alias projection shells instead of localizing immediately.
+    - exact point count now stays on `Qdrant` through benign non-null literal alias subquery /
+      `CTE` shells that preserve row count
+    - exact top-facet grouped counts now also stay on `Qdrant` through payload-key plus non-null
+      literal alias subquery / `CTE` shells when the later aggregate still matches the admitted
+      top-facet contract
+    - `SourceState` now preserves row-count-neutral literal aliases without widening broader
+      arithmetic or scalar-expression projection shells into exact aggregate kernels
+    - `tests/catalog/mod.rs`, `tests/e2e.rs`, and `src/table.rs` now prove exact count/facet
+      closure through literal alias shells on the shared analyzer/kernel path
 
 ## Next
 
 1. The detailed planning inventory for the next expansion round now lives in `docs/QDRANT_COMPATIBILITY_MATRIX.md`.
 3. `M-003`: Extend broader aggregate-like and retrieval growth on
    the shared operator / kernel structure.
-   - aggregate-like: explicit output contracts beyond exact `COUNT(*)` and the current scalar
+   - aggregate-like: explicit output contracts beyond exact `COUNT(...)` and the current scalar
      facet slice
    - retrieval: broader `query`-family relations and modifiers such as grouped retrieval beyond the current grouped query-family `DISTINCT ON` subset now that nearest / sample / order-by / recommend / discover / context / nearest-with-MMR / relevance feedback are all fully absorbed
    - current retrieval kernels now allow omitted SQL `LIMIT`, deferring to Qdrant's native default result count unless SQL specifies one

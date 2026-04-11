@@ -93,6 +93,7 @@ Last updated: 2026-04-09
     - no `GROUP BY`
     - no grouped aggregates
     - the current exact row-count forms are `COUNT(*)`, non-null literals such as `COUNT(1)`, and non-null `id` column references, including benign `id` alias shells
+    - benign non-null literal alias projection / subquery / `CTE` shells may also preserve those exact row-count forms when the larger SQL shape remains row-count-preserving
     - nullable or semantically broader `COUNT(column)` forms remain local
     - exact admitted filters may still participate through the existing predicate algebra
     - this path currently requires the `Qdrant` session/planner helper rather than plain `SessionContext`
@@ -106,6 +107,7 @@ Last updated: 2026-04-09
     - this path also requires the `Qdrant` session/planner helper rather than plain `SessionContext`
     - facet key outputs now follow the authoritative payload scalar type on the current runtime
       line: keyword as `Utf8`, bool as `Boolean`, and lookup-capable integer as `Int64`
+    - benign payload-key plus non-null literal alias projection / subquery / `CTE` shells may also preserve that exact grouped-count contract when the larger SQL shape stays row-count-preserving
     - broader grouped SQL still localizes because `Qdrant` facet denotes top-N grouped counts, not unconstrained SQL grouping
     - when broader grouped SQL leaves that exact top-facet contract, the plan should fall back to local `DataFusion` execution rather than failing; `HAVING` and window/subquery shells over `GROUP BY payload:<path>` now follow that fallback path
 27. Planner-layer subtree replacement should be owned by one `Qdrant` relation-pushdown analyzer scaffold rather than by independent analyzer rules alone.

@@ -1,6 +1,6 @@
 # Status Snapshot
 
-Last updated: 2026-04-10
+Last updated: 2026-04-11
 
 ## Summary
 
@@ -47,6 +47,7 @@ Current branch reality:
     - it lowers into `Qdrant`’s native `count` API
     - it currently requires the `Qdrant` session/planner helper
     - current exact row-count forms are `COUNT(*)`, non-null literals such as `COUNT(1)`, and non-null `id` column references, including benign `id` alias shells
+    - benign non-null literal alias projection / subquery / `CTE` shells now also preserve those exact row-count forms instead of localizing immediately
     - it reuses the existing provider-owned predicate algebra for admitted exact filters
 19. Exact top-facet grouped counts are now admitted as the second aggregate-like planner slice.
     - it lowers into `Qdrant`’s native `facet` API
@@ -54,6 +55,7 @@ Current branch reality:
     - it is currently limited to one admitted scalar `payload:<path>` field with `LIMIT N`
     - current exact grouped-count expressions use the same row-count-preserving `COUNT(...)` subset as exact point count
     - projected `ORDER BY count DESC` is optional and now optimizes away as redundant
+    - benign payload-key plus non-null literal alias projection / subquery / `CTE` shells now also preserve that exact grouped-count contract instead of localizing immediately
     - it reuses the existing provider-owned predicate algebra for admitted exact filters
 20. The root `README.md`, repo notes, and tracker docs describe only the admitted baseline.
 21. Detailed capability-expansion planning now has an explicit semantic inventory in `docs/QDRANT_COMPATIBILITY_MATRIX.md`.
@@ -110,7 +112,7 @@ Current branch reality:
     - projected `DISTINCT` remains a separate semantic case
 34. Mergeable child-kernel extraction is now explicitly validated as compositional.
     - a nested same-collection set-algebra region can collapse to one scan-local kernel first
-    - exact `COUNT(*)` and exact scalar-facet grouped counts can still replace the larger parent
+    - exact `COUNT(...)` and exact scalar-facet grouped counts can still replace the larger parent
       subtree after that child rewrite in the same bottom-up analyzer pass
 35. The admitted facet slice is now broader without overstating typed payload SQL semantics.
     - top-facet grouped counts now admit keyword, bool, and lookup-capable integer payload indexes

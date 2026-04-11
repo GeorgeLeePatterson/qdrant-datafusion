@@ -13,7 +13,7 @@ This folder is the compaction-safe planning and execution source of truth for `q
    - widen the SQL-native capability surface only through explicit semantic milestones
 4. The current milestone is the first full public/operator checkpoint for broader `Qdrant`
    relation work.
-   - current exact `COUNT(*)`, scalar-facet grouped counts, and nearest-neighbor retrieval now
+   - current exact `COUNT(...)`, scalar-facet grouped counts, and nearest-neighbor retrieval now
      converge on one `QdrantKernelNode` / `QdrantKernelSpec` family instead of separate node types
    - the generic public operator layer now exists above that kernel layer:
      `QdrantOpNode` / `QdrantOp`
