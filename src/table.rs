@@ -329,8 +329,8 @@ mod tests {
         QdrantQueryGroupsExec,
     };
     use crate::expr_fn::{
-        QdrantOrderByDirection, qdrant_context_score, qdrant_discover_score, qdrant_order_by_score,
-        qdrant_recommend_score, qdrant_recommend_score_with_strategy,
+        QdrantOrderByDirection, QdrantRecommendStrategy, qdrant_context_score,
+        qdrant_discover_score, qdrant_order_by_score, qdrant_recommend_score,
     };
     use crate::qdrant::QdrantPayloadSchema;
     use crate::table::delete::QdrantDeleteExec;
@@ -3854,6 +3854,7 @@ mod tests {
                 col("payload"),
                 qdrant_recommend_score(
                     col("embedding"),
+                    QdrantRecommendStrategy::Default,
                     float_vector_list_expr(&[&[1.0, 0.0]]),
                     float_vector_list_expr(&[&[0.0, 1.0]]),
                 )
@@ -3876,7 +3877,7 @@ mod tests {
     }
 
     #[test]
-    fn physical_plan_uses_qdrant_query_exec_for_recommend_score_with_strategy_sql() {
+    fn physical_plan_uses_qdrant_query_exec_for_recommend_score_with_strategy_dataframe_api() {
         let provider = test_provider(Schema::new(vec![
             Field::new(ID_FIELD_NAME, DataType::Utf8, false),
             Field::new(PAYLOAD_FIELD_NAME, DataType::Utf8, true),
@@ -3901,9 +3902,9 @@ mod tests {
             .select(vec![
                 col("id"),
                 col("payload"),
-                qdrant_recommend_score_with_strategy(
+                qdrant_recommend_score(
                     col("embedding"),
-                    "average_vector",
+                    QdrantRecommendStrategy::AverageVector,
                     float_vector_list_expr(&[&[1.0, 0.0]]),
                     float_vector_list_expr(&[&[0.0, 1.0]]),
                 )

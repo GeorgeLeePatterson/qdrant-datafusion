@@ -71,7 +71,7 @@ canonical carrier; missing values are not imputed during scan.
       optional exact base filters, and optional score-threshold predicates; when SQL omits `LIMIT`, the remote request uses Qdrant's default result count and omitted projected score ordering uses Qdrant's native score-desc result order
   - `qdrant_sample_score([method])`
     - exact lowering currently admits random sampling and an optional `LIMIT`; when SQL omits `LIMIT`, the remote request uses Qdrant's default result count and omitted projected score ordering uses Qdrant's native result order
-    - the method currently defaults to `'random'`
+    - the method currently defaults to `'random'`, and the public Rust helper is nullary because that is the only admitted method today
   - `qdrant_order_by_score(payload:<path>[, direction])`
     - exact lowering currently admits canonical indexed integer / float / datetime payload paths
       plus order-preserving casts on the prepared session surface; direction currently admits
@@ -83,7 +83,7 @@ canonical carrier; missing values are not imputed during scan.
       non-canonical scalar expressions remain unsupported by design
   - `qdrant_recommend_score(...)`
     - exact lowering currently admits positive and negative example lists and an optional `LIMIT`; when SQL omits `LIMIT`, the remote request uses Qdrant's default result count and omitted projected score ordering uses Qdrant's native score-desc result order
-    - the default or explicit recommend strategy is admitted
+    - the default or explicit recommend strategy is admitted, and the public Rust helper uses typed `QdrantRecommendStrategy`
   - `qdrant_discover_score(...)` and `qdrant_context_score(...)`
     - exact lowering currently admits dense vector targets/context pairs and an optional `LIMIT`; when SQL omits `LIMIT`, the remote request uses Qdrant's default result count and omitted projected score ordering uses Qdrant's native score-desc result order
   - `qdrant_nearest_with_mmr_score(...)`
@@ -101,7 +101,11 @@ canonical carrier; missing values are not imputed during scan.
     - exact lowering currently admits the narrow coordinated subset over retrieval relations: an id-preserving `FULL OUTER JOIN USING (id)` over admitted query-family score branches with effective `ORDER BY score DESC`
     - outer `LIMIT` is optional; when SQL omits it, the remote coordinated request omits `limit` and uses Qdrant's default result count
     - `qdrant_formula_score(...)` admits the current coordinated score arithmetic subset plus the current branch-local qdrant-leaf subset when the formula binds to one independently-closable branch and the outer join remains local
-    - `qdrant_fusion_score(...)` now additionally admits a local aligned-join fallback over `INNER` / `LEFT` / `RIGHT` joins on `id` with explicit score-column inputs for both `RRF` and `DBSF`; `CROSS JOIN` stays unsupported by design because it does not align the same candidate across branches
+    - `qdrant_fusion_score(...)` now additionally admits a local aligned-join fallback over `INNER` / `LEFT` / `RIGHT` joins on `id` with explicit score-column inputs for both `RRF` and `DBSF`; `CROSS JOIN` stays unsupported by design because it does not align the same candidate across branches, and the public Rust helper now uses typed `QdrantFusionMethod`
+  - the public Rust helper surface now also closes the current admitted formula/payload helper gaps:
+    - `qdrant_payload(payload:<path>, <DataType>)` is typed on the Rust side instead of stringly
+    - `qdrant_payload_num(...)` / `qdrant_payload_datetime(...)` now expose current default-value forms without raw UDF calls
+    - `qdrant_exp_decay(...)` / `qdrant_gauss_decay(...)` / `qdrant_lin_decay(...)` now expose the admitted target and midpoint forms without raw UDF calls
   - projected `ORDER BY score DESC` is redundant and optimizes away, while projected `ORDER BY score ASC` remains a local `DataFusion` sort
   - explicit payload presence/null/missing/empty/non-empty/count semantics through `payload_exists(payload:<path>)`, `payload_is_missing(payload:<path>)`, `payload_is_null(payload:<path>)`, `payload_is_empty(payload:<path>)`, `payload_has_values(payload:<path>)`, and `payload_values_count(payload:<path>)`, all with exact scan filter pushdown and local execution
   - explicit geo distance semantics through `payload_geo_distance(payload:<path>, lon, lat)`, with local numeric execution and exact scan filter pushdown for the `<= radius` subset on geo payload fields

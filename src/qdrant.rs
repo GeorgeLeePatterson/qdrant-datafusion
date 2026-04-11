@@ -567,7 +567,7 @@ mod tests {
             Operator::Colon,
             Box::new(lit("rank")),
         ));
-        let public = crate::expr_fn::qdrant_payload(raw.clone(), "Integer");
+        let public = crate::expr_fn::qdrant_payload(raw.clone(), &DataType::Int64);
         let internal =
             crate::expr_fn::payload_access_expr(payload.clone(), "rank", &DataType::Int64)
                 .expect("internal payload access");

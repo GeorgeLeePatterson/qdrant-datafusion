@@ -2,7 +2,6 @@ use std::sync::OnceLock;
 
 use datafusion::common::{Result, plan_err};
 use datafusion::logical_expr::{Expr, ScalarUDF};
-use datafusion::prelude::lit;
 
 use super::common::{NonExecutableScoreUdf, function_args};
 
@@ -29,9 +28,7 @@ impl SampleCall {
 }
 
 #[must_use]
-pub fn qdrant_sample_score(method: impl Into<String>) -> Expr {
-    qdrant_sample_score_udf().call(vec![lit(method.into())])
-}
+pub fn qdrant_sample_score() -> Expr { qdrant_sample_score_udf().call(vec![]) }
 
 pub(crate) fn qdrant_sample_score_udf() -> ScalarUDF {
     static UDF: OnceLock<ScalarUDF> = OnceLock::new();
@@ -42,4 +39,18 @@ pub(crate) fn qdrant_sample_score_udf() -> ScalarUDF {
         ))
     })
     .clone()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sample_helper_defaults_to_nullary_random_surface() {
+        let call = SampleCall::from_expr(&qdrant_sample_score())
+            .expect("sample call")
+            .expect("parsed sample call");
+
+        assert!(call.method.is_none(), "{call:?}");
+    }
 }

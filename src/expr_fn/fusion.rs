@@ -9,6 +9,31 @@ use super::common::{NonExecutableScoreUdf, function_args};
 pub const FUSION_SCORE_FUNCTION_NAME: &str = "qdrant_fusion_score";
 const ALIASES: &[&str] = &["fusion_score"];
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum QdrantFusionMethod {
+    Rrf { k: Option<u32> },
+    Dbsf,
+}
+
+impl Default for QdrantFusionMethod {
+    fn default() -> Self { Self::Rrf { k: None } }
+}
+
+impl QdrantFusionMethod {
+    fn into_args(self) -> Vec<Expr> {
+        match self {
+            Self::Rrf { k } => {
+                let mut args = vec![lit("RRF")];
+                if let Some(k) = k {
+                    args.push(lit(k));
+                }
+                args
+            }
+            Self::Dbsf => vec![lit("DBSF")],
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct FusionCall {
     pub(crate) method:       Expr,
@@ -59,16 +84,11 @@ fn looks_like_integer_literal(expr: &Expr) -> bool {
 }
 
 #[must_use]
-pub fn qdrant_fusion_score(method: impl Into<String>) -> Expr {
-    qdrant_fusion_score_udf().call(vec![lit(method.into())])
-}
-
-#[must_use]
-pub fn qdrant_fusion_score_with_inputs(
-    method: impl Into<String>,
+pub fn qdrant_fusion_score(
+    method: QdrantFusionMethod,
     score_inputs: impl IntoIterator<Item = Expr>,
 ) -> Expr {
-    let mut args = vec![lit(method.into())];
+    let mut args = method.into_args();
     args.extend(score_inputs);
     qdrant_fusion_score_udf().call(args)
 }
@@ -79,4 +99,22 @@ pub(crate) fn qdrant_fusion_score_udf() -> ScalarUDF {
         ScalarUDF::new_from_impl(NonExecutableScoreUdf::new(FUSION_SCORE_FUNCTION_NAME, ALIASES))
     })
     .clone()
+}
+
+#[cfg(test)]
+mod tests {
+    use datafusion::common::ScalarValue;
+    use datafusion::prelude::col;
+
+    use super::*;
+
+    #[test]
+    fn fusion_helper_builds_typed_method_and_optional_rrf_k() {
+        let expr = qdrant_fusion_score(QdrantFusionMethod::Rrf { k: Some(8) }, [col("lhs_score")]);
+        let call = FusionCall::from_expr(&expr).expect("fusion call").expect("parsed fusion call");
+
+        assert_eq!(call.score_inputs.len(), 1);
+        assert_eq!(call.method, Expr::Literal(ScalarValue::Utf8(Some("RRF".to_owned())), None));
+        assert_eq!(call.rrf_k, Some(Expr::Literal(ScalarValue::UInt32(Some(8)), None)));
+    }
 }

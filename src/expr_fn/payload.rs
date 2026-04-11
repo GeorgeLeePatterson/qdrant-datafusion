@@ -21,8 +21,8 @@ pub(crate) fn is_payload_function_name(name: &str) -> bool {
 }
 
 #[must_use]
-pub fn qdrant_payload(accessor: Expr, data_type: impl Into<String>) -> Expr {
-    qdrant_payload_udf().call(vec![accessor, lit(data_type.into())])
+pub fn qdrant_payload(accessor: Expr, data_type: &DataType) -> Expr {
+    qdrant_payload_udf().call(vec![accessor, lit(data_type.to_string())])
 }
 
 pub(crate) fn qdrant_payload_udf() -> ScalarUDF {

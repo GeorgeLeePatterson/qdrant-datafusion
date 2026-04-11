@@ -2,11 +2,33 @@ use std::sync::OnceLock;
 
 use datafusion::common::{Result, plan_err};
 use datafusion::logical_expr::{Expr, ScalarUDF};
+use datafusion::prelude::lit;
 
 use super::common::{NonExecutableScoreUdf, column_name, function_args};
 
 pub const RECOMMEND_SCORE_FUNCTION_NAME: &str = "qdrant_recommend_score";
 const ALIASES: &[&str] = &["recommend_score"];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum QdrantRecommendStrategy {
+    #[default]
+    Default,
+    AverageVector,
+    BestScore,
+    SumScores,
+}
+
+impl QdrantRecommendStrategy {
+    #[must_use]
+    pub fn as_str(self) -> Option<&'static str> {
+        match self {
+            Self::Default => None,
+            Self::AverageVector => Some("average_vector"),
+            Self::BestScore => Some("best_score"),
+            Self::SumScores => Some("sum_scores"),
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct RecommendCall {
@@ -41,23 +63,19 @@ impl RecommendCall {
 }
 
 #[must_use]
-pub fn qdrant_recommend_score(vector: Expr, positive: Expr, negative: Expr) -> Expr {
-    qdrant_recommend_score_udf().call(vec![vector, positive, negative])
-}
-
-#[must_use]
-pub fn qdrant_recommend_score_with_strategy(
+pub fn qdrant_recommend_score(
     vector: Expr,
-    strategy: impl Into<String>,
+    strategy: QdrantRecommendStrategy,
     positive: Expr,
     negative: Expr,
 ) -> Expr {
-    qdrant_recommend_score_udf().call(vec![
-        vector,
-        Expr::Literal(datafusion::common::ScalarValue::Utf8(Some(strategy.into())), None),
-        positive,
-        negative,
-    ])
+    let mut args = vec![vector];
+    if let Some(strategy) = strategy.as_str() {
+        args.push(lit(strategy));
+    }
+    args.push(positive);
+    args.push(negative);
+    qdrant_recommend_score_udf().call(args)
 }
 
 pub(crate) fn qdrant_recommend_score_udf() -> ScalarUDF {

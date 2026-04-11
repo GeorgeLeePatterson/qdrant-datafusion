@@ -961,15 +961,14 @@ mod tests {
 
         let query = FormulaQuery::try_from(FormulaCall {
             formula: Expr::BinaryExpr(BinaryExpr {
-                left:  Box::new(crate::expr_fn::qdrant_payload_num_udf().call(vec![
-                    Expr::Literal(ScalarValue::Utf8(Some("rank".to_owned())), None),
-                    Expr::Literal(ScalarValue::Int64(Some(7)), None),
-                ])),
+                left:  Box::new(qdrant_payload_num(
+                    crate::expr_fn::QdrantPayloadNum::new("rank").with_default(7_i64),
+                )),
                 op:    Operator::Plus,
-                right: Box::new(crate::expr_fn::qdrant_payload_datetime_udf().call(vec![
-                    Expr::Literal(ScalarValue::Utf8(Some("created_at".to_owned())), None),
-                    Expr::Literal(ScalarValue::Utf8(Some("2024-01-01".to_owned())), None),
-                ])),
+                right: Box::new(qdrant_payload_datetime(
+                    crate::expr_fn::QdrantPayloadDatetime::new("created_at")
+                        .with_default("2024-01-01"),
+                )),
             }),
         })
         .expect("formula query with defaults");
@@ -1007,12 +1006,14 @@ mod tests {
     #[test]
     fn formula_query_lowers_decay_and_datetime_leaves() {
         let query = FormulaQuery::try_from(FormulaCall {
-            formula: crate::expr_fn::qdrant_exp_decay_udf().call(vec![
+            formula: crate::expr_fn::qdrant_exp_decay(
                 qdrant_payload_datetime("created_at"),
-                qdrant_datetime_value("2024-01-01"),
-                Expr::Literal(ScalarValue::Float64(Some(86_400.0)), None),
-                Expr::Literal(ScalarValue::Float64(Some(0.25)), None),
-            ]),
+                crate::expr_fn::QdrantDecay::towards_with_midpoint(
+                    qdrant_datetime_value("2024-01-01"),
+                    86_400.0,
+                    0.25,
+                ),
+            ),
         })
         .expect("formula query");
         let source = test_source(QdrantPayloadSchema::from(HashMap::from([(
@@ -1057,15 +1058,13 @@ mod tests {
     fn formula_query_rejects_conflicting_defaults() {
         let query = FormulaQuery::try_from(FormulaCall {
             formula: Expr::BinaryExpr(BinaryExpr {
-                left:  Box::new(crate::expr_fn::qdrant_payload_num_udf().call(vec![
-                    Expr::Literal(ScalarValue::Utf8(Some("rank".to_owned())), None),
-                    Expr::Literal(ScalarValue::Int64(Some(1)), None),
-                ])),
+                left:  Box::new(qdrant_payload_num(
+                    crate::expr_fn::QdrantPayloadNum::new("rank").with_default(1_i64),
+                )),
                 op:    Operator::Plus,
-                right: Box::new(crate::expr_fn::qdrant_payload_num_udf().call(vec![
-                    Expr::Literal(ScalarValue::Utf8(Some("rank".to_owned())), None),
-                    Expr::Literal(ScalarValue::Int64(Some(2)), None),
-                ])),
+                right: Box::new(qdrant_payload_num(
+                    crate::expr_fn::QdrantPayloadNum::new("rank").with_default(2_i64),
+                )),
             }),
         })
         .expect("formula query");

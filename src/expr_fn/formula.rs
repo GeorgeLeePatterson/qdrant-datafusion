@@ -27,6 +27,141 @@ const EXP_DECAY_ALIASES: &[&str] = &["exp_decay"];
 const GAUSS_DECAY_ALIASES: &[&str] = &["gauss_decay"];
 const LIN_DECAY_ALIASES: &[&str] = &["lin_decay"];
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum QdrantFormulaNumericDefault {
+    Integer(i64),
+    Float(f64),
+}
+
+impl QdrantFormulaNumericDefault {
+    fn into_expr(self) -> Expr {
+        match self {
+            Self::Integer(value) => lit(value),
+            Self::Float(value) => lit(value),
+        }
+    }
+}
+
+impl From<i8> for QdrantFormulaNumericDefault {
+    fn from(value: i8) -> Self { Self::Integer(i64::from(value)) }
+}
+
+impl From<i16> for QdrantFormulaNumericDefault {
+    fn from(value: i16) -> Self { Self::Integer(i64::from(value)) }
+}
+
+impl From<i32> for QdrantFormulaNumericDefault {
+    fn from(value: i32) -> Self { Self::Integer(i64::from(value)) }
+}
+
+impl From<i64> for QdrantFormulaNumericDefault {
+    fn from(value: i64) -> Self { Self::Integer(value) }
+}
+
+impl From<u8> for QdrantFormulaNumericDefault {
+    fn from(value: u8) -> Self { Self::Integer(i64::from(value)) }
+}
+
+impl From<u16> for QdrantFormulaNumericDefault {
+    fn from(value: u16) -> Self { Self::Integer(i64::from(value)) }
+}
+
+impl From<u32> for QdrantFormulaNumericDefault {
+    fn from(value: u32) -> Self { Self::Integer(i64::from(value)) }
+}
+
+impl From<f32> for QdrantFormulaNumericDefault {
+    fn from(value: f32) -> Self { Self::Float(f64::from(value)) }
+}
+
+impl From<f64> for QdrantFormulaNumericDefault {
+    fn from(value: f64) -> Self { Self::Float(value) }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct QdrantPayloadNum {
+    path:    String,
+    default: Option<QdrantFormulaNumericDefault>,
+}
+
+impl QdrantPayloadNum {
+    #[must_use]
+    pub fn new(path: impl Into<String>) -> Self { Self { path: path.into(), default: None } }
+
+    #[must_use]
+    pub fn with_default(mut self, default: impl Into<QdrantFormulaNumericDefault>) -> Self {
+        self.default = Some(default.into());
+        self
+    }
+}
+
+impl From<&str> for QdrantPayloadNum {
+    fn from(path: &str) -> Self { Self::new(path) }
+}
+
+impl From<String> for QdrantPayloadNum {
+    fn from(path: String) -> Self { Self::new(path) }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QdrantPayloadDatetime {
+    path:    String,
+    default: Option<String>,
+}
+
+impl QdrantPayloadDatetime {
+    #[must_use]
+    pub fn new(path: impl Into<String>) -> Self { Self { path: path.into(), default: None } }
+
+    #[must_use]
+    pub fn with_default(mut self, default: impl Into<String>) -> Self {
+        self.default = Some(default.into());
+        self
+    }
+}
+
+impl From<&str> for QdrantPayloadDatetime {
+    fn from(path: &str) -> Self { Self::new(path) }
+}
+
+impl From<String> for QdrantPayloadDatetime {
+    fn from(path: String) -> Self { Self::new(path) }
+}
+
+#[derive(Debug, Clone)]
+pub enum QdrantDecay {
+    Scale { scale: f32 },
+    Target { target: Expr, scale: f32, midpoint: Option<f32> },
+}
+
+impl QdrantDecay {
+    #[must_use]
+    pub fn new(scale: f32) -> Self { Self::Scale { scale } }
+
+    #[must_use]
+    pub fn towards(target: Expr, scale: f32) -> Self {
+        Self::Target { target, scale, midpoint: None }
+    }
+
+    #[must_use]
+    pub fn towards_with_midpoint(target: Expr, scale: f32, midpoint: f32) -> Self {
+        Self::Target { target, scale, midpoint: Some(midpoint) }
+    }
+
+    fn into_args(self, x: Expr) -> Vec<Expr> {
+        match self {
+            Self::Scale { scale } => vec![x, lit(scale)],
+            Self::Target { target, scale, midpoint } => {
+                let mut args = vec![x, target, lit(scale)];
+                if let Some(midpoint) = midpoint {
+                    args.push(lit(midpoint));
+                }
+                args
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct FormulaCall {
     pub(crate) formula: Expr,
@@ -235,13 +370,23 @@ pub fn qdrant_formula_score(formula: Expr) -> Expr {
 }
 
 #[must_use]
-pub fn qdrant_payload_num(path: impl Into<String>) -> Expr {
-    qdrant_payload_num_udf().call(vec![lit(path.into())])
+pub fn qdrant_payload_num(path: impl Into<QdrantPayloadNum>) -> Expr {
+    let path = path.into();
+    let mut args = vec![lit(path.path)];
+    if let Some(default) = path.default {
+        args.push(default.into_expr());
+    }
+    qdrant_payload_num_udf().call(args)
 }
 
 #[must_use]
-pub fn qdrant_payload_datetime(path: impl Into<String>) -> Expr {
-    qdrant_payload_datetime_udf().call(vec![lit(path.into())])
+pub fn qdrant_payload_datetime(path: impl Into<QdrantPayloadDatetime>) -> Expr {
+    let path = path.into();
+    let mut args = vec![lit(path.path)];
+    if let Some(default) = path.default {
+        args.push(lit(default));
+    }
+    qdrant_payload_datetime_udf().call(args)
 }
 
 #[must_use]
@@ -258,18 +403,18 @@ pub fn qdrant_geo_distance(path: impl Into<String>, lon: f64, lat: f64) -> Expr 
 }
 
 #[must_use]
-pub fn qdrant_exp_decay(x: Expr, scale: f32) -> Expr {
-    qdrant_exp_decay_udf().call(vec![x, lit(scale)])
+pub fn qdrant_exp_decay(x: Expr, decay: QdrantDecay) -> Expr {
+    qdrant_exp_decay_udf().call(decay.into_args(x))
 }
 
 #[must_use]
-pub fn qdrant_gauss_decay(x: Expr, scale: f32) -> Expr {
-    qdrant_gauss_decay_udf().call(vec![x, lit(scale)])
+pub fn qdrant_gauss_decay(x: Expr, decay: QdrantDecay) -> Expr {
+    qdrant_gauss_decay_udf().call(decay.into_args(x))
 }
 
 #[must_use]
-pub fn qdrant_lin_decay(x: Expr, scale: f32) -> Expr {
-    qdrant_lin_decay_udf().call(vec![x, lit(scale)])
+pub fn qdrant_lin_decay(x: Expr, decay: QdrantDecay) -> Expr {
+    qdrant_lin_decay_udf().call(decay.into_args(x))
 }
 
 pub(crate) fn qdrant_formula_score_udf() -> ScalarUDF {

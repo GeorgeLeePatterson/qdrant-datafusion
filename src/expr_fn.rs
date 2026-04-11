@@ -27,6 +27,7 @@ pub use self::formula::{
     CONDITION_FUNCTION_NAME, DATETIME_VALUE_FUNCTION_NAME, EXP_DECAY_FUNCTION_NAME,
     FORMULA_SCORE_FUNCTION_NAME, GAUSS_DECAY_FUNCTION_NAME, GEO_DISTANCE_FUNCTION_NAME,
     LIN_DECAY_FUNCTION_NAME, PAYLOAD_DATETIME_FUNCTION_NAME, PAYLOAD_NUM_FUNCTION_NAME,
+    QdrantDecay, QdrantFormulaNumericDefault, QdrantPayloadDatetime, QdrantPayloadNum,
     qdrant_condition, qdrant_datetime_value, qdrant_exp_decay, qdrant_formula_score,
     qdrant_gauss_decay, qdrant_geo_distance, qdrant_lin_decay, qdrant_payload_datetime,
     qdrant_payload_num,
@@ -38,9 +39,7 @@ pub(crate) use self::formula::{
     qdrant_geo_distance_udf, qdrant_lin_decay_udf, qdrant_payload_datetime_udf,
     qdrant_payload_num_udf,
 };
-pub use self::fusion::{
-    FUSION_SCORE_FUNCTION_NAME, qdrant_fusion_score, qdrant_fusion_score_with_inputs,
-};
+pub use self::fusion::{FUSION_SCORE_FUNCTION_NAME, QdrantFusionMethod, qdrant_fusion_score};
 pub(crate) use self::fusion::{FusionCall, qdrant_fusion_score_udf};
 pub use self::nearest::{
     NEAREST_DOCUMENT_SCORE_FUNCTION_NAME, NEAREST_ID_SCORE_FUNCTION_NAME,
@@ -124,7 +123,7 @@ pub use self::payload_text::{
     qdrant_payload_text_match,
 };
 pub use self::recommend::{
-    RECOMMEND_SCORE_FUNCTION_NAME, qdrant_recommend_score, qdrant_recommend_score_with_strategy,
+    QdrantRecommendStrategy, RECOMMEND_SCORE_FUNCTION_NAME, qdrant_recommend_score,
 };
 pub(crate) use self::recommend::{RecommendCall, qdrant_recommend_score_udf};
 pub use self::relevance_feedback::{

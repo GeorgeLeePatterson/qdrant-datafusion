@@ -262,7 +262,7 @@ Use it to resume work without replaying the full repository history.
 42. `Q-045`: recommend / discover / context are now validated current retrieval relations on the shared operator / kernel architecture.
     - live end-to-end coverage now proves the prepared-session recommend / discover / context surfaces against `Qdrant`
     - recommend now has explicit strategy coverage in addition to the default strategy contract
-    - the public Rust helper surface now includes `qdrant_recommend_score_with_strategy(...)` for the explicit-strategy DataFrame path
+    - the public Rust helper surface now models recommend strategy explicitly instead of requiring stringly strategy helpers
     - docs and tracker state now promote recommend / discover / context from deferred planning inventory to current retrieval prototypes
 43. `Q-046`: nearest-with-MMR and relevance-feedback are now validated current retrieval modifiers on the shared operator / kernel architecture.
     - live end-to-end coverage now proves the prepared-session `qdrant_nearest_with_mmr_score(...)` surface against `Qdrant`
@@ -391,6 +391,11 @@ Use it to resume work without replaying the full repository history.
     - live end-to-end coverage now proves canonical payload-path order-by, order-preserving casts, optional omitted SQL `LIMIT`, and string direction literals on the prepared-session surface
     - the current public boundary stays explicit: descending remote order is the mirrored exact closure, while non-canonical scalar expressions remain by-design unsupported
     - docs now promote `qdrant_order_by_score(...)` into the current query-family inventory instead of leaving it discoverable only through planner tests, and the public Rust helper now takes typed `QdrantOrderByDirection` instead of a boolean flag
+70. `Q-071`: the public Rust helper surface now matches the current admitted helper semantics instead of deferring typed or complete constructors behind raw UDF calls.
+    - `qdrant_recommend_score(...)` now takes typed `QdrantRecommendStrategy`, `qdrant_fusion_score(...)` now takes typed `QdrantFusionMethod`, and Rust `qdrant_sample_score()` is now nullary because `random` is the only admitted sample method today
+    - `qdrant_payload(...)` now takes `DataType` on the Rust side instead of a stringly type hint
+    - `qdrant_payload_num(...)` / `qdrant_payload_datetime(...)` now expose the admitted default-value forms through public helper types instead of requiring raw UDF calls
+    - `qdrant_exp_decay(...)` / `qdrant_gauss_decay(...)` / `qdrant_lin_decay(...)` now expose the admitted target and midpoint forms through the public `QdrantDecay` helper instead of requiring raw UDF calls
 
 ## Next
 
