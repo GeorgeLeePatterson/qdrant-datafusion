@@ -102,7 +102,8 @@ Last updated: 2026-04-09
     - the grouped field must currently be a keyword-, bool-, or lookup-capable integer-indexed payload field
     - exact admitted filters may still participate through the existing predicate algebra
     - this path also requires the `Qdrant` session/planner helper rather than plain `SessionContext`
-    - facet keys still surface as `Utf8`, matching the current textual `payload:<path>` SQL bridge
+    - facet key outputs now follow the authoritative payload scalar type on the current runtime
+      line: keyword as `Utf8`, bool as `Boolean`, and lookup-capable integer as `Int64`
     - broader grouped SQL still localizes because `Qdrant` facet denotes top-N grouped counts, not unconstrained SQL grouping
     - when broader grouped SQL leaves that exact top-facet contract, the plan should fall back to local `DataFusion` execution rather than failing; `HAVING` and window/subquery shells over `GROUP BY payload:<path>` now follow that fallback path
 27. Planner-layer subtree replacement should be owned by one `Qdrant` relation-pushdown analyzer scaffold rather than by independent analyzer rules alone.
@@ -189,6 +190,7 @@ Last updated: 2026-04-09
     - SQL-bearing integration tests in `tests/` should consume shared supported / unsupported query catalogs from `tests/catalog/mod.rs`
     - `tests/e2e.rs` should consume the supported side and `tests/unsupported_e2e.rs` should consume the unsupported side
     - supported and unsupported catalogs should mirror the same semantic grouping structure so capability movement is visible as queries migrate from one side to the other
+    - supported catalog entries should explicitly distinguish `Full` from `LocalFallback`; `LocalFallback` is only for still-meaningful capability gaps and must carry executable plan-shape assertions rather than prose-only notes
     - catalog growth should be SQL-space-first: expand by stretching syntax families, nesting, and expression permutations broadly enough to reveal the unsupported surface, not primarily by enumerating already-known code gaps
     - each major namespace should carry explicit subquery-shaped inventory on both the supported and unsupported sides, so locality-sensitive gaps are reviewable as SQL rather than rediscovered by analyzer audit
     - broader SQL syntax families such as `CTE`, `UNION ALL`, `UNNEST`, `WINDOW`, and non-`FULL OUTER JOIN` composition should appear in the catalogs whenever they materially interact with qdrant admission behavior

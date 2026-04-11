@@ -271,6 +271,9 @@ impl MergeableBranch {
         let State::Source(source_state) = state else {
             return Ok(None);
         };
+        if source_state.has_projected_payload_paths() {
+            return Ok(None);
+        }
         let ids = source_state.filters.exact(&source_state.source)?.possible_point_ids();
         Ok(Some(Self {
             source: source_state.source.clone(),

@@ -168,7 +168,8 @@ Use it to resume work without replaying the full repository history.
       subtree after that child rewrite in the same bottom-up analyzer pass
 31. `Q-034`: The admitted facet slice is now broader without overstating typed payload SQL semantics.
     - top-facet grouped counts now admit keyword, bool, and lookup-capable integer payload indexes
-    - facet keys still surface as `Utf8`, matching the current textual `payload:<path>` SQL bridge
+    - facet key outputs now follow the authoritative payload scalar type on the current runtime
+      line: keyword as `Utf8`, bool as `Boolean`, and lookup-capable integer as `Int64`
     - integer payload metadata now distinguishes `lookup` from `range`, so integer `=` / `IN` pushdown no longer overstates range-only integer indexes
     - live collection introspection on the current runtime line now preserves integer lookup/range metadata well enough to admit integer facet pushdown on the same exact contract
     - this keeps the broadened facet slice exact on the current planner/runtime contract without pretending typed payload projection is already admitted
@@ -396,6 +397,26 @@ Use it to resume work without replaying the full repository history.
     - `qdrant_payload(...)` now takes `DataType` on the Rust side instead of a stringly type hint
     - `qdrant_payload_num(...)` / `qdrant_payload_datetime(...)` now expose the admitted default-value forms through public helper types instead of requiring raw UDF calls
     - `qdrant_exp_decay(...)` / `qdrant_gauss_decay(...)` / `qdrant_lin_decay(...)` now expose the admitted target and midpoint forms through the public `QdrantDecay` helper instead of requiring raw UDF calls
+71. `Q-072`: exact aggregate-like kernels now survive benign payload-alias projection shells instead of localizing immediately.
+    - exact `COUNT(*)` now stays on `Qdrant` through benign payload-alias subquery shells that
+      preserve row count
+    - exact top-facet grouped counts now also stay on `Qdrant` through benign payload-alias
+      subquery / `CTE` shells when the later aggregate still matches the admitted
+      `GROUP BY <aliased payload key> ... LIMIT N` contract
+    - `tests/catalog/mod.rs` now mirrors those exact subquery / `CTE` aggregate shapes directly so
+      the supported inventory shows where exactness continues through broader SQL syntax families
+    - broader grouped SQL that leaves the admitted top-facet contract, including local tie-break
+      ordering or `HAVING`, remains localized rather than being approximated
+72. `Q-073`: the supported SQL catalog now distinguishes fully-admitted behavior from gap-backed local fallback.
+    - `tests/catalog/mod.rs::SqlCase` now carries `SupportedKind::{Full, LocalFallback}` so the
+      supported inventory answers both “does this SQL work?” and “is this still a capability gap?”
+    - `LocalFallback` entries must declare explicit plan-shape markers, and `tests/e2e.rs` now
+      enforces those markers on the shared catalog loops plus the explicit coordination suites
+    - the first classified fallback slice covers broader facet/grouped shapes that localize above
+      exact kernels, broader grouped `DISTINCT ON` that falls back to normal query kernels, and the
+      current aligned-join `fusion` / branch-local `formula` coordination fallbacks
+    - `coordination.formula.right_join` is now exercised live alongside the rest of the explicit
+      formula catalog instead of remaining unconsumed inventory
 
 ## Next
 

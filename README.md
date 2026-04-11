@@ -59,7 +59,10 @@ canonical carrier; missing values are not imputed during scan.
 - exact `COUNT(*)` pushdown over a single `Qdrant` source through the crate's session/planner helper
 - exact top-facet grouped-count pushdown over one scalar `payload:<path>` field through the crate's session/planner helper
   - currently admitted facet fields are keyword, bool, and lookup-capable integer payload indexes
-  - facet keys currently surface as `Utf8`, matching the current textual `payload:<path>` SQL bridge
+  - facet key outputs now follow the authoritative payload scalar type on the current runtime line:
+    keyword as `Utf8`, bool as `Boolean`, and lookup-capable integer as `Int64`
+  - exact `COUNT(*)` and exact top-facet grouped counts now also survive benign payload-alias
+    subquery / `CTE` shells instead of dropping back to local aggregate execution
 - a generic public `QdrantOpNode` / `QdrantOp` layer now exists above the shared kernel family
   for the current query-family retrieval prototypes
 - current exact `COUNT(*)`, scalar facet, and current query-family retrieval slices now lower

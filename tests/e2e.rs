@@ -167,8 +167,32 @@ e2e_test!(
 
 #[cfg(feature = "test-utils")]
 e2e_test!(
+    table_provider_pushes_down_count_through_payload_alias_subquery,
+    tests::test_table_provider_pushes_down_count_through_payload_alias_subquery,
+    TRACING_DIRECTIVES,
+    None
+);
+
+#[cfg(feature = "test-utils")]
+e2e_test!(
     table_provider_pushes_down_keyword_facet,
     tests::test_table_provider_pushes_down_keyword_facet,
+    TRACING_DIRECTIVES,
+    None
+);
+
+#[cfg(feature = "test-utils")]
+e2e_test!(
+    table_provider_pushes_down_keyword_facet_through_payload_alias_subquery,
+    tests::test_table_provider_pushes_down_keyword_facet_through_payload_alias_subquery,
+    TRACING_DIRECTIVES,
+    None
+);
+
+#[cfg(feature = "test-utils")]
+e2e_test!(
+    table_provider_pushes_down_keyword_facet_through_payload_alias_cte,
+    tests::test_table_provider_pushes_down_keyword_facet_through_payload_alias_cte,
     TRACING_DIRECTIVES,
     None
 );
@@ -431,7 +455,7 @@ mod tests {
     use qdrant_datafusion::table::QdrantTableProvider;
     use qdrant_datafusion::test_utils::QdrantContainer;
 
-    use crate::sql_catalog::{SqlCase, supported as sql};
+    use crate::sql_catalog::{SqlCase, SupportedKind, supported as sql};
 
     const SUPPORTED_SCAN_PROJECTION_CASES: &[SqlCase] = &[
         sql::scan::projection::HINTED_PAYLOAD_ARITHMETIC,
@@ -522,6 +546,9 @@ mod tests {
         sql::scan::aggregates::HAVING_LOCAL_TYPED,
         sql::scan::aggregates::HAVING_FACET,
         sql::scan::aggregates::WINDOW_OVER_FACET_SUBQUERY,
+        sql::scan::aggregates::COUNT_PAYLOAD_ALIAS_SUBQUERY_EXACT,
+        sql::scan::aggregates::TAG_FACET_SUBQUERY_EXACT,
+        sql::scan::aggregates::TAG_FACET_CTE_EXACT,
         sql::scan::aggregates::SUBQUERY,
         sql::scan::aggregates::CTE,
     ];
@@ -544,6 +571,67 @@ mod tests {
             assert_eq!(left_id, right_id, "left={left:?}, right={right:?}");
             assert_f32_eq(*left_score, *right_score);
         }
+    }
+
+    fn assert_supported_case_plan_contract(case: SqlCase, display: &str) {
+        if case.kind != SupportedKind::LocalFallback {
+            return;
+        }
+
+        assert!(
+            !case.plan_must_contain_all.is_empty()
+                || !case.plan_must_contain_any.is_empty()
+                || !case.plan_must_not_contain.is_empty(),
+            "case={} kind={} is missing fallback plan markers",
+            case.id,
+            case.kind.label(),
+        );
+
+        for needle in case.plan_must_contain_all {
+            assert!(
+                display.contains(needle),
+                "case={} kind={} missing required plan marker={} display={display}",
+                case.id,
+                case.kind.label(),
+                needle,
+            );
+        }
+        if !case.plan_must_contain_any.is_empty() {
+            assert!(
+                case.plan_must_contain_any.iter().any(|needle| display.contains(needle)),
+                "case={} kind={} missing any-of plan markers={:?} display={display}",
+                case.id,
+                case.kind.label(),
+                case.plan_must_contain_any,
+            );
+        }
+        for needle in case.plan_must_not_contain {
+            assert!(
+                !display.contains(needle),
+                "case={} kind={} unexpectedly contained forbidden plan marker={} display={display}",
+                case.id,
+                case.kind.label(),
+                needle,
+            );
+        }
+    }
+
+    fn assert_supported_case_plan_contracts(cases: &[(SqlCase, &str)]) {
+        for (case, display) in cases {
+            assert_supported_case_plan_contract(*case, display);
+        }
+    }
+
+    fn assert_remote_prefetch_display(display: &str) {
+        assert_eq!(display.matches("QdrantQueryExec").count(), 1, "{display}");
+        assert!(display.contains("prefetch=2"), "{display}");
+        assert!(!display.contains("JoinExec"), "{display}");
+        assert!(!display.contains("HashJoinExec"), "{display}");
+    }
+
+    fn assert_local_join_display(display: &str) {
+        assert_eq!(display.matches("QdrantQueryExec").count(), 2, "{display}");
+        assert!(display.contains("JoinExec") || display.contains("HashJoinExec"), "{display}");
     }
 
     async fn assert_supported_scan_catalog_case(
@@ -572,6 +660,7 @@ mod tests {
             case.id,
             case.sql,
         );
+        assert_supported_case_plan_contract(case, &display);
         Ok(())
     }
 
@@ -982,6 +1071,42 @@ error: {err}"
         })?;
         let rows =
             batches.iter().flat_map(|batch| batch_i64_values(batch, column)).collect::<Vec<_>>();
+        Ok((rows, display))
+    }
+
+    async fn collect_string_i64_rows(
+        ctx: &QdrantSessionContext,
+        sql: &str,
+        string_column: &str,
+        int_column: &str,
+    ) -> Result<(Vec<(String, i64)>, String)> {
+        let dataframe = ctx.sql(sql).await?;
+        let plan = dataframe.clone().create_physical_plan().await?;
+        let display =
+            datafusion::physical_plan::displayable(plan.as_ref()).indent(true).to_string();
+        let batches = dataframe.collect().await.map_err(|err| {
+            datafusion::error::DataFusionError::Execution(format!(
+                "failed to collect SQL `{sql}` with physical plan:\n{display}\nerror: {err}"
+            ))
+        })?;
+        let rows = batches
+            .iter()
+            .flat_map(|batch| {
+                let strings = batch
+                    .column(batch.schema().index_of(string_column).expect("string column"))
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .expect("string array");
+                let ints = batch
+                    .column(batch.schema().index_of(int_column).expect("int64 column"))
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .expect("int64 array");
+                (0..batch.num_rows())
+                    .map(|row| (strings.value(row).to_owned(), ints.value(row)))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
         Ok((rows, display))
     }
 
@@ -1813,6 +1938,7 @@ error: {err}"
                 ))
             })?;
         assert!(display.contains("DataSinkExec"), "case={} display={display}", case.id);
+        assert_supported_case_plan_contract(case, &display);
 
         let ranks = ctx.sql(sql::scan::projection::INSERT_VERIFY.sql).await?.collect().await?;
         let rank_batch = ranks.into_iter().next().expect("rank batch");
@@ -1858,6 +1984,7 @@ error: {err}"
                 ))
             })?;
         assert!(display.contains("DataSinkExec"), "case={} display={display}", case.id);
+        assert_supported_case_plan_contract(case, &display);
 
         let ranks = ctx.sql(sql::scan::projection::INSERT_VERIFY.sql).await?.collect().await?;
         let rank_batch = ranks.into_iter().next().expect("rank batch");
@@ -1898,6 +2025,7 @@ error: {err}"
                 ))
             })?;
         assert!(display.contains("DataSinkExec"), "case={} display={display}", case.id);
+        assert_supported_case_plan_contract(case, &display);
 
         let ranks = ctx.sql(sql::scan::projection::INSERT_VERIFY.sql).await?.collect().await?;
         let rank_batch = ranks.into_iter().next().expect("rank batch");
@@ -1935,6 +2063,7 @@ error: {err}"
                 ))
             })?;
         assert!(display.contains("QdrantDeleteExec"), "case={} display={display}", case.id);
+        assert_supported_case_plan_contract(case, &display);
 
         let delete_batch = batches.into_iter().next().expect("delete result batch");
         let remaining = ctx.sql(sql::scan::projection::INSERT_VERIFY.sql).await?.collect().await?;
@@ -1979,6 +2108,7 @@ error: {err}"
                 ))
             })?;
         assert!(display.contains("QdrantUpdateExec"), "case={} display={display}", case.id);
+        assert_supported_case_plan_contract(case, &display);
 
         let update_batch = batches.into_iter().next().expect("update result batch");
         let remaining = ctx.sql(sql::scan::projection::INSERT_VERIFY.sql).await?.collect().await?;
@@ -2884,6 +3014,7 @@ error: {err}"
                 case.id,
                 case.sql,
             );
+            assert_supported_case_plan_contract(*case, &display);
         }
 
         Ok(())
@@ -2921,6 +3052,7 @@ error: {err}"
                     || display.contains("NestedLoopJoinExec"),
                 "{display}"
             );
+            assert_supported_case_plan_contract(*case, &display);
         }
         for case in sql::query::order_by::ALL {
             let (_batches, display) =
@@ -2936,6 +3068,7 @@ error: {err}"
                     || display.contains("SortExec"),
                 "{display}"
             );
+            assert_supported_case_plan_contract(*case, &display);
         }
         for case in sql::query::recommend::ALL
             .iter()
@@ -2960,6 +3093,7 @@ error: {err}"
                     || display.contains("NestedLoopJoinExec"),
                 "{display}"
             );
+            assert_supported_case_plan_contract(*case, &display);
         }
         for case in sql::query::grouped::ALL {
             let (_batches, display) =
@@ -2975,6 +3109,7 @@ error: {err}"
                     || display.contains("WindowAggExec"),
                 "{display}"
             );
+            assert_supported_case_plan_contract(*case, &display);
         }
 
         Ok(())
@@ -3178,31 +3313,35 @@ error: {err}"
         let ctx =
             create_dual_vector_query_context(&c, "test_coordinated_formula_sql_variants").await?;
 
-        let without_limit_sql = sql::coordination::formula::WITHOUT_LIMIT.sql;
-        let canonical_sql = sql::coordination::formula::CANONICAL.sql;
-        let alias_wrapped_sql = sql::coordination::formula::ALIAS_WRAPPED.sql;
-        let redundant_sort_sql = sql::coordination::formula::REDUNDANT_SORT.sql;
-        let alias_threaded_sql = sql::coordination::formula::ALIAS_THREADING.sql;
-        let sort_only_sql = sql::coordination::formula::SORT_ONLY.sql;
-        let left_join_sql = sql::coordination::formula::LEFT_JOIN.sql;
-        let cross_join_sql = sql::coordination::formula::CROSS_JOIN.sql;
-        let inner_join_qdrant_leaf_sql =
-            sql::coordination::formula::INNER_JOIN_QDRANT_ONLY_LEAF.sql;
+        let without_limit_case = sql::coordination::formula::WITHOUT_LIMIT;
+        let canonical_case = sql::coordination::formula::CANONICAL;
+        let alias_wrapped_case = sql::coordination::formula::ALIAS_WRAPPED;
+        let redundant_sort_case = sql::coordination::formula::REDUNDANT_SORT;
+        let alias_threaded_case = sql::coordination::formula::ALIAS_THREADING;
+        let sort_only_case = sql::coordination::formula::SORT_ONLY;
+        let left_join_case = sql::coordination::formula::LEFT_JOIN;
+        let cross_join_case = sql::coordination::formula::CROSS_JOIN;
+        let right_join_case = sql::coordination::formula::RIGHT_JOIN;
+        let inner_join_qdrant_leaf_case = sql::coordination::formula::INNER_JOIN_QDRANT_ONLY_LEAF;
 
         let (without_limit_rows, without_limit_display) =
-            collect_scored_rows(&ctx, without_limit_sql).await?;
-        let (canonical_rows, canonical_display) = collect_scored_rows(&ctx, canonical_sql).await?;
-        let (alias_rows, alias_display) = collect_scored_rows(&ctx, alias_wrapped_sql).await?;
+            collect_scored_rows(&ctx, without_limit_case.sql).await?;
+        let (canonical_rows, canonical_display) =
+            collect_scored_rows(&ctx, canonical_case.sql).await?;
+        let (alias_rows, alias_display) = collect_scored_rows(&ctx, alias_wrapped_case.sql).await?;
         let (redundant_sort_rows, redundant_sort_display) =
-            collect_scored_rows(&ctx, redundant_sort_sql).await?;
+            collect_scored_rows(&ctx, redundant_sort_case.sql).await?;
         let (alias_threaded_rows, alias_threaded_display) =
-            collect_scored_rows(&ctx, alias_threaded_sql).await?;
-        let (sort_only_rows, sort_only_display) = collect_id_rows(&ctx, sort_only_sql).await?;
-        let (left_join_rows, left_join_display) = collect_scored_rows(&ctx, left_join_sql).await?;
+            collect_scored_rows(&ctx, alias_threaded_case.sql).await?;
+        let (sort_only_rows, sort_only_display) = collect_id_rows(&ctx, sort_only_case.sql).await?;
+        let (left_join_rows, left_join_display) =
+            collect_scored_rows(&ctx, left_join_case.sql).await?;
         let (cross_join_rows, cross_join_display) =
-            collect_scored_rows(&ctx, cross_join_sql).await?;
+            collect_scored_rows(&ctx, cross_join_case.sql).await?;
+        let (right_join_rows, right_join_display) =
+            collect_scored_rows(&ctx, right_join_case.sql).await?;
         let (inner_join_qdrant_leaf_rows, inner_join_qdrant_leaf_display) =
-            collect_scored_rows(&ctx, inner_join_qdrant_leaf_sql).await?;
+            collect_scored_rows(&ctx, inner_join_qdrant_leaf_case.sql).await?;
 
         assert_eq!(without_limit_rows.iter().map(|(id, _)| *id).collect::<Vec<_>>(), vec![1, 2, 3]);
         assert_f32_eq(without_limit_rows[0].1, 2.0);
@@ -3212,6 +3351,7 @@ error: {err}"
         assert_scored_rows_eq(&canonical_rows, &redundant_sort_rows);
         assert_scored_rows_eq(&canonical_rows, &alias_threaded_rows);
         assert_scored_rows_eq(&canonical_rows, &left_join_rows);
+        assert_scored_rows_eq(&canonical_rows, &right_join_rows);
         assert_eq!(sort_only_rows, canonical_rows.iter().map(|(id, _)| *id).collect::<Vec<_>>(),);
         assert_eq!(cross_join_rows.iter().map(|(id, _)| *id).collect::<Vec<_>>(), vec![1, 1]);
         assert_f32_eq(cross_join_rows[0].1, 2.0);
@@ -3223,30 +3363,17 @@ error: {err}"
         assert_f32_eq(inner_join_qdrant_leaf_rows[0].1, 2.0);
         assert_f32_eq(inner_join_qdrant_leaf_rows[1].1, 1.4);
 
-        assert_eq!(
-            without_limit_display.matches("QdrantQueryExec").count(),
-            1,
-            "{without_limit_display}"
-        );
-        assert!(without_limit_display.contains("prefetch=2"), "{without_limit_display}");
-        assert!(!without_limit_display.contains("JoinExec"), "{without_limit_display}");
-        assert!(!without_limit_display.contains("HashJoinExec"), "{without_limit_display}");
+        assert_remote_prefetch_display(&without_limit_display);
 
         for display in
             [&canonical_display, &alias_display, &redundant_sort_display, &alias_threaded_display]
         {
-            assert_eq!(display.matches("QdrantQueryExec").count(), 1, "{display}");
-            assert!(display.contains("prefetch=2"), "{display}");
-            assert!(!display.contains("JoinExec"), "{display}");
-            assert!(!display.contains("HashJoinExec"), "{display}");
+            assert_remote_prefetch_display(display);
         }
 
-        assert_eq!(sort_only_display.matches("QdrantQueryExec").count(), 1, "{sort_only_display}");
-        assert!(sort_only_display.contains("prefetch=2"), "{sort_only_display}");
-        assert!(!sort_only_display.contains("JoinExec"), "{sort_only_display}");
-        assert!(!sort_only_display.contains("HashJoinExec"), "{sort_only_display}");
-        assert_eq!(left_join_display.matches("QdrantQueryExec").count(), 2, "{left_join_display}");
-        assert!(left_join_display.contains("HashJoinExec"), "{left_join_display}");
+        assert_remote_prefetch_display(&sort_only_display);
+        assert_local_join_display(&left_join_display);
+        assert_local_join_display(&right_join_display);
         assert_eq!(
             cross_join_display.matches("QdrantQueryExec").count(),
             2,
@@ -3267,6 +3394,18 @@ error: {err}"
             inner_join_qdrant_leaf_display.contains("__qdrant_formula_score"),
             "{inner_join_qdrant_leaf_display}"
         );
+        assert_supported_case_plan_contracts(&[
+            (without_limit_case, &without_limit_display),
+            (canonical_case, &canonical_display),
+            (alias_wrapped_case, &alias_display),
+            (redundant_sort_case, &redundant_sort_display),
+            (alias_threaded_case, &alias_threaded_display),
+            (sort_only_case, &sort_only_display),
+            (left_join_case, &left_join_display),
+            (cross_join_case, &cross_join_display),
+            (right_join_case, &right_join_display),
+            (inner_join_qdrant_leaf_case, &inner_join_qdrant_leaf_display),
+        ]);
 
         Ok(())
     }
@@ -3274,42 +3413,44 @@ error: {err}"
     pub(super) async fn test_explicit_fusion_sql_variants(c: Arc<QdrantContainer>) -> Result<()> {
         let ctx = create_dual_vector_query_context(&c, "test_explicit_fusion_sql_variants").await?;
 
-        let without_limit_sql = sql::coordination::fusion::WITHOUT_LIMIT.sql;
-        let canonical_sql = sql::coordination::fusion::CANONICAL.sql;
-        let alias_wrapped_sql = sql::coordination::fusion::ALIAS_WRAPPED.sql;
-        let alias_threaded_sql = sql::coordination::fusion::ALIAS_THREADING.sql;
-        let inner_join_sql = sql::coordination::fusion::INNER_JOIN.sql;
-        let left_join_sql = sql::coordination::fusion::LEFT_JOIN.sql;
-        let right_join_sql = sql::coordination::fusion::RIGHT_JOIN.sql;
+        let without_limit_case = sql::coordination::fusion::WITHOUT_LIMIT;
+        let canonical_case = sql::coordination::fusion::CANONICAL;
+        let alias_wrapped_case = sql::coordination::fusion::ALIAS_WRAPPED;
+        let alias_threaded_case = sql::coordination::fusion::ALIAS_THREADING;
+        let inner_join_case = sql::coordination::fusion::INNER_JOIN;
+        let left_join_case = sql::coordination::fusion::LEFT_JOIN;
+        let right_join_case = sql::coordination::fusion::RIGHT_JOIN;
         let dbsf_canonical_sql =
             "SELECT id, qdrant_fusion_score('DBSF', dense.score, sparse.score) AS score FROM \
              (SELECT id, qdrant_nearest_score(embedding, 1.0, 0.0) AS score FROM vectors ORDER BY \
              score DESC LIMIT 5) dense FULL OUTER JOIN (SELECT id, qdrant_nearest_score(aux, 0.0, \
              1.0) AS score FROM vectors ORDER BY score DESC LIMIT 5) sparse USING (id) ORDER BY \
              score DESC LIMIT 2";
-        let dbsf_inner_join_sql = sql::coordination::fusion::DBSF_INNER_JOIN.sql;
-        let dbsf_left_join_sql = sql::coordination::fusion::DBSF_LEFT_JOIN.sql;
-        let dbsf_right_join_sql = sql::coordination::fusion::DBSF_RIGHT_JOIN.sql;
+        let dbsf_inner_join_case = sql::coordination::fusion::DBSF_INNER_JOIN;
+        let dbsf_left_join_case = sql::coordination::fusion::DBSF_LEFT_JOIN;
+        let dbsf_right_join_case = sql::coordination::fusion::DBSF_RIGHT_JOIN;
 
         let (without_limit_rows, without_limit_display) =
-            collect_scored_rows(&ctx, without_limit_sql).await?;
-        let (canonical_rows, canonical_display) = collect_scored_rows(&ctx, canonical_sql).await?;
-        let (alias_rows, alias_display) = collect_scored_rows(&ctx, alias_wrapped_sql).await?;
+            collect_scored_rows(&ctx, without_limit_case.sql).await?;
+        let (canonical_rows, canonical_display) =
+            collect_scored_rows(&ctx, canonical_case.sql).await?;
+        let (alias_rows, alias_display) = collect_scored_rows(&ctx, alias_wrapped_case.sql).await?;
         let (alias_threaded_rows, alias_threaded_display) =
-            collect_scored_rows(&ctx, alias_threaded_sql).await?;
+            collect_scored_rows(&ctx, alias_threaded_case.sql).await?;
         let (inner_join_rows, inner_join_display) =
-            collect_scored_rows(&ctx, inner_join_sql).await?;
-        let (left_join_rows, left_join_display) = collect_scored_rows(&ctx, left_join_sql).await?;
+            collect_scored_rows(&ctx, inner_join_case.sql).await?;
+        let (left_join_rows, left_join_display) =
+            collect_scored_rows(&ctx, left_join_case.sql).await?;
         let (right_join_rows, right_join_display) =
-            collect_scored_rows(&ctx, right_join_sql).await?;
+            collect_scored_rows(&ctx, right_join_case.sql).await?;
         let (dbsf_canonical_rows, dbsf_canonical_display) =
             collect_scored_rows(&ctx, dbsf_canonical_sql).await?;
         let (dbsf_inner_join_rows, dbsf_inner_join_display) =
-            collect_scored_rows(&ctx, dbsf_inner_join_sql).await?;
+            collect_scored_rows(&ctx, dbsf_inner_join_case.sql).await?;
         let (dbsf_left_join_rows, dbsf_left_join_display) =
-            collect_scored_rows(&ctx, dbsf_left_join_sql).await?;
+            collect_scored_rows(&ctx, dbsf_left_join_case.sql).await?;
         let (dbsf_right_join_rows, dbsf_right_join_display) =
-            collect_scored_rows(&ctx, dbsf_right_join_sql).await?;
+            collect_scored_rows(&ctx, dbsf_right_join_case.sql).await?;
 
         assert_eq!(without_limit_rows.iter().map(|(id, _)| *id).collect::<Vec<_>>(), vec![1, 2, 3]);
         assert_f32_eq(without_limit_rows[0].1, canonical_rows[0].1);
@@ -3331,10 +3472,7 @@ error: {err}"
             &alias_threaded_display,
             &dbsf_canonical_display,
         ] {
-            assert_eq!(display.matches("QdrantQueryExec").count(), 1, "{display}");
-            assert!(display.contains("prefetch=2"), "{display}");
-            assert!(!display.contains("JoinExec"), "{display}");
-            assert!(!display.contains("HashJoinExec"), "{display}");
+            assert_remote_prefetch_display(display);
         }
         for display in [
             &inner_join_display,
@@ -3344,10 +3482,21 @@ error: {err}"
             &dbsf_left_join_display,
             &dbsf_right_join_display,
         ] {
-            assert_eq!(display.matches("QdrantQueryExec").count(), 2, "{display}");
-            assert!(display.contains("JoinExec") || display.contains("HashJoinExec"), "{display}");
+            assert_local_join_display(display);
             assert!(!display.contains("prefetch=2"), "{display}");
         }
+        assert_supported_case_plan_contracts(&[
+            (without_limit_case, &without_limit_display),
+            (canonical_case, &canonical_display),
+            (alias_wrapped_case, &alias_display),
+            (alias_threaded_case, &alias_threaded_display),
+            (inner_join_case, &inner_join_display),
+            (left_join_case, &left_join_display),
+            (right_join_case, &right_join_display),
+            (dbsf_inner_join_case, &dbsf_inner_join_display),
+            (dbsf_left_join_case, &dbsf_left_join_display),
+            (dbsf_right_join_case, &dbsf_right_join_display),
+        ]);
 
         Ok(())
     }
@@ -3851,6 +4000,25 @@ error: {err}"
         Ok(())
     }
 
+    pub(super) async fn test_table_provider_pushes_down_count_through_payload_alias_subquery(
+        c: Arc<QdrantContainer>,
+    ) -> Result<()> {
+        let ctx =
+            create_catalog_scan_context(&c, "test_count_payload_alias_subquery_exact").await?;
+        let (values, display) = collect_i64_rows(
+            &ctx,
+            sql::scan::aggregates::COUNT_PAYLOAD_ALIAS_SUBQUERY_EXACT.sql,
+            "total",
+        )
+        .await?;
+
+        assert_eq!(values, vec![2], "{display}");
+        assert!(display.contains("QdrantCountExec"), "{display}");
+        assert!(!display.contains("AggregateExec"), "{display}");
+
+        Ok(())
+    }
+
     pub(super) async fn test_table_provider_pushes_down_keyword_facet(
         c: Arc<QdrantContainer>,
     ) -> Result<()> {
@@ -3924,6 +4092,51 @@ error: {err}"
             .collect::<Vec<_>>();
 
         assert_eq!(rows, vec![("red".to_owned(), 2), ("blue".to_owned(), 1)]);
+        assert!(display.contains("QdrantFacetExec"), "{display}");
+        assert!(!display.contains("AggregateExec"), "{display}");
+        assert!(!display.contains("SortExec"), "{display}");
+        assert!(!display.contains("GlobalLimitExec"), "{display}");
+        assert!(!display.contains("LocalLimitExec"), "{display}");
+
+        Ok(())
+    }
+
+    pub(super) async fn test_table_provider_pushes_down_keyword_facet_through_payload_alias_subquery(
+        c: Arc<QdrantContainer>,
+    ) -> Result<()> {
+        let ctx =
+            create_catalog_scan_context(&c, "test_tag_facet_payload_alias_subquery_exact").await?;
+        let (rows, display) = collect_string_i64_rows(
+            &ctx,
+            sql::scan::aggregates::TAG_FACET_SUBQUERY_EXACT.sql,
+            "tag",
+            "total",
+        )
+        .await?;
+
+        assert_eq!(rows, vec![("blue".to_owned(), 2), ("red".to_owned(), 1)], "{display}");
+        assert!(display.contains("QdrantFacetExec"), "{display}");
+        assert!(!display.contains("AggregateExec"), "{display}");
+        assert!(!display.contains("SortExec"), "{display}");
+        assert!(!display.contains("GlobalLimitExec"), "{display}");
+        assert!(!display.contains("LocalLimitExec"), "{display}");
+
+        Ok(())
+    }
+
+    pub(super) async fn test_table_provider_pushes_down_keyword_facet_through_payload_alias_cte(
+        c: Arc<QdrantContainer>,
+    ) -> Result<()> {
+        let ctx = create_catalog_scan_context(&c, "test_tag_facet_payload_alias_cte_exact").await?;
+        let (rows, display) = collect_string_i64_rows(
+            &ctx,
+            sql::scan::aggregates::TAG_FACET_CTE_EXACT.sql,
+            "tag",
+            "total",
+        )
+        .await?;
+
+        assert_eq!(rows, vec![("blue".to_owned(), 2), ("red".to_owned(), 1)], "{display}");
         assert!(display.contains("QdrantFacetExec"), "{display}");
         assert!(!display.contains("AggregateExec"), "{display}");
         assert!(!display.contains("SortExec"), "{display}");

@@ -1,8 +1,9 @@
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use datafusion::arrow::datatypes::DataType;
 use datafusion::common::{Result, plan_err};
 use datafusion::datasource::source_as_provider;
-use datafusion::logical_expr::expr::Alias;
 use datafusion::logical_expr::{Distinct, Expr, LogicalPlan};
 
 use super::{FiltersState, KernelState, ProcessingState, State};
@@ -11,13 +12,15 @@ use crate::analyzer::op::{FacetOp, Op, OutputNames};
 use crate::analyzer::payload::rewrite_typed_payload_plan;
 use crate::analyzer::source::Source;
 use crate::analyzer::surface::SurfaceCall;
+use crate::qdrant::QdrantPayloadPath;
 use crate::qdrant::filter::QdrantFilters;
 use crate::table::QdrantTableProvider;
 
 #[derive(Debug, Clone)]
 pub(crate) struct SourceState {
-    pub(crate) source:  Source,
-    pub(crate) filters: FiltersState,
+    pub(crate) source:       Source,
+    pub(crate) filters:      FiltersState,
+    projected_payload_paths: BTreeMap<String, QdrantPayloadPath>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,41 +28,6 @@ pub(crate) enum AggregateSurface {
     Local,
     Count,
     Facet(FacetOp),
-}
-
-impl AggregateSurface {
-    fn of(plan: &LogicalPlan, source: &Source) -> Result<Self> {
-        let LogicalPlan::Aggregate(aggregate) = plan else {
-            return plan_err!("prototype aggregate state mismatch");
-        };
-        if aggregate.group_expr.is_empty()
-            && aggregate.aggr_expr.len() == 1
-            && crate::analyzer::common::count_star_like(&aggregate.aggr_expr[0])
-        {
-            return Ok(Self::Count);
-        }
-        if aggregate.group_expr.len() != 1
-            || aggregate.aggr_expr.len() != 1
-            || !crate::analyzer::common::count_star_like(&aggregate.aggr_expr[0])
-        {
-            return Ok(Self::Local);
-        }
-        let Some(field) = source.payload_schema.path_for_logical_expr(&aggregate.group_expr[0])
-        else {
-            return Ok(Self::Local);
-        };
-        let Some(field_type) = source.payload_schema.field_for_path(field.key()) else {
-            return Ok(Self::Local);
-        };
-        if !field_type.supports_facet() {
-            return Ok(Self::Local);
-        }
-        Ok(Self::Facet(FacetOp {
-            field,
-            key_outputs: OutputNames::single(aggregate.schema.field(0).name().clone()),
-            count_outputs: OutputNames::single(aggregate.schema.field(1).name().clone()),
-        }))
-    }
 }
 
 impl SourceState {
@@ -70,14 +38,15 @@ impl SourceState {
         let schema = provider.schema();
         let provider = provider.as_any().downcast_ref::<QdrantTableProvider>()?;
         Some(Self {
-            source:  Source {
+            source:                  Source {
                 client: Arc::clone(provider.client()),
                 collection: provider.collection().to_owned(),
                 schema,
                 payload_schema: Arc::clone(provider.payload_schema()),
                 ordered_scroll_contract: provider.ordered_scroll_contract(),
             },
-            filters: FiltersState::default(),
+            filters:                 FiltersState::default(),
+            projected_payload_paths: BTreeMap::new(),
         })
     }
 
@@ -96,12 +65,18 @@ impl SourceState {
             transformed = true;
         }
         if let LogicalPlan::Projection(projection) = &plan
-            && projection.expr.iter().all(|expr| {
-                matches!(expr.clone().unalias_nested().data, Expr::Column(_))
-                    || matches!(expr, Expr::Alias(Alias { expr, .. }) if matches!(expr.clone().unalias_nested().data, Expr::Column(_)))
-            })
+            && let Some(projected_payload_paths) =
+                self.projected_payload_paths(&projection.expr, &projection.schema)
         {
-            return Ok(super::super::Analysis::new(plan, State::Source(self), transformed));
+            return Ok(super::super::Analysis::new(
+                plan,
+                State::Source(Self {
+                    source: self.source,
+                    filters: self.filters,
+                    projected_payload_paths,
+                }),
+                transformed,
+            ));
         }
         self.localize(plan, transformed)
     }
@@ -126,7 +101,11 @@ impl SourceState {
             let filters = self.filters.push(filter.predicate.clone());
             return Ok(super::super::Analysis::new(
                 plan,
-                State::Source(Self { source: self.source, filters }),
+                State::Source(Self {
+                    source: self.source,
+                    filters,
+                    projected_payload_paths: self.projected_payload_paths,
+                }),
                 transformed,
             ));
         }
@@ -161,7 +140,7 @@ impl SourceState {
         if let Some(surface) = SurfaceCall::collect(&plan.expressions())? {
             return self.open(surface)?.aggregate(plan, transformed);
         }
-        match AggregateSurface::of(&plan, &self.source)? {
+        match AggregateSurface::of(&plan, &self)? {
             AggregateSurface::Local => self.localize(plan, transformed),
             AggregateSurface::Count => {
                 let exact_filters = self.filters.exact(&self.source)?;
@@ -214,4 +193,98 @@ impl SourceState {
         }
         Ok(super::super::Analysis::new(plan, State::local(), transformed))
     }
+
+    fn projected_payload_paths(
+        &self,
+        exprs: &[Expr],
+        schema: &datafusion::common::DFSchemaRef,
+    ) -> Option<BTreeMap<String, QdrantPayloadPath>> {
+        let mut projected_payload_paths = BTreeMap::new();
+        for (index, expr) in exprs.iter().enumerate() {
+            let name = schema.field(index).name().clone();
+            if let Some(path) = self.payload_path_for_expr(expr) {
+                drop(projected_payload_paths.insert(name, path));
+                continue;
+            }
+            if !projection_passthrough_column(expr) {
+                return None;
+            }
+        }
+        Some(projected_payload_paths)
+    }
+
+    fn payload_path_for_expr(&self, expr: &Expr) -> Option<QdrantPayloadPath> {
+        self.source
+            .payload_schema
+            .path_for_logical_expr(expr)
+            .or_else(|| self.projected_payload_path_for_expr(expr))
+    }
+
+    fn projected_payload_path_for_expr(&self, expr: &Expr) -> Option<QdrantPayloadPath> {
+        match expr {
+            Expr::Alias(alias) => self.projected_payload_path_for_expr(&alias.expr),
+            Expr::Column(column) => self.projected_payload_paths.get(&column.name).cloned(),
+            Expr::Cast(cast) => {
+                self.projected_payload_path_for_cast(&cast.expr, cast.field.data_type())
+            }
+            Expr::TryCast(cast) => {
+                self.projected_payload_path_for_cast(&cast.expr, cast.field.data_type())
+            }
+            _ => None,
+        }
+    }
+
+    fn projected_payload_path_for_cast(
+        &self,
+        expr: &Expr,
+        data_type: &DataType,
+    ) -> Option<QdrantPayloadPath> {
+        let path = self.projected_payload_path_for_expr(expr)?;
+        self.source
+            .payload_field(path.key())
+            .is_some_and(|field| field.supports_exact_payload_cast(data_type))
+            .then_some(path)
+    }
+
+    pub(crate) fn has_projected_payload_paths(&self) -> bool {
+        !self.projected_payload_paths.is_empty()
+    }
+}
+
+impl AggregateSurface {
+    fn of(plan: &LogicalPlan, state: &SourceState) -> Result<Self> {
+        let LogicalPlan::Aggregate(aggregate) = plan else {
+            return plan_err!("prototype aggregate state mismatch");
+        };
+        if aggregate.group_expr.is_empty()
+            && aggregate.aggr_expr.len() == 1
+            && crate::analyzer::common::count_star_like(&aggregate.aggr_expr[0])
+        {
+            return Ok(Self::Count);
+        }
+        if aggregate.group_expr.len() != 1
+            || aggregate.aggr_expr.len() != 1
+            || !crate::analyzer::common::count_star_like(&aggregate.aggr_expr[0])
+        {
+            return Ok(Self::Local);
+        }
+        let Some(field) = state.payload_path_for_expr(&aggregate.group_expr[0]) else {
+            return Ok(Self::Local);
+        };
+        let Some(field_type) = state.source.payload_schema.field_for_path(field.key()) else {
+            return Ok(Self::Local);
+        };
+        if !field_type.supports_facet() {
+            return Ok(Self::Local);
+        }
+        Ok(Self::Facet(FacetOp {
+            field,
+            key_outputs: OutputNames::single(aggregate.schema.field(0).name().clone()),
+            count_outputs: OutputNames::single(aggregate.schema.field(1).name().clone()),
+        }))
+    }
+}
+
+fn projection_passthrough_column(expr: &Expr) -> bool {
+    matches!(expr.clone().unalias_nested().data, Expr::Column(_))
 }

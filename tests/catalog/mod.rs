@@ -11,13 +11,58 @@
 // side to the other.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SupportedKind {
+    Full,
+    LocalFallback,
+}
+
+impl SupportedKind {
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Full => "full",
+            Self::LocalFallback => "local_fallback",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SqlCase {
-    pub(crate) id:  &'static str,
-    pub(crate) sql: &'static str,
+    pub(crate) id:                    &'static str,
+    pub(crate) sql:                   &'static str,
+    pub(crate) kind:                  SupportedKind,
+    pub(crate) plan_must_contain_all: &'static [&'static str],
+    pub(crate) plan_must_contain_any: &'static [&'static str],
+    pub(crate) plan_must_not_contain: &'static [&'static str],
 }
 
 impl SqlCase {
-    pub(crate) const fn new(id: &'static str, sql: &'static str) -> Self { Self { id, sql } }
+    pub(crate) const fn new(id: &'static str, sql: &'static str) -> Self {
+        Self {
+            id,
+            sql,
+            kind: SupportedKind::Full,
+            plan_must_contain_all: &[],
+            plan_must_contain_any: &[],
+            plan_must_not_contain: &[],
+        }
+    }
+
+    pub(crate) const fn local_fallback(
+        id: &'static str,
+        sql: &'static str,
+        plan_must_contain_all: &'static [&'static str],
+        plan_must_contain_any: &'static [&'static str],
+        plan_must_not_contain: &'static [&'static str],
+    ) -> Self {
+        Self {
+            id,
+            sql,
+            kind: SupportedKind::LocalFallback,
+            plan_must_contain_all,
+            plan_must_contain_any,
+            plan_must_not_contain,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -966,21 +1011,45 @@ pub(crate) mod supported {
                 "SELECT payload:tag AS tag, COUNT(*) AS total FROM vectors GROUP BY payload:tag \
                  LIMIT 2",
             );
-            pub(crate) const TAG_GROUP_LOCAL: SqlCase = SqlCase::new(
+            pub(crate) const COUNT_PAYLOAD_ALIAS_SUBQUERY_EXACT: SqlCase = SqlCase::new(
+                "scan.aggregates.count_payload_alias_subquery_exact",
+                "SELECT COUNT(*) AS total FROM (SELECT payload:tag AS tag FROM vectors WHERE \
+                 payload:rank >= 20) tagged",
+            );
+            pub(crate) const TAG_FACET_SUBQUERY_EXACT: SqlCase = SqlCase::new(
+                "scan.aggregates.tag_facet_subquery_exact",
+                "SELECT tag, COUNT(*) AS total FROM (SELECT payload:tag AS tag FROM vectors) \
+                 grouped GROUP BY tag ORDER BY total DESC LIMIT 2",
+            );
+            pub(crate) const TAG_FACET_CTE_EXACT: SqlCase = SqlCase::new(
+                "scan.aggregates.tag_facet_cte_exact",
+                "WITH base AS (SELECT payload:tag AS tag FROM vectors) SELECT tag, COUNT(*) AS \
+                 total FROM base GROUP BY tag ORDER BY total DESC LIMIT 2",
+            );
+            pub(crate) const TAG_GROUP_LOCAL: SqlCase = SqlCase::local_fallback(
                 "scan.aggregates.tag_group_local",
                 "SELECT payload:tag AS tag, COUNT(*) AS total FROM vectors GROUP BY payload:tag \
                  ORDER BY total DESC, tag",
+                &["AggregateExec", "SortExec"],
+                &[],
+                &["QdrantFacetExec"],
             );
-            pub(crate) const HAVING_FACET: SqlCase = SqlCase::new(
+            pub(crate) const HAVING_FACET: SqlCase = SqlCase::local_fallback(
                 "scan.aggregates.having_facet",
                 "SELECT payload:tag AS tag, COUNT(*) AS total FROM vectors GROUP BY payload:tag \
                  HAVING COUNT(*) >= 1 ORDER BY total DESC, tag",
+                &["AggregateExec", "FilterExec"],
+                &[],
+                &["QdrantFacetExec"],
             );
-            pub(crate) const WINDOW_OVER_FACET_SUBQUERY: SqlCase = SqlCase::new(
+            pub(crate) const WINDOW_OVER_FACET_SUBQUERY: SqlCase = SqlCase::local_fallback(
                 "scan.aggregates.window_over_facet_subquery",
                 "SELECT tag, total, ROW_NUMBER() OVER (ORDER BY total DESC, tag) AS row_num FROM \
                  (SELECT payload:tag AS tag, COUNT(*) AS total FROM vectors GROUP BY payload:tag) \
                  facet ORDER BY row_num",
+                &["AggregateExec", "WindowAggExec"],
+                &[],
+                &["QdrantFacetExec"],
             );
             pub(crate) const SUBQUERY: SqlCase = SqlCase::new(
                 "scan.aggregates.subquery",
@@ -1010,6 +1079,9 @@ pub(crate) mod supported {
                 HAVING_LOCAL_TYPED,
                 TAG_FACET_WITH_FILTER,
                 TAG_FACET_LIMIT_ONLY,
+                COUNT_PAYLOAD_ALIAS_SUBQUERY_EXACT,
+                TAG_FACET_SUBQUERY_EXACT,
+                TAG_FACET_CTE_EXACT,
                 TAG_GROUP_LOCAL,
                 HAVING_FACET,
                 WINDOW_OVER_FACET_SUBQUERY,
@@ -2697,7 +2769,7 @@ pub(crate) mod supported {
                     ") grouped_b"
                 ),
             );
-            pub(crate) const MULTI_KEY_SUBQUERY: SqlCase = SqlCase::new(
+            pub(crate) const MULTI_KEY_SUBQUERY: SqlCase = SqlCase::local_fallback(
                 "query.grouped.multi_key_subquery",
                 concat!(
                     "SELECT * FROM (",
@@ -2706,6 +2778,9 @@ pub(crate) mod supported {
                     "FROM vectors ORDER BY payload:tag, id",
                     ") grouped"
                 ),
+                &["QdrantQueryExec", "AggregateExec"],
+                &[],
+                &["QdrantQueryGroupsExec"],
             );
 
             pub(crate) const ALL: &[SqlCase] = &[
@@ -2814,7 +2889,7 @@ pub(crate) mod supported {
                      LIMIT 2"
                 ),
             );
-            pub(crate) const LEFT_JOIN: SqlCase = SqlCase::new(
+            pub(crate) const LEFT_JOIN: SqlCase = SqlCase::local_fallback(
                 "coordination.formula.left_join",
                 concat!(
                     "SELECT dense.id, qdrant_formula_score(dense.score + sparse.score) AS score \
@@ -2825,6 +2900,9 @@ pub(crate) mod supported {
                      vectors ORDER BY score DESC LIMIT 5) sparse ON dense.id = sparse.id ",
                     "ORDER BY score DESC LIMIT 2"
                 ),
+                &["QdrantQueryExec"],
+                &["JoinExec", "HashJoinExec"],
+                &["prefetch=2"],
             );
             pub(crate) const CROSS_JOIN: SqlCase = SqlCase::new(
                 "coordination.formula.cross_join",
@@ -2838,7 +2916,7 @@ pub(crate) mod supported {
                     "ORDER BY score DESC LIMIT 2"
                 ),
             );
-            pub(crate) const RIGHT_JOIN: SqlCase = SqlCase::new(
+            pub(crate) const RIGHT_JOIN: SqlCase = SqlCase::local_fallback(
                 "coordination.formula.right_join",
                 concat!(
                     "SELECT sparse.id, qdrant_formula_score(dense.score + sparse.score) AS score \
@@ -2849,8 +2927,11 @@ pub(crate) mod supported {
                      vectors ORDER BY score DESC LIMIT 5) sparse ON dense.id = sparse.id ",
                     "ORDER BY score DESC LIMIT 2"
                 ),
+                &["QdrantQueryExec"],
+                &["JoinExec", "HashJoinExec"],
+                &["prefetch=2"],
             );
-            pub(crate) const INNER_JOIN_QDRANT_ONLY_LEAF: SqlCase = SqlCase::new(
+            pub(crate) const INNER_JOIN_QDRANT_ONLY_LEAF: SqlCase = SqlCase::local_fallback(
                 "coordination.formula.inner_join_qdrant_only_leaf",
                 concat!(
                     "SELECT dense.id, qdrant_formula_score(dense.score + \
@@ -2861,6 +2942,9 @@ pub(crate) mod supported {
                      ORDER BY score DESC LIMIT 5) sparse ON dense.id = sparse.id ",
                     "ORDER BY score DESC LIMIT 2"
                 ),
+                &["QdrantQueryExec", "__qdrant_formula_score"],
+                &["JoinExec", "HashJoinExec"],
+                &[],
             );
 
             pub(crate) const ALL: &[SqlCase] = &[
@@ -2934,7 +3018,7 @@ pub(crate) mod supported {
                     "USING (id)) ranked) final ORDER BY final.score DESC LIMIT 2"
                 ),
             );
-            pub(crate) const INNER_JOIN: SqlCase = SqlCase::new(
+            pub(crate) const INNER_JOIN: SqlCase = SqlCase::local_fallback(
                 "coordination.fusion.inner_join",
                 concat!(
                     "SELECT dense.id AS id, qdrant_fusion_score('RRF', dense.score, sparse.score) \
@@ -2945,8 +3029,11 @@ pub(crate) mod supported {
                      ORDER BY score DESC LIMIT 5) sparse ON dense.id = sparse.id ",
                     "ORDER BY score DESC LIMIT 2"
                 ),
+                &["QdrantQueryExec"],
+                &["JoinExec", "HashJoinExec"],
+                &["prefetch=2"],
             );
-            pub(crate) const LEFT_JOIN: SqlCase = SqlCase::new(
+            pub(crate) const LEFT_JOIN: SqlCase = SqlCase::local_fallback(
                 "coordination.fusion.left_join",
                 concat!(
                     "SELECT dense.id AS id, qdrant_fusion_score('RRF', dense.score, sparse.score) \
@@ -2957,8 +3044,11 @@ pub(crate) mod supported {
                      vectors ORDER BY score DESC LIMIT 5) sparse ON dense.id = sparse.id ",
                     "ORDER BY score DESC LIMIT 2"
                 ),
+                &["QdrantQueryExec"],
+                &["JoinExec", "HashJoinExec"],
+                &["prefetch=2"],
             );
-            pub(crate) const RIGHT_JOIN: SqlCase = SqlCase::new(
+            pub(crate) const RIGHT_JOIN: SqlCase = SqlCase::local_fallback(
                 "coordination.fusion.right_join",
                 concat!(
                     "SELECT sparse.id AS id, qdrant_fusion_score('RRF', dense.score, \
@@ -2969,8 +3059,11 @@ pub(crate) mod supported {
                      vectors ORDER BY score DESC LIMIT 5) sparse ON dense.id = sparse.id ",
                     "ORDER BY score DESC LIMIT 2"
                 ),
+                &["QdrantQueryExec"],
+                &["JoinExec", "HashJoinExec"],
+                &["prefetch=2"],
             );
-            pub(crate) const DBSF_INNER_JOIN: SqlCase = SqlCase::new(
+            pub(crate) const DBSF_INNER_JOIN: SqlCase = SqlCase::local_fallback(
                 "coordination.fusion.dbsf_inner_join",
                 concat!(
                     "SELECT dense.id AS id, qdrant_fusion_score('DBSF', dense.score, \
@@ -2981,8 +3074,11 @@ pub(crate) mod supported {
                      ORDER BY score DESC LIMIT 5) sparse ON dense.id = sparse.id ",
                     "ORDER BY score DESC LIMIT 2"
                 ),
+                &["QdrantQueryExec"],
+                &["JoinExec", "HashJoinExec"],
+                &["prefetch=2"],
             );
-            pub(crate) const DBSF_LEFT_JOIN: SqlCase = SqlCase::new(
+            pub(crate) const DBSF_LEFT_JOIN: SqlCase = SqlCase::local_fallback(
                 "coordination.fusion.dbsf_left_join",
                 concat!(
                     "SELECT dense.id AS id, qdrant_fusion_score('DBSF', dense.score, \
@@ -2993,8 +3089,11 @@ pub(crate) mod supported {
                      vectors ORDER BY score DESC LIMIT 5) sparse ON dense.id = sparse.id ",
                     "ORDER BY score DESC LIMIT 2"
                 ),
+                &["QdrantQueryExec"],
+                &["JoinExec", "HashJoinExec"],
+                &["prefetch=2"],
             );
-            pub(crate) const DBSF_RIGHT_JOIN: SqlCase = SqlCase::new(
+            pub(crate) const DBSF_RIGHT_JOIN: SqlCase = SqlCase::local_fallback(
                 "coordination.fusion.dbsf_right_join",
                 concat!(
                     "SELECT sparse.id AS id, qdrant_fusion_score('DBSF', dense.score, \
@@ -3005,6 +3104,9 @@ pub(crate) mod supported {
                      vectors ORDER BY score DESC LIMIT 5) sparse ON dense.id = sparse.id ",
                     "ORDER BY score DESC LIMIT 2"
                 ),
+                &["QdrantQueryExec"],
+                &["JoinExec", "HashJoinExec"],
+                &["prefetch=2"],
             );
 
             pub(crate) const ALL: &[SqlCase] = &[

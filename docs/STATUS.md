@@ -112,7 +112,8 @@ Current branch reality:
       subtree after that child rewrite in the same bottom-up analyzer pass
 35. The admitted facet slice is now broader without overstating typed payload SQL semantics.
     - top-facet grouped counts now admit keyword, bool, and lookup-capable integer payload indexes
-    - facet keys still surface as `Utf8`, matching the current textual `payload:<path>` SQL bridge
+    - facet key outputs now follow the authoritative payload scalar type on the current runtime
+      line: keyword as `Utf8`, bool as `Boolean`, and lookup-capable integer as `Int64`
     - integer payload metadata now distinguishes `lookup` from `range`, so integer `=` / `IN` pushdown no longer overstates range-only integer indexes
     - live collection introspection on the current runtime line now preserves integer lookup/range metadata well enough to admit integer facet pushdown on the same exact contract
 36. The current public retrieval prototypes are now DataFusion-native marker surfaces over the
@@ -204,6 +205,7 @@ Current branch reality:
 44. Admission-mode tracking and SQL-inventory tracking are now explicit and separate from feature tracking.
     - `docs/ADMISSION_MATRIX.md` now records which major semantic families are exact-only, exact-plus-residual, local-fallback, remote-only, or still strict-for-now
     - `tests/catalog/mod.rs` now mirrors supported / unsupported SQL catalogs consumed by `tests/e2e.rs` and `tests/unsupported_e2e.rs`, so capability movement is reviewable as queries, not only prose
+    - supported catalog entries now also distinguish `Full` from `LocalFallback`, and `LocalFallback` cases must prove their fallback plan shape in `tests/e2e.rs` instead of relying on prose-only notes
     - the mirrored catalogs now also carry explicit subquery coverage per namespace plus broader `CTE`, `UNION ALL`, `UNNEST`, `WINDOW`, and join-matrix SQL inventory where those forms materially interact with qdrant admission behavior
     - that join matrix now explicitly covers representative `INNER`, `LEFT`, `RIGHT`, `FULL`, `CROSS`, `SEMI`, and `ANTI` forms plus `ON` / `USING` variants across the standard SQL scan/write surface, independent query-family branches joined locally above remote kernels, and the qdrant-specific coordination surface
     - unsupported catalog entries now distinguish `Deferred`, `ByDesign`, `Upstream`, and `InvalidInput` so the current public boundary is readable without code inspection
