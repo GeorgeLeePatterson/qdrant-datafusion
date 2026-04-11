@@ -18,10 +18,10 @@ Use it to resume work without replaying the full repository history.
    - top-level nullable vector columns for heterogeneous named collections
    - current typed `qdrant-client` vector outputs only
 4. Canonical-schema `INSERT INTO`, `REPLACE INTO`, `INSERT OVERWRITE`, exact `DELETE`, and canonical row-rewrite `UPDATE` are now supported on the provider-owned mutation boundary.
-5. The broad SQL-native `Qdrant` capability surface is still intentionally incomplete, but the predicate algebra foundation, the first aggregate-like planner slices, the first public nearest-retrieval prototype, and the typed payload-access bridge are now in place.
+5. The broad SQL-native `Qdrant` capability surface is still intentionally incomplete, but the predicate algebra foundation, the first aggregate-like planner slices, the current public query-family retrieval prototypes, and the typed payload-access bridge are now in place.
 6. The next expansion round is now explicitly staged around the full `Qdrant` relation
    architecture rather than feature-by-feature node growth:
-   - first checkpoint: unify current exact count / facet / nearest kernels behind one generic
+   - first checkpoint: unify current exact count / facet / query-family kernels behind one generic
      extracted kernel family
    - second checkpoint: land the generic public operator layer above that kernel family
    - both checkpoints are now in place, so the next work should extend those enums rather than
@@ -386,6 +386,11 @@ Use it to resume work without replaying the full repository history.
     - the current mirrored SQL inventory covers exact-filter and residual-filter payload rewrites, `CASE` assignment, `NULL`, and whole-table update
     - `tests/catalog/mod.rs` now mirrors supported and unsupported `writes.update.*` SQL directly so the remaining `id`-assignment and `UPDATE ... FROM` boundaries stay visible instead of becoming stale prose
     - broader key-mutation and backend-specific partial mutation semantics remain explicit deferred inventory rather than hidden coercion
+69. `Q-070`: query-family payload-key order-by is now a validated current retrieval surface instead of planner-only implicit behavior.
+    - `tests/catalog/mod.rs` now tracks `query.order_by.*` on the supported and unsupported sides rather than misclassifying `qdrant_order_by_score(...)` under scan ordering
+    - live end-to-end coverage now proves canonical payload-path order-by, order-preserving casts, optional omitted SQL `LIMIT`, and string direction literals on the prepared-session surface
+    - the current public boundary stays explicit: descending remote order is the mirrored exact closure, while non-canonical scalar expressions remain by-design unsupported
+    - docs now promote `qdrant_order_by_score(...)` into the current query-family inventory instead of leaving it discoverable only through planner tests, and the public Rust helper now takes typed `QdrantOrderByDirection` instead of a boolean flag
 
 ## Next
 
@@ -394,7 +399,7 @@ Use it to resume work without replaying the full repository history.
    the shared operator / kernel structure.
    - aggregate-like: explicit output contracts beyond exact `COUNT(*)` and the current scalar
      facet slice
-   - retrieval: broader `query`-family relations and modifiers such as grouped retrieval beyond the current grouped query-family `DISTINCT ON` subset now that nearest / sample / recommend / discover / context / nearest-with-MMR / relevance feedback are all fully absorbed
+   - retrieval: broader `query`-family relations and modifiers such as grouped retrieval beyond the current grouped query-family `DISTINCT ON` subset now that nearest / sample / order-by / recommend / discover / context / nearest-with-MMR / relevance feedback are all fully absorbed
    - current retrieval kernels now allow omitted SQL `LIMIT`, deferring to Qdrant's native default result count unless SQL specifies one
    - current retrieval kernels now also allow omitted projected `ORDER BY score DESC`, deferring to Qdrant's native result order unless SQL specifies a local re-sort
 5. Keep the new admission/fallback catalog current as behavior widens.

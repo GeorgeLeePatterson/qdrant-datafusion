@@ -239,6 +239,14 @@ e2e_test!(
 
 #[cfg(feature = "test-utils")]
 e2e_test!(
+    prepared_session_sql_order_by_query,
+    tests::test_prepared_session_sql_order_by_query,
+    TRACING_DIRECTIVES,
+    None
+);
+
+#[cfg(feature = "test-utils")]
+e2e_test!(
     prepared_session_sql_recommend_query,
     tests::test_prepared_session_sql_recommend_query,
     TRACING_DIRECTIVES,
@@ -2102,7 +2110,7 @@ error: {err}"
         assert_eq!(cast_sorted_ids, vec![2, 1], "{cast_sorted_display}");
 
         let (query_sorted_ids, query_sorted_display) =
-            collect_id_rows(&ctx, sql::scan::ordering::ORDER_BY_SCORE_CAST.sql).await?;
+            collect_id_rows(&ctx, sql::query::order_by::CAST.sql).await?;
         assert_eq!(query_sorted_ids, vec![2, 1], "{query_sorted_display}");
 
         Ok(())
@@ -2725,6 +2733,32 @@ error: {err}"
         Ok(())
     }
 
+    pub(super) async fn test_prepared_session_sql_order_by_query(
+        c: Arc<QdrantContainer>,
+    ) -> Result<()> {
+        let ctx = create_catalog_scan_context(&c, "test_session_context_order_by_query").await?;
+
+        let without_limit_sql = sql::query::order_by::WITHOUT_LIMIT.sql;
+        let (without_limit_ids, without_limit_display) =
+            collect_id_rows(&ctx, without_limit_sql).await?;
+        assert_eq!(without_limit_ids, vec![1, 3, 2], "{without_limit_display}");
+        assert!(!without_limit_display.contains(", limit="), "{without_limit_display}");
+        assert!(without_limit_display.contains("QdrantQueryExec"), "{without_limit_display}");
+
+        for sql in [
+            sql::query::order_by::CANONICAL.sql,
+            sql::query::order_by::CAST.sql,
+            sql::query::order_by::STRING_DIRECTION.sql,
+            sql::query::order_by::SUBQUERY.sql,
+        ] {
+            let (ids, display) = collect_id_rows(&ctx, sql).await?;
+            assert_eq!(ids, vec![1, 3], "sql={sql} display={display}");
+            assert!(display.contains("QdrantQueryExec"), "{display}");
+        }
+
+        Ok(())
+    }
+
     pub(super) async fn test_prepared_session_sql_recommend_query(
         c: Arc<QdrantContainer>,
     ) -> Result<()> {
@@ -2860,6 +2894,8 @@ error: {err}"
     ) -> Result<()> {
         let vector_ctx =
             create_vector_query_context(&c, "test_supported_query_family_sample_queries").await?;
+        let scalar_ctx =
+            create_catalog_scan_context(&c, "test_supported_query_family_order_by_queries").await?;
         let dual_ctx =
             create_dual_vector_query_context(&c, "test_supported_query_family_dual_queries")
                 .await?;
@@ -2883,6 +2919,21 @@ error: {err}"
                     || display.contains("HashJoinExec")
                     || display.contains("JoinExec")
                     || display.contains("NestedLoopJoinExec"),
+                "{display}"
+            );
+        }
+        for case in sql::query::order_by::ALL {
+            let (_batches, display) =
+                assert_supported_query_collects(&scalar_ctx, case.sql).await.map_err(|error| {
+                    datafusion::error::DataFusionError::Execution(format!(
+                        "supported query-family order-by case={} sql={} error={error}",
+                        case.id, case.sql
+                    ))
+                })?;
+            assert!(
+                display.contains("QdrantQueryExec")
+                    || display.contains("ProjectionExec")
+                    || display.contains("SortExec"),
                 "{display}"
             );
         }

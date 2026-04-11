@@ -15,6 +15,22 @@ pub(crate) struct OrderByCall {
     pub(crate) direction: Option<Expr>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum QdrantOrderByDirection {
+    Asc,
+    Desc,
+}
+
+impl QdrantOrderByDirection {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Asc => "asc",
+            Self::Desc => "desc",
+        }
+    }
+}
+
 impl OrderByCall {
     pub(crate) fn from_expr(expr: &Expr) -> Result<Option<Self>> {
         let Some(args) = function_args(expr, ORDER_BY_SCORE_FUNCTION_NAME, ALIASES) else {
@@ -30,8 +46,8 @@ impl OrderByCall {
 }
 
 #[must_use]
-pub fn qdrant_order_by_score(path: Expr, descending: bool) -> Expr {
-    qdrant_order_by_score_udf().call(vec![path, lit(descending)])
+pub fn qdrant_order_by_score(path: Expr, direction: QdrantOrderByDirection) -> Expr {
+    qdrant_order_by_score_udf().call(vec![path, lit(direction.as_str())])
 }
 
 pub(crate) fn qdrant_order_by_score_udf() -> ScalarUDF {

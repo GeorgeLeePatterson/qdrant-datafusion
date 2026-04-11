@@ -59,7 +59,9 @@ pub use self::nearest_with_mmr::{
     NEAREST_WITH_MMR_SCORE_FUNCTION_NAME, qdrant_nearest_with_mmr_score,
 };
 pub(crate) use self::nearest_with_mmr::{NearestWithMmrCall, qdrant_nearest_with_mmr_score_udf};
-pub use self::order_by::{ORDER_BY_SCORE_FUNCTION_NAME, qdrant_order_by_score};
+pub use self::order_by::{
+    ORDER_BY_SCORE_FUNCTION_NAME, QdrantOrderByDirection, qdrant_order_by_score,
+};
 pub(crate) use self::order_by::{OrderByCall, qdrant_order_by_score_udf};
 pub use self::payload::{PAYLOAD_FUNCTION_NAME, qdrant_payload};
 pub(crate) use self::payload::{is_payload_function_name, qdrant_payload_udf};

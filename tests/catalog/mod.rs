@@ -437,14 +437,6 @@ pub(crate) mod supported {
                 "scan.ordering.cast_payload_desc",
                 "SELECT id FROM vectors ORDER BY CAST(payload:rank AS DOUBLE) DESC",
             );
-            pub(crate) const ORDER_BY_SCORE_CAST: SqlCase = SqlCase::new(
-                "scan.ordering.order_by_score_cast",
-                concat!(
-                    "SELECT id, qdrant_order_by_score(CAST(payload:rank AS DOUBLE), true) AS \
-                     score ",
-                    "FROM vectors ORDER BY score DESC"
-                ),
-            );
             pub(crate) const HINTED_PAYLOAD_ARITHMETIC_DESC: SqlCase = SqlCase::new(
                 "scan.ordering.hinted_payload_arithmetic_desc",
                 "SELECT id FROM vectors ORDER BY payload(payload:rank, 'Integer') + 1 DESC, id \
@@ -522,7 +514,6 @@ pub(crate) mod supported {
                 PAYLOAD,
                 ALIASED_PAYLOAD,
                 CAST_PAYLOAD_DESC,
-                ORDER_BY_SCORE_CAST,
                 HINTED_PAYLOAD_ARITHMETIC_DESC,
                 RAW_PAYLOAD_ARITHMETIC,
                 RAW_PAYLOAD_DIVISION,
@@ -1824,6 +1815,39 @@ pub(crate) mod supported {
             ];
         }
 
+        pub(crate) mod order_by {
+            use super::SqlCase;
+
+            pub(crate) const WITHOUT_LIMIT: SqlCase = SqlCase::new(
+                "query.order_by.without_limit",
+                "SELECT id, qdrant_order_by_score(payload:rank, true) AS score FROM vectors ORDER \
+                 BY score DESC",
+            );
+            pub(crate) const CANONICAL: SqlCase = SqlCase::new(
+                "query.order_by.canonical",
+                "SELECT id, qdrant_order_by_score(payload:rank, true) AS score FROM vectors ORDER \
+                 BY score DESC LIMIT 2",
+            );
+            pub(crate) const CAST: SqlCase = SqlCase::new(
+                "query.order_by.cast",
+                "SELECT id, qdrant_order_by_score(CAST(payload:rank AS DOUBLE), true) AS score \
+                 FROM vectors ORDER BY score DESC LIMIT 2",
+            );
+            pub(crate) const STRING_DIRECTION: SqlCase = SqlCase::new(
+                "query.order_by.string_direction",
+                "SELECT id, qdrant_order_by_score(payload:rank, 'DESC') AS score FROM vectors \
+                 ORDER BY score DESC LIMIT 2",
+            );
+            pub(crate) const SUBQUERY: SqlCase = SqlCase::new(
+                "query.order_by.subquery",
+                "SELECT id, score FROM (SELECT id, qdrant_order_by_score(payload:rank, true) AS \
+                 score FROM vectors ORDER BY score DESC LIMIT 2) ranked ORDER BY score DESC",
+            );
+
+            pub(crate) const ALL: &[SqlCase] =
+                &[WITHOUT_LIMIT, CANONICAL, CAST, STRING_DIRECTION, SUBQUERY];
+        }
+
         pub(crate) mod recommend {
             use super::SqlCase;
 
@@ -3056,15 +3080,6 @@ pub(crate) mod unsupported {
                      ordering key",
                     "payload_text_match",
                 );
-            pub(crate) const ORDER_BY_SCORE_NON_PATH: UnsupportedSqlCase =
-                UnsupportedSqlCase::by_design(
-                    "scan.ordering.order_by_score_non_path",
-                    "SELECT id, qdrant_order_by_score(ABS(CAST(payload:rank AS DOUBLE)), true) AS \
-                     score FROM vectors ORDER BY score DESC",
-                    "qdrant_order_by_score still requires a canonical payload path input rather \
-                     than an arbitrary scalar expression",
-                    "qdrant_order_by_score requires a qdrant payload path",
-                );
             pub(crate) const TEXT_MATCH_NULLS_LAST: UnsupportedSqlCase =
                 UnsupportedSqlCase::by_design(
                     "scan.ordering.text_match_nulls_last",
@@ -3075,7 +3090,7 @@ pub(crate) mod unsupported {
                     "payload_text_match",
                 );
             pub(crate) const ALL: &[UnsupportedSqlCase] =
-                &[REMOTE_ONLY_PREDICATE, ORDER_BY_SCORE_NON_PATH, TEXT_MATCH_NULLS_LAST];
+                &[REMOTE_ONLY_PREDICATE, TEXT_MATCH_NULLS_LAST];
         }
 
         pub(crate) mod filters {
@@ -3401,6 +3416,30 @@ pub(crate) mod unsupported {
         pub(crate) mod sample {
             use super::UnsupportedSqlCase;
             pub(crate) const ALL: &[UnsupportedSqlCase] = &[];
+        }
+
+        pub(crate) mod order_by {
+            use super::UnsupportedSqlCase;
+
+            pub(crate) const NON_PATH: UnsupportedSqlCase = UnsupportedSqlCase::by_design(
+                "query.order_by.non_path",
+                "SELECT id, qdrant_order_by_score(ABS(CAST(payload:rank AS DOUBLE)), true) AS \
+                 score FROM vectors ORDER BY score DESC LIMIT 2",
+                "qdrant_order_by_score still requires a canonical payload path input rather than \
+                 an arbitrary scalar expression",
+                "qdrant_order_by_score requires a qdrant payload path",
+            );
+            pub(crate) const SUBQUERY_NON_PATH: UnsupportedSqlCase = UnsupportedSqlCase::by_design(
+                "query.order_by.subquery_non_path",
+                "SELECT id, score FROM (SELECT id, qdrant_order_by_score(ABS(CAST(payload:rank AS \
+                 DOUBLE)), true) AS score FROM vectors ORDER BY score DESC LIMIT 2) ranked ORDER \
+                 BY score DESC",
+                "qdrant_order_by_score still requires a canonical payload path input rather than \
+                 an arbitrary scalar expression, including under subquery wrappers",
+                "qdrant_order_by_score requires a qdrant payload path",
+            );
+
+            pub(crate) const ALL: &[UnsupportedSqlCase] = &[NON_PATH, SUBQUERY_NON_PATH];
         }
 
         pub(crate) mod recommend {

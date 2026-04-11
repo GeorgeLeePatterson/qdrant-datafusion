@@ -120,6 +120,7 @@ Current branch reality:
     - current public markers are:
       - `qdrant_nearest_score(...)`
       - `qdrant_sample_score(...)`
+      - `qdrant_order_by_score(...)`
       - `qdrant_recommend_score(...)`
       - `qdrant_discover_score(...)`
       - `qdrant_context_score(...)`
@@ -137,6 +138,13 @@ Current branch reality:
       - explicit `LIMIT` pushdown when present, otherwise Qdrant's default result count
       - omitted projected score ordering uses Qdrant's native result order
       - default method `'random'` when omitted
+    - current order-by admitted scope is:
+      - `Query::OrderBy` over canonical indexed integer / float / datetime payload paths
+      - order-preserving casts on those authoritative payload paths
+      - direction as boolean or `'asc'` / `'desc'` literal
+      - explicit `LIMIT` pushdown when present, otherwise Qdrant's default result count
+      - the current mirrored SQL inventory closes descending remote order through `ORDER BY score DESC`
+      - non-canonical scalar expressions stay unsupported by design
     - current recommend admitted scope is:
       - positive / negative example lists
       - explicit `LIMIT` pushdown when present, otherwise Qdrant's default result count
@@ -169,10 +177,11 @@ Current branch reality:
     - retrieval kernels can now leave benign local projection shells, local aggregate shells, local window shells, and local residual filter shells above the closed qdrant query kernel instead of requiring fully remote-only projection/filter shapes, including later score projection above those local filter shells
     - when projected, aliases win; otherwise naming follows normal `DataFusion` expression naming
 37. Current exact `Qdrant` leaf relations now converge on one generic extracted kernel family.
-    - exact count, scalar facet, and nearest retrieval all share one `QdrantKernelNode` /
-      `QdrantKernelSpec` structure
+    - exact count, scalar facet, and current query-family retrieval slices all share one
+      `QdrantKernelNode` / `QdrantKernelSpec` structure
 38. Current public marker semantics now also converge on one generic operator family.
-    - `QdrantOpNode` / `QdrantOp` now own the current public nearest-retrieval marker semantics
+    - `QdrantOpNode` / `QdrantOp` now own the current public query-family marker semantics,
+      including nearest and payload-key order-by
     - `QdrantSessionContext` now remains only as the prepared-session wrapper that installs the
       analyzer, planner, and marker-UDF hooks
 39. Shared `Qdrant` semantics now live in `src/qdrant.rs` and are reused across analyzer, filter pushdown, and sort pushdown instead of duplicating payload-path recognition.

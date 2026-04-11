@@ -97,6 +97,14 @@ e2e_test!(
 
 #[cfg(feature = "test-utils")]
 e2e_test!(
+    unsupported_query_order_by_queries,
+    tests::test_unsupported_query_order_by_queries,
+    TRACING_DIRECTIVES,
+    None
+);
+
+#[cfg(feature = "test-utils")]
+e2e_test!(
     unsupported_query_recommend_queries,
     tests::test_unsupported_query_recommend_queries,
     TRACING_DIRECTIVES,
@@ -600,6 +608,17 @@ mod tests {
     ) -> Result<()> {
         let ctx = create_vector_query_context(&c, "test_unsupported_query_sample_queries").await?;
         for case in sql::query::sample::ALL {
+            assert_unsupported_query(&ctx, *case).await?;
+        }
+        Ok(())
+    }
+
+    pub(super) async fn test_unsupported_query_order_by_queries(
+        c: Arc<QdrantContainer>,
+    ) -> Result<()> {
+        let ctx =
+            create_scan_boundary_context(&c, "test_unsupported_query_order_by_queries").await?;
+        for case in sql::query::order_by::ALL {
             assert_unsupported_query(&ctx, *case).await?;
         }
         Ok(())

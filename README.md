@@ -61,9 +61,10 @@ canonical carrier; missing values are not imputed during scan.
   - currently admitted facet fields are keyword, bool, and lookup-capable integer payload indexes
   - facet keys currently surface as `Utf8`, matching the current textual `payload:<path>` SQL bridge
 - a generic public `QdrantOpNode` / `QdrantOp` layer now exists above the shared kernel family
-  for the current nearest-retrieval prototype
-- current exact `COUNT(*)`, scalar facet, and nearest retrieval now lower through one shared
-  internal `QdrantKernelNode` / `QdrantKernelSpec` family rather than isolated logical node types
+  for the current query-family retrieval prototypes
+- current exact `COUNT(*)`, scalar facet, and current query-family retrieval slices now lower
+  through one shared internal `QdrantKernelNode` / `QdrantKernelSpec` family rather than
+  isolated logical node types
 - current retrieval prototypes are DataFusion-native marker UDFs on the prepared session surface:
   - `qdrant_nearest_score(vector_column, ...)`
     - exact lowering currently admits dense query vectors, an optional `LIMIT`,
@@ -71,6 +72,15 @@ canonical carrier; missing values are not imputed during scan.
   - `qdrant_sample_score([method])`
     - exact lowering currently admits random sampling and an optional `LIMIT`; when SQL omits `LIMIT`, the remote request uses Qdrant's default result count and omitted projected score ordering uses Qdrant's native result order
     - the method currently defaults to `'random'`
+  - `qdrant_order_by_score(payload:<path>[, direction])`
+    - exact lowering currently admits canonical indexed integer / float / datetime payload paths
+      plus order-preserving casts on the prepared session surface; direction currently admits
+      boolean or `'asc'` / `'desc'` literals
+    - the public Rust helper surface exposes `qdrant_order_by_score(path,
+      QdrantOrderByDirection::{Asc, Desc})` so direction is typed rather than boolean or stringly
+    - when SQL omits `LIMIT`, the remote request uses Qdrant's default result count; the current
+      mirrored SQL inventory closes descending remote order through `ORDER BY score DESC`, and
+      non-canonical scalar expressions remain unsupported by design
   - `qdrant_recommend_score(...)`
     - exact lowering currently admits positive and negative example lists and an optional `LIMIT`; when SQL omits `LIMIT`, the remote request uses Qdrant's default result count and omitted projected score ordering uses Qdrant's native score-desc result order
     - the default or explicit recommend strategy is admitted

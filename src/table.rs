@@ -329,8 +329,8 @@ mod tests {
         QdrantQueryGroupsExec,
     };
     use crate::expr_fn::{
-        qdrant_context_score, qdrant_discover_score, qdrant_recommend_score,
-        qdrant_recommend_score_with_strategy,
+        QdrantOrderByDirection, qdrant_context_score, qdrant_discover_score, qdrant_order_by_score,
+        qdrant_recommend_score, qdrant_recommend_score_with_strategy,
     };
     use crate::qdrant::QdrantPayloadSchema;
     use crate::table::delete::QdrantDeleteExec;
@@ -3719,6 +3719,66 @@ mod tests {
             .now_or_never()
             .expect("sql future is ready")
             .expect("dataframe");
+        let plan = dataframe
+            .create_physical_plan()
+            .now_or_never()
+            .expect("plan future is ready")
+            .expect("physical plan");
+        let display = displayable(plan.as_ref()).indent(true).to_string();
+        let _query = qdrant_query(&plan);
+
+        assert!(display.contains("QdrantQueryExec"), "{display}");
+    }
+
+    #[test]
+    fn physical_plan_uses_qdrant_query_exec_for_order_by_score_dataframe_api() {
+        let provider = QdrantTableProvider {
+            payload_schema: payload_schema([(
+                "rank",
+                PayloadSchemaInfo {
+                    data_type: qdrant_client::qdrant::PayloadSchemaType::Integer as i32,
+                    params: Some(qdrant_client::qdrant::PayloadIndexParams {
+                        index_params: Some(
+                            qdrant_client::qdrant::payload_index_params::IndexParams::IntegerIndexParams(
+                                IntegerIndexParams::default(),
+                            ),
+                        ),
+                    }),
+                    points: None,
+                },
+            )]),
+            ..test_provider(Schema::new(vec![
+                Field::new(ID_FIELD_NAME, DataType::Utf8, false),
+                Field::new(PAYLOAD_FIELD_NAME, DataType::Utf8, true),
+            ]))
+        };
+        let ctx = QdrantSessionContext::from(SessionContext::new());
+        drop(
+            ctx.session_context()
+                .register_table("vectors", Arc::new(provider))
+                .expect("register table"),
+        );
+        let payload_rank = Expr::BinaryExpr(BinaryExpr::new(
+            Box::new(Expr::Column(ExprColumn::new_unqualified(PAYLOAD_FIELD_NAME))),
+            Operator::Colon,
+            Box::new(Expr::Literal(ScalarValue::Utf8(Some("rank".to_owned())), None)),
+        ));
+        let dataframe = ctx
+            .session_context()
+            .table("vectors")
+            .now_or_never()
+            .expect("table future is ready")
+            .expect("table")
+            .select(vec![
+                col("id"),
+                col("payload"),
+                qdrant_order_by_score(payload_rank, QdrantOrderByDirection::Desc).alias("score"),
+            ])
+            .expect("select")
+            .sort(vec![col("score").sort(false, false)])
+            .expect("sort")
+            .limit(0, Some(2))
+            .expect("limit");
         let plan = dataframe
             .create_physical_plan()
             .now_or_never()
