@@ -349,6 +349,29 @@ mod tests {
         }
     }
 
+    fn rank_exact_provider(schema: Schema) -> QdrantTableProvider {
+        QdrantTableProvider {
+            payload_schema: payload_schema([(
+                "rank",
+                PayloadSchemaInfo {
+                    data_type: qdrant_client::qdrant::PayloadSchemaType::Integer as i32,
+                    params: Some(qdrant_client::qdrant::PayloadIndexParams {
+                        index_params: Some(
+                            qdrant_client::qdrant::payload_index_params::IndexParams::IntegerIndexParams(
+                                IntegerIndexParams {
+                                    range: Some(true),
+                                    ..Default::default()
+                                },
+                            ),
+                        ),
+                    }),
+                    points: None,
+                },
+            )]),
+            ..test_provider(schema)
+        }
+    }
+
     fn payload_schema(
         entries: impl IntoIterator<Item = (&'static str, PayloadSchemaInfo)>,
     ) -> Arc<QdrantPayloadSchema> {
@@ -2066,29 +2089,10 @@ mod tests {
 
     #[test]
     fn physical_plan_uses_qdrant_count_exec_for_count_star() {
-        let provider = QdrantTableProvider {
-            payload_schema: payload_schema([(
-                "rank",
-                PayloadSchemaInfo {
-                    data_type: qdrant_client::qdrant::PayloadSchemaType::Integer as i32,
-                    params: Some(qdrant_client::qdrant::PayloadIndexParams {
-                        index_params: Some(
-                            qdrant_client::qdrant::payload_index_params::IndexParams::IntegerIndexParams(
-                                IntegerIndexParams {
-                                    range: Some(true),
-                                    ..Default::default()
-                                },
-                            ),
-                        ),
-                    }),
-                    points: None,
-                },
-            )]),
-            ..test_provider(Schema::new(vec![
-                Field::new(ID_FIELD_NAME, DataType::Utf8, false),
-                Field::new(PAYLOAD_FIELD_NAME, DataType::Utf8, true),
-            ]))
-        };
+        let provider = rank_exact_provider(Schema::new(vec![
+            Field::new(ID_FIELD_NAME, DataType::Utf8, false),
+            Field::new(PAYLOAD_FIELD_NAME, DataType::Utf8, true),
+        ]));
         let ctx = QdrantSessionContext::from(SessionContext::new());
         drop(
             ctx.session_context()
@@ -2142,6 +2146,64 @@ mod tests {
     }
 
     #[test]
+    fn physical_plan_uses_qdrant_count_exec_for_count_non_null_literal() {
+        let provider = rank_exact_provider(Schema::new(vec![
+            Field::new(ID_FIELD_NAME, DataType::Utf8, false),
+            Field::new(PAYLOAD_FIELD_NAME, DataType::Utf8, true),
+        ]));
+        let ctx = QdrantSessionContext::from(SessionContext::new());
+        drop(
+            ctx.session_context()
+                .register_table("vectors", Arc::new(provider))
+                .expect("register table"),
+        );
+        let dataframe = ctx
+            .sql("SELECT COUNT(1) FROM vectors WHERE payload:rank >= 10")
+            .now_or_never()
+            .expect("sql future is ready")
+            .expect("dataframe");
+        let plan = dataframe
+            .create_physical_plan()
+            .now_or_never()
+            .expect("plan future is ready")
+            .expect("physical plan");
+        let display = displayable(plan.as_ref()).indent(true).to_string();
+        let _count = qdrant_count(&plan);
+
+        assert!(display.contains("QdrantCountExec"), "{display}");
+        assert!(!display.contains("AggregateExec"), "{display}");
+    }
+
+    #[test]
+    fn physical_plan_uses_qdrant_count_exec_for_count_non_null_id() {
+        let provider = rank_exact_provider(Schema::new(vec![
+            Field::new(ID_FIELD_NAME, DataType::Utf8, false),
+            Field::new(PAYLOAD_FIELD_NAME, DataType::Utf8, true),
+        ]));
+        let ctx = QdrantSessionContext::from(SessionContext::new());
+        drop(
+            ctx.session_context()
+                .register_table("vectors", Arc::new(provider))
+                .expect("register table"),
+        );
+        let dataframe = ctx
+            .sql("SELECT COUNT(id) FROM vectors WHERE payload:rank >= 10")
+            .now_or_never()
+            .expect("sql future is ready")
+            .expect("dataframe");
+        let plan = dataframe
+            .create_physical_plan()
+            .now_or_never()
+            .expect("plan future is ready")
+            .expect("physical plan");
+        let display = displayable(plan.as_ref()).indent(true).to_string();
+        let _count = qdrant_count(&plan);
+
+        assert!(display.contains("QdrantCountExec"), "{display}");
+        assert!(!display.contains("AggregateExec"), "{display}");
+    }
+
+    #[test]
     fn physical_plan_uses_qdrant_count_exec_through_payload_alias_subquery() {
         let provider = QdrantTableProvider {
             payload_schema: payload_schema([(
@@ -2171,6 +2233,38 @@ mod tests {
         );
         let dataframe = ctx
             .sql("SELECT COUNT(*) AS total FROM (SELECT payload:tag AS tag FROM vectors) tagged")
+            .now_or_never()
+            .expect("sql future is ready")
+            .expect("dataframe");
+        let plan = dataframe
+            .create_physical_plan()
+            .now_or_never()
+            .expect("plan future is ready")
+            .expect("physical plan");
+        let display = displayable(plan.as_ref()).indent(true).to_string();
+        let _count = qdrant_count(&plan);
+
+        assert!(display.contains("QdrantCountExec"), "{display}");
+        assert!(!display.contains("AggregateExec"), "{display}");
+    }
+
+    #[test]
+    fn physical_plan_uses_qdrant_count_exec_through_non_null_id_alias_subquery() {
+        let provider = rank_exact_provider(Schema::new(vec![
+            Field::new(ID_FIELD_NAME, DataType::Utf8, false),
+            Field::new(PAYLOAD_FIELD_NAME, DataType::Utf8, true),
+        ]));
+        let ctx = QdrantSessionContext::from(SessionContext::new());
+        drop(
+            ctx.session_context()
+                .register_table("vectors", Arc::new(provider))
+                .expect("register table"),
+        );
+        let dataframe = ctx
+            .sql(
+                "SELECT COUNT(vector_id) AS total FROM (SELECT id AS vector_id FROM vectors WHERE \
+                 payload:rank >= 10) filtered",
+            )
             .now_or_never()
             .expect("sql future is ready")
             .expect("dataframe");
@@ -2217,6 +2311,57 @@ mod tests {
         let dataframe = ctx
             .sql(
                 "SELECT payload:tag AS tag, COUNT(*) AS total FROM vectors GROUP BY payload:tag \
+                 ORDER BY total DESC LIMIT 2",
+            )
+            .now_or_never()
+            .expect("sql future is ready")
+            .expect("dataframe");
+        let plan = dataframe
+            .create_physical_plan()
+            .now_or_never()
+            .expect("plan future is ready")
+            .expect("physical plan");
+        let display = displayable(plan.as_ref()).indent(true).to_string();
+        let _facet = qdrant_facet(&plan);
+
+        assert!(display.contains("QdrantFacetExec"), "{display}");
+        assert!(!display.contains("AggregateExec"), "{display}");
+        assert!(!display.contains("SortExec"), "{display}");
+        assert!(!display.contains("GlobalLimitExec"), "{display}");
+        assert!(!display.contains("LocalLimitExec"), "{display}");
+    }
+
+    #[test]
+    fn physical_plan_uses_qdrant_facet_exec_for_count_non_null_id() {
+        let provider = QdrantTableProvider {
+            payload_schema: payload_schema([(
+                "tag",
+                PayloadSchemaInfo {
+                    data_type: qdrant_client::qdrant::PayloadSchemaType::Keyword as i32,
+                    params: Some(qdrant_client::qdrant::PayloadIndexParams {
+                        index_params: Some(
+                            qdrant_client::qdrant::payload_index_params::IndexParams::KeywordIndexParams(
+                                qdrant_client::qdrant::KeywordIndexParams::default(),
+                            ),
+                        ),
+                    }),
+                    points: None,
+                },
+            )]),
+            ..test_provider(Schema::new(vec![
+                Field::new(ID_FIELD_NAME, DataType::Utf8, false),
+                Field::new(PAYLOAD_FIELD_NAME, DataType::Utf8, true),
+            ]))
+        };
+        let ctx = QdrantSessionContext::from(SessionContext::new());
+        drop(
+            ctx.session_context()
+                .register_table("vectors", Arc::new(provider))
+                .expect("register table"),
+        );
+        let dataframe = ctx
+            .sql(
+                "SELECT payload:tag AS tag, COUNT(id) AS total FROM vectors GROUP BY payload:tag \
                  ORDER BY total DESC LIMIT 2",
             )
             .now_or_never()

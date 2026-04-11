@@ -949,6 +949,14 @@ pub(crate) mod supported {
                 "scan.aggregates.count_rank_gte",
                 "SELECT COUNT(*) AS total FROM vectors WHERE payload:rank >= 20",
             );
+            pub(crate) const COUNT_ONE_RANK_GTE: SqlCase = SqlCase::new(
+                "scan.aggregates.count_one_rank_gte",
+                "SELECT COUNT(1) AS total FROM vectors WHERE payload:rank >= 20",
+            );
+            pub(crate) const COUNT_ID_RANK_GTE: SqlCase = SqlCase::new(
+                "scan.aggregates.count_id_rank_gte",
+                "SELECT COUNT(id) AS total FROM vectors WHERE payload:rank >= 20",
+            );
             pub(crate) const AVG_HINTED_PAYLOAD: SqlCase = SqlCase::new(
                 "scan.aggregates.avg_hinted_payload",
                 "SELECT AVG(payload(payload:rank, 'Integer')) AS avg_rank FROM vectors",
@@ -1016,10 +1024,20 @@ pub(crate) mod supported {
                 "SELECT COUNT(*) AS total FROM (SELECT payload:tag AS tag FROM vectors WHERE \
                  payload:rank >= 20) tagged",
             );
+            pub(crate) const COUNT_ID_ALIAS_SUBQUERY_EXACT: SqlCase = SqlCase::new(
+                "scan.aggregates.count_id_alias_subquery_exact",
+                "SELECT COUNT(vector_id) AS total FROM (SELECT id AS vector_id FROM vectors WHERE \
+                 payload:rank >= 20) filtered",
+            );
             pub(crate) const TAG_FACET_SUBQUERY_EXACT: SqlCase = SqlCase::new(
                 "scan.aggregates.tag_facet_subquery_exact",
                 "SELECT tag, COUNT(*) AS total FROM (SELECT payload:tag AS tag FROM vectors) \
                  grouped GROUP BY tag ORDER BY total DESC LIMIT 2",
+            );
+            pub(crate) const TAG_FACET_COUNT_ID_EXACT: SqlCase = SqlCase::new(
+                "scan.aggregates.tag_facet_count_id_exact",
+                "SELECT payload:tag AS tag, COUNT(id) AS total FROM vectors GROUP BY payload:tag \
+                 ORDER BY total DESC LIMIT 2",
             );
             pub(crate) const TAG_FACET_CTE_EXACT: SqlCase = SqlCase::new(
                 "scan.aggregates.tag_facet_cte_exact",
@@ -1066,6 +1084,8 @@ pub(crate) mod supported {
                 BOOL_FACET,
                 INT_FACET,
                 COUNT_RANK_GTE,
+                COUNT_ONE_RANK_GTE,
+                COUNT_ID_RANK_GTE,
                 AVG_HINTED_PAYLOAD,
                 RAW_PAYLOAD_ARITHMETIC,
                 SUBQUERY_RAW_PAYLOAD_ARITHMETIC,
@@ -1080,7 +1100,9 @@ pub(crate) mod supported {
                 TAG_FACET_WITH_FILTER,
                 TAG_FACET_LIMIT_ONLY,
                 COUNT_PAYLOAD_ALIAS_SUBQUERY_EXACT,
+                COUNT_ID_ALIAS_SUBQUERY_EXACT,
                 TAG_FACET_SUBQUERY_EXACT,
+                TAG_FACET_COUNT_ID_EXACT,
                 TAG_FACET_CTE_EXACT,
                 TAG_GROUP_LOCAL,
                 HAVING_FACET,

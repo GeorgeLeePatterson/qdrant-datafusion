@@ -43,14 +43,16 @@ Current branch reality:
       - integer range predicates require range-capable integer indexes
 16. Physical filter pushdown now absorbs the admitted predicate algebra so `FilterExec` does not remain above `QdrantScanExec`.
 17. Payload filter literals are coerced by indexed payload field type because `DataFusion`’s physical `payload:<path>` expressions surface generic scalar literals such as `Utf8("10")`.
-18. Exact `COUNT(*)` pushdown is now admitted as the first aggregate-like planner slice.
+18. Exact row-count-preserving `COUNT(...)` pushdown is now admitted as the first aggregate-like planner slice.
     - it lowers into `Qdrant`’s native `count` API
     - it currently requires the `Qdrant` session/planner helper
+    - current exact row-count forms are `COUNT(*)`, non-null literals such as `COUNT(1)`, and non-null `id` column references, including benign `id` alias shells
     - it reuses the existing provider-owned predicate algebra for admitted exact filters
 19. Exact top-facet grouped counts are now admitted as the second aggregate-like planner slice.
     - it lowers into `Qdrant`’s native `facet` API
     - it currently requires the `Qdrant` session/planner helper
     - it is currently limited to one admitted scalar `payload:<path>` field with `LIMIT N`
+    - current exact grouped-count expressions use the same row-count-preserving `COUNT(...)` subset as exact point count
     - projected `ORDER BY count DESC` is optional and now optimizes away as redundant
     - it reuses the existing provider-owned predicate algebra for admitted exact filters
 20. The root `README.md`, repo notes, and tracker docs describe only the admitted baseline.

@@ -3,19 +3,25 @@ use datafusion::logical_expr::Expr;
 use datafusion::logical_expr::expr::{AggregateFunction, Alias};
 use datafusion::logical_expr::utils::COUNT_STAR_EXPANSION;
 
-pub(crate) fn count_star_like(expr: &Expr) -> bool {
+pub(crate) fn count_like_arg(expr: &Expr) -> Option<&Expr> {
     match expr {
-        Expr::Alias(Alias { expr, .. }) => count_star_like(expr),
-        Expr::AggregateFunction(AggregateFunction { func, params }) => {
-            func.name() == "count"
-                && !params.distinct
-                && params.filter.is_none()
-                && params.order_by.is_empty()
-                && params.null_treatment.is_none()
-                && matches!(params.args.as_slice(), [Expr::Literal(value, _)] if count_like_literal(value))
-        }
-        _ => false,
+        Expr::Alias(Alias { expr, .. }) => count_like_arg(expr),
+        Expr::AggregateFunction(AggregateFunction { func, params }) => (func.name() == "count"
+            && !params.distinct
+            && params.filter.is_none()
+            && params.order_by.is_empty()
+            && params.null_treatment.is_none())
+        .then_some(params.args.as_slice())
+        .and_then(|args| match args {
+            [arg] => Some(arg),
+            _ => None,
+        }),
+        _ => None,
     }
+}
+
+pub(crate) fn count_star_like(expr: &Expr) -> bool {
+    matches!(count_like_arg(expr), Some(Expr::Literal(value, _)) if count_like_literal(value))
 }
 
 pub(crate) fn count_like_literal(value: &ScalarValue) -> bool {

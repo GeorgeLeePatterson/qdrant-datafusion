@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use datafusion::arrow::datatypes::DataType;
@@ -18,9 +18,10 @@ use crate::table::QdrantTableProvider;
 
 #[derive(Debug, Clone)]
 pub(crate) struct SourceState {
-    pub(crate) source:       Source,
-    pub(crate) filters:      FiltersState,
-    projected_payload_paths: BTreeMap<String, QdrantPayloadPath>,
+    pub(crate) source:          Source,
+    pub(crate) filters:         FiltersState,
+    projected_payload_paths:    BTreeMap<String, QdrantPayloadPath>,
+    projected_non_null_columns: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,17 +37,24 @@ impl SourceState {
     ) -> Option<Self> {
         let provider = source_as_provider(&scan.source).ok()?;
         let schema = provider.schema();
+        let projected_non_null_columns = schema
+            .fields()
+            .iter()
+            .filter(|field| !field.is_nullable())
+            .map(|field| field.name().clone())
+            .collect();
         let provider = provider.as_any().downcast_ref::<QdrantTableProvider>()?;
         Some(Self {
-            source:                  Source {
+            source: Source {
                 client: Arc::clone(provider.client()),
                 collection: provider.collection().to_owned(),
                 schema,
                 payload_schema: Arc::clone(provider.payload_schema()),
                 ordered_scroll_contract: provider.ordered_scroll_contract(),
             },
-            filters:                 FiltersState::default(),
+            filters: FiltersState::default(),
             projected_payload_paths: BTreeMap::new(),
+            projected_non_null_columns,
         })
     }
 
@@ -65,8 +73,8 @@ impl SourceState {
             transformed = true;
         }
         if let LogicalPlan::Projection(projection) = &plan
-            && let Some(projected_payload_paths) =
-                self.projected_payload_paths(&projection.expr, &projection.schema)
+            && let Some((projected_payload_paths, projected_non_null_columns)) =
+                self.projected_projection_state(&projection.expr, &projection.schema)
         {
             return Ok(super::super::Analysis::new(
                 plan,
@@ -74,6 +82,7 @@ impl SourceState {
                     source: self.source,
                     filters: self.filters,
                     projected_payload_paths,
+                    projected_non_null_columns,
                 }),
                 transformed,
             ));
@@ -105,6 +114,7 @@ impl SourceState {
                     source: self.source,
                     filters,
                     projected_payload_paths: self.projected_payload_paths,
+                    projected_non_null_columns: self.projected_non_null_columns,
                 }),
                 transformed,
             ));
@@ -194,23 +204,28 @@ impl SourceState {
         Ok(super::super::Analysis::new(plan, State::local(), transformed))
     }
 
-    fn projected_payload_paths(
+    fn projected_projection_state(
         &self,
         exprs: &[Expr],
         schema: &datafusion::common::DFSchemaRef,
-    ) -> Option<BTreeMap<String, QdrantPayloadPath>> {
+    ) -> Option<(BTreeMap<String, QdrantPayloadPath>, BTreeSet<String>)> {
         let mut projected_payload_paths = BTreeMap::new();
+        let mut projected_non_null_columns = BTreeSet::new();
         for (index, expr) in exprs.iter().enumerate() {
             let name = schema.field(index).name().clone();
             if let Some(path) = self.payload_path_for_expr(expr) {
                 drop(projected_payload_paths.insert(name, path));
                 continue;
             }
+            if self.non_null_column_for_expr(expr) {
+                let _ = projected_non_null_columns.insert(name);
+                continue;
+            }
             if !projection_passthrough_column(expr) {
                 return None;
             }
         }
-        Some(projected_payload_paths)
+        Some((projected_payload_paths, projected_non_null_columns))
     }
 
     fn payload_path_for_expr(&self, expr: &Expr) -> Option<QdrantPayloadPath> {
@@ -249,6 +264,24 @@ impl SourceState {
     pub(crate) fn has_projected_payload_paths(&self) -> bool {
         !self.projected_payload_paths.is_empty()
     }
+
+    fn non_null_column_for_expr(&self, expr: &Expr) -> bool {
+        match expr.clone().unalias_nested().data {
+            Expr::Column(column) => self.projected_non_null_columns.contains(&column.name),
+            _ => false,
+        }
+    }
+
+    fn exact_row_count_expr(&self, expr: &Expr) -> bool {
+        let Some(arg) = crate::analyzer::common::count_like_arg(expr) else {
+            return false;
+        };
+        match arg.clone().unalias_nested().data {
+            Expr::Literal(value, _) => crate::analyzer::common::count_like_literal(&value),
+            Expr::Column(column) => self.projected_non_null_columns.contains(&column.name),
+            _ => false,
+        }
+    }
 }
 
 impl AggregateSurface {
@@ -258,13 +291,13 @@ impl AggregateSurface {
         };
         if aggregate.group_expr.is_empty()
             && aggregate.aggr_expr.len() == 1
-            && crate::analyzer::common::count_star_like(&aggregate.aggr_expr[0])
+            && state.exact_row_count_expr(&aggregate.aggr_expr[0])
         {
             return Ok(Self::Count);
         }
         if aggregate.group_expr.len() != 1
             || aggregate.aggr_expr.len() != 1
-            || !crate::analyzer::common::count_star_like(&aggregate.aggr_expr[0])
+            || !state.exact_row_count_expr(&aggregate.aggr_expr[0])
         {
             return Ok(Self::Local);
         }

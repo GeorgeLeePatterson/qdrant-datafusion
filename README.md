@@ -8,7 +8,8 @@ bridge for ordering and filtering, canonical-schema `INSERT INTO` / `REPLACE INT
 `INSERT OVERWRITE`, exact `DELETE`, and canonical row-rewrite `UPDATE` mutation semantics,
 including `DataFusion` target-column reshaping into the write schema for inserts and
 exact-plus-residual filter handling for updates, and the first narrow planner slices for exact
-`COUNT(*)` and top-facet grouped-count pushdown. It is not yet the broad SQL surface for
+row-count-preserving `COUNT(...)` and top-facet grouped-count pushdown. It is not yet the broad
+SQL surface for
 `Qdrant` fusion, broader grouped retrieval, or broader planner rewrites.
 
 ## Current Scan Contract
@@ -56,16 +57,18 @@ canonical carrier; missing values are not imputed during scan.
 - indexed scalar payload-field comparisons, `IN`, `NOT IN`, `BETWEEN`, and `NOT BETWEEN` over the admitted `payload:<path>`, equivalent public `payload(...)` forms, and exact casts whose target type matches the authoritative payload scalar type
   - integer match predicates require lookup-capable integer indexes
   - integer range predicates require range-capable integer indexes
-- exact `COUNT(*)` pushdown over a single `Qdrant` source through the crate's session/planner helper
+- exact row-count-preserving `COUNT(...)` pushdown over a single `Qdrant` source through the crate's session/planner helper
+  - currently admitted exact row-count forms are `COUNT(*)`, non-null literals such as `COUNT(1)`, and non-null `id` column references
 - exact top-facet grouped-count pushdown over one scalar `payload:<path>` field through the crate's session/planner helper
   - currently admitted facet fields are keyword, bool, and lookup-capable integer payload indexes
   - facet key outputs now follow the authoritative payload scalar type on the current runtime line:
     keyword as `Utf8`, bool as `Boolean`, and lookup-capable integer as `Int64`
-  - exact `COUNT(*)` and exact top-facet grouped counts now also survive benign payload-alias
+  - current exact grouped-count forms use the same row-count-preserving `COUNT(...)` subset as exact point count
+  - exact row-count kernels now also survive benign payload-alias and non-null `id` alias
     subquery / `CTE` shells instead of dropping back to local aggregate execution
 - a generic public `QdrantOpNode` / `QdrantOp` layer now exists above the shared kernel family
   for the current query-family retrieval prototypes
-- current exact `COUNT(*)`, scalar facet, and current query-family retrieval slices now lower
+- current exact row-count, scalar facet, and current query-family retrieval slices now lower
   through one shared internal `QdrantKernelNode` / `QdrantKernelSpec` family rather than
   isolated logical node types
 - current retrieval prototypes are DataFusion-native marker UDFs on the prepared session surface:

@@ -417,6 +417,15 @@ Use it to resume work without replaying the full repository history.
       current aligned-join `fusion` / branch-local `formula` coordination fallbacks
     - `coordination.formula.right_join` is now exercised live alongside the rest of the explicit
       formula catalog instead of remaining unconsumed inventory
+73. `Q-074`: exact aggregate-like row count now admits the current non-null row-count forms instead of underclaiming them as `COUNT(*)` only.
+    - exact point count now admits `COUNT(*)`, non-null literals such as `COUNT(1)`, and non-null
+      `id` column references over one `Qdrant` source with the same exact filter algebra
+    - exact top-facet grouped counts now admit the same row-count-preserving `COUNT(...)` subset
+      instead of requiring `COUNT(*)` specifically
+    - benign non-null `id` alias subquery shells now preserve exact row-count closure on the same
+      planner/analyzer boundary instead of localizing immediately
+    - `tests/catalog/mod.rs`, `tests/e2e.rs`, and `src/table.rs` now prove direct and aliased
+      `COUNT(id)` / `COUNT(1)` plus grouped `COUNT(id)` on the exact kernel path
 
 ## Next
 

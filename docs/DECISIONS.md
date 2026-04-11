@@ -87,16 +87,18 @@ Last updated: 2026-04-09
     - the detailed inventory for this planning round lives in `docs/QDRANT_COMPATIBILITY_MATRIX.md`
 24. Aggregate-like exploration is the first admitted `Qdrant` feature family that crosses beyond plain `TableProvider::scan`.
     - the current `DataFusion` revision does not expose an aggregate pushdown hook on `TableProvider`
-    - exact `COUNT(*)` pushdown therefore uses a narrow analyzer / extension-planner path instead of overloading scan semantics
+    - exact row-count-preserving `COUNT(...)` pushdown therefore uses a narrow analyzer / extension-planner path instead of overloading scan semantics
     - the existing provider-owned predicate algebra remains the lowering target for that higher layer; it is not duplicated
-25. The first admitted aggregate-like SQL subset is exact `COUNT(*)` over a single `Qdrant` source.
+25. The first admitted aggregate-like SQL subset is exact row-count-preserving `COUNT(...)` over a single `Qdrant` source.
     - no `GROUP BY`
     - no grouped aggregates
-    - no `COUNT(column)`
+    - the current exact row-count forms are `COUNT(*)`, non-null literals such as `COUNT(1)`, and non-null `id` column references, including benign `id` alias shells
+    - nullable or semantically broader `COUNT(column)` forms remain local
     - exact admitted filters may still participate through the existing predicate algebra
     - this path currently requires the `Qdrant` session/planner helper rather than plain `SessionContext`
 26. The second admitted aggregate-like SQL subset is exact top-facet grouped counts over one scalar payload field with an admitted facet contract.
     - the admitted exact replacement now requires `GROUP BY payload:<path> ... LIMIT N`
+    - the grouped count expression must currently be one of the same admitted exact row-count forms as point count
     - projected `ORDER BY count DESC` is optional and redundant because it matches qdrant facet's native top-count order
     - the current implementation admits one grouped field only
     - the grouped field must currently be a keyword-, bool-, or lookup-capable integer-indexed payload field
@@ -115,7 +117,7 @@ Last updated: 2026-04-09
       - kernel placement: `none`, `exact-self`, `exact-child`, `exact-children`
     - current admitted replacement ownership is still intentionally narrower than the full classifier space
     - current admitted replacement kinds are:
-      - exact single-source `COUNT(*)`
+      - exact single-source row-count-preserving `COUNT(...)`
       - exact single-source scalar facet grouped counts
     - the first explicit invalid planner surface is projection-time `payload:<path>` access in the prepared session/planner path when no admitted exact `Qdrant` kernel owns that expression
     - the first explicit `mergeable` multi-branch state is same-collection raw `UNION ALL`
@@ -131,7 +133,7 @@ Last updated: 2026-04-09
       also admitted executable `mergeable` cases; for raw full-row scan/filter branches they lower
       to conjunction and left-minus-right filter algebra respectively
     - mergeable child-kernel extraction is now treated as compositional rather than terminal:
-      exact `COUNT(*)` and exact scalar-facet grouped counts may still claim the larger parent
+      exact row-count-preserving `COUNT(...)` and exact scalar-facet grouped counts may still claim the larger parent
       subtree after a mergeable child region rewrites to one scan-local kernel in the same
       bottom-up analyzer pass
     - redundant `DISTINCT` over a raw full-row `Qdrant` scan is now dropped because row identity

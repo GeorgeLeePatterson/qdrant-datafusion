@@ -175,6 +175,14 @@ e2e_test!(
 
 #[cfg(feature = "test-utils")]
 e2e_test!(
+    table_provider_pushes_down_row_count_variants,
+    tests::test_table_provider_pushes_down_row_count_variants,
+    TRACING_DIRECTIVES,
+    None
+);
+
+#[cfg(feature = "test-utils")]
+e2e_test!(
     table_provider_pushes_down_keyword_facet,
     tests::test_table_provider_pushes_down_keyword_facet,
     TRACING_DIRECTIVES,
@@ -185,6 +193,14 @@ e2e_test!(
 e2e_test!(
     table_provider_pushes_down_keyword_facet_through_payload_alias_subquery,
     tests::test_table_provider_pushes_down_keyword_facet_through_payload_alias_subquery,
+    TRACING_DIRECTIVES,
+    None
+);
+
+#[cfg(feature = "test-utils")]
+e2e_test!(
+    table_provider_pushes_down_keyword_facet_count_id,
+    tests::test_table_provider_pushes_down_keyword_facet_count_id,
     TRACING_DIRECTIVES,
     None
 );
@@ -543,11 +559,15 @@ mod tests {
         sql::scan::aggregates::RAW_PAYLOAD_FUNCTION,
         sql::scan::aggregates::RAW_PAYLOAD_DIVISION,
         sql::scan::aggregates::CASE_HINTED_PAYLOAD,
+        sql::scan::aggregates::COUNT_ONE_RANK_GTE,
+        sql::scan::aggregates::COUNT_ID_RANK_GTE,
         sql::scan::aggregates::HAVING_LOCAL_TYPED,
         sql::scan::aggregates::HAVING_FACET,
         sql::scan::aggregates::WINDOW_OVER_FACET_SUBQUERY,
         sql::scan::aggregates::COUNT_PAYLOAD_ALIAS_SUBQUERY_EXACT,
+        sql::scan::aggregates::COUNT_ID_ALIAS_SUBQUERY_EXACT,
         sql::scan::aggregates::TAG_FACET_SUBQUERY_EXACT,
+        sql::scan::aggregates::TAG_FACET_COUNT_ID_EXACT,
         sql::scan::aggregates::TAG_FACET_CTE_EXACT,
         sql::scan::aggregates::SUBQUERY,
         sql::scan::aggregates::CTE,
@@ -4019,6 +4039,24 @@ error: {err}"
         Ok(())
     }
 
+    pub(super) async fn test_table_provider_pushes_down_row_count_variants(
+        c: Arc<QdrantContainer>,
+    ) -> Result<()> {
+        let ctx = create_catalog_scan_context(&c, "test_row_count_variants_exact").await?;
+        for case in [
+            sql::scan::aggregates::COUNT_ONE_RANK_GTE,
+            sql::scan::aggregates::COUNT_ID_RANK_GTE,
+            sql::scan::aggregates::COUNT_ID_ALIAS_SUBQUERY_EXACT,
+        ] {
+            let (values, display) = collect_i64_rows(&ctx, case.sql, "total").await?;
+            assert_eq!(values, vec![2], "case={} display={display}", case.id);
+            assert!(display.contains("QdrantCountExec"), "case={} display={display}", case.id);
+            assert!(!display.contains("AggregateExec"), "case={} display={display}", case.id);
+        }
+
+        Ok(())
+    }
+
     pub(super) async fn test_table_provider_pushes_down_keyword_facet(
         c: Arc<QdrantContainer>,
     ) -> Result<()> {
@@ -4109,6 +4147,28 @@ error: {err}"
         let (rows, display) = collect_string_i64_rows(
             &ctx,
             sql::scan::aggregates::TAG_FACET_SUBQUERY_EXACT.sql,
+            "tag",
+            "total",
+        )
+        .await?;
+
+        assert_eq!(rows, vec![("blue".to_owned(), 2), ("red".to_owned(), 1)], "{display}");
+        assert!(display.contains("QdrantFacetExec"), "{display}");
+        assert!(!display.contains("AggregateExec"), "{display}");
+        assert!(!display.contains("SortExec"), "{display}");
+        assert!(!display.contains("GlobalLimitExec"), "{display}");
+        assert!(!display.contains("LocalLimitExec"), "{display}");
+
+        Ok(())
+    }
+
+    pub(super) async fn test_table_provider_pushes_down_keyword_facet_count_id(
+        c: Arc<QdrantContainer>,
+    ) -> Result<()> {
+        let ctx = create_catalog_scan_context(&c, "test_tag_facet_count_id_exact").await?;
+        let (rows, display) = collect_string_i64_rows(
+            &ctx,
+            sql::scan::aggregates::TAG_FACET_COUNT_ID_EXACT.sql,
             "tag",
             "total",
         )
