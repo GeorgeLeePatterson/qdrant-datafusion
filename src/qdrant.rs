@@ -316,16 +316,12 @@ impl QdrantPayloadSchema {
     {
         match expr {
             Expr::Alias(alias) => self.path_for_logical_expr_with_policy(&alias.expr, accept_cast),
-            Expr::Cast(cast) => self.path_for_logical_cast_with_policy(
-                &cast.expr,
-                cast.field.data_type(),
-                accept_cast,
-            ),
-            Expr::TryCast(cast) => self.path_for_logical_cast_with_policy(
-                &cast.expr,
-                cast.field.data_type(),
-                accept_cast,
-            ),
+            Expr::Cast(cast) => {
+                self.path_for_logical_cast_with_policy(&cast.expr, &cast.data_type, accept_cast)
+            }
+            Expr::TryCast(cast) => {
+                self.path_for_logical_cast_with_policy(&cast.expr, &cast.data_type, accept_cast)
+            }
             _ => QdrantPayloadPath::from_logical_expr(expr),
         }
     }

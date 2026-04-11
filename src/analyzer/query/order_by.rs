@@ -52,11 +52,11 @@ fn ordering_path_expr(expr: &Expr) -> Option<(QdrantPayloadPath, Option<DataType
         Expr::Alias(alias) => ordering_path_expr(&alias.expr),
         Expr::Cast(cast) => {
             let (path, _) = ordering_path_expr(&cast.expr)?;
-            Some((path, Some(cast.field.data_type().clone())))
+            Some((path, Some(cast.data_type.clone())))
         }
         Expr::TryCast(cast) => {
             let (path, _) = ordering_path_expr(&cast.expr)?;
-            Some((path, Some(cast.field.data_type().clone())))
+            Some((path, Some(cast.data_type.clone())))
         }
         _ => QdrantPayloadPath::from_logical_expr(expr).map(|path| (path, None)),
     }

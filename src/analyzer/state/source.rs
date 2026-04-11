@@ -239,11 +239,9 @@ impl SourceState {
         match expr {
             Expr::Alias(alias) => self.projected_payload_path_for_expr(&alias.expr),
             Expr::Column(column) => self.projected_payload_paths.get(&column.name).cloned(),
-            Expr::Cast(cast) => {
-                self.projected_payload_path_for_cast(&cast.expr, cast.field.data_type())
-            }
+            Expr::Cast(cast) => self.projected_payload_path_for_cast(&cast.expr, &cast.data_type),
             Expr::TryCast(cast) => {
-                self.projected_payload_path_for_cast(&cast.expr, cast.field.data_type())
+                self.projected_payload_path_for_cast(&cast.expr, &cast.data_type)
             }
             _ => None,
         }

@@ -1396,6 +1396,10 @@ pub(crate) mod supported {
         pub(crate) mod update {
             use super::SqlCase;
 
+            pub(crate) const ID_ASSIGNMENT: SqlCase = SqlCase::new(
+                "writes.update.id_assignment",
+                "UPDATE vectors SET id = '9' WHERE id = '1'",
+            );
             pub(crate) const PAYLOAD_LITERAL_EXACT: SqlCase = SqlCase::new(
                 "writes.update.payload_literal_exact",
                 "UPDATE vectors SET payload = '{\"rank\":99}' WHERE payload:rank >= 20",
@@ -1423,6 +1427,7 @@ pub(crate) mod supported {
             );
 
             pub(crate) const ALL: &[SqlCase] = &[
+                ID_ASSIGNMENT,
                 PAYLOAD_LITERAL_EXACT,
                 PAYLOAD_LITERAL_RESIDUAL_ARITHMETIC,
                 PAYLOAD_LITERAL_RESIDUAL_FUNCTION,
@@ -1442,6 +1447,14 @@ pub(crate) mod supported {
             pub(crate) const PAYLOAD_RANGE: SqlCase = SqlCase::new(
                 "writes.delete.payload_range",
                 "DELETE FROM vectors WHERE payload:rank >= 20",
+            );
+            pub(crate) const RAW_PAYLOAD_ARITHMETIC: SqlCase = SqlCase::new(
+                "writes.delete.raw_payload_arithmetic",
+                "DELETE FROM vectors WHERE payload:rank + 1 > 20",
+            );
+            pub(crate) const RAW_PAYLOAD_FUNCTION: SqlCase = SqlCase::new(
+                "writes.delete.raw_payload_function",
+                "DELETE FROM vectors WHERE ABS(payload:rank) > 20",
             );
             pub(crate) const TAG_IN: SqlCase = SqlCase::new(
                 "writes.delete.tag_in",
@@ -1474,6 +1487,8 @@ pub(crate) mod supported {
                 DELETE_ALL,
                 ID_EQ,
                 PAYLOAD_RANGE,
+                RAW_PAYLOAD_ARITHMETIC,
+                RAW_PAYLOAD_FUNCTION,
                 TAG_IN,
                 TEXT_MATCH,
                 GEO_BBOX,
@@ -3484,24 +3499,6 @@ pub(crate) mod unsupported {
         pub(crate) mod delete {
             use super::UnsupportedSqlCase;
 
-            pub(crate) const RAW_PAYLOAD_ARITHMETIC: UnsupportedSqlCase =
-                UnsupportedSqlCase::deferred(
-                    "writes.delete.raw_payload_arithmetic",
-                    "DELETE FROM vectors WHERE payload:rank + 1 > 20",
-                    "Q-068",
-                    "delete currently requires exact qdrant filter lowering and does not yet \
-                     localize residual arithmetic predicates",
-                    "unsupported pushed filter",
-                );
-            pub(crate) const RAW_PAYLOAD_FUNCTION: UnsupportedSqlCase =
-                UnsupportedSqlCase::deferred(
-                    "writes.delete.raw_payload_function",
-                    "DELETE FROM vectors WHERE ABS(payload:rank) > 20",
-                    "Q-068",
-                    "delete currently requires exact qdrant filter lowering and does not yet \
-                     localize residual scalar function predicates",
-                    "unsupported pushed filter",
-                );
             pub(crate) const JOIN_DELETE: UnsupportedSqlCase = UnsupportedSqlCase::upstream(
                 "writes.delete.join_delete",
                 "DELETE FROM vectors USING vectors other WHERE vectors.id = other.id",
@@ -3510,21 +3507,26 @@ pub(crate) mod unsupported {
                 "Using clause not supported",
             );
 
-            pub(crate) const ALL: &[UnsupportedSqlCase] =
-                &[RAW_PAYLOAD_ARITHMETIC, RAW_PAYLOAD_FUNCTION, JOIN_DELETE];
+            pub(crate) const ALL: &[UnsupportedSqlCase] = &[JOIN_DELETE];
         }
 
         pub(crate) mod update {
             use super::UnsupportedSqlCase;
 
-            pub(crate) const ID_ASSIGNMENT: UnsupportedSqlCase = UnsupportedSqlCase::deferred(
-                "writes.update.id_assignment",
-                "UPDATE vectors SET id = '9' WHERE id = '1'",
-                "Q-069",
-                "current update executes as canonical row rewrite over stable qdrant ids, so key \
-                 mutation semantics remain deferred",
-                "updating 'id' is not supported",
-            );
+            pub(crate) const ID_ASSIGNMENT_DUPLICATE_TARGET: UnsupportedSqlCase =
+                UnsupportedSqlCase::invalid(
+                    "writes.update.id_assignment_duplicate_target",
+                    "UPDATE vectors SET id = '9' WHERE id IN ('1', '2')",
+                    "rewritten ids must stay unique within one update result",
+                    "rewritten 'id' values must remain unique",
+                );
+            pub(crate) const ID_ASSIGNMENT_EXISTING_CONFLICT: UnsupportedSqlCase =
+                UnsupportedSqlCase::invalid(
+                    "writes.update.id_assignment_existing_conflict",
+                    "UPDATE vectors SET id = '2' WHERE id = '1'",
+                    "rewritten ids must not collide with untouched existing rows",
+                    "rewritten 'id' values would collide with existing rows",
+                );
             pub(crate) const INVALID_PAYLOAD_JSON: UnsupportedSqlCase = UnsupportedSqlCase::invalid(
                 "writes.update.invalid_payload_json",
                 "UPDATE vectors SET payload = 'not-json' WHERE id = '1'",
@@ -3540,8 +3542,12 @@ pub(crate) mod unsupported {
                 "UPDATE ... FROM is not supported",
             );
 
-            pub(crate) const ALL: &[UnsupportedSqlCase] =
-                &[ID_ASSIGNMENT, INVALID_PAYLOAD_JSON, UPDATE_FROM];
+            pub(crate) const ALL: &[UnsupportedSqlCase] = &[
+                ID_ASSIGNMENT_DUPLICATE_TARGET,
+                ID_ASSIGNMENT_EXISTING_CONFLICT,
+                INVALID_PAYLOAD_JSON,
+                UPDATE_FROM,
+            ];
         }
     }
 

@@ -2106,6 +2106,8 @@ error: {err}"
             id if id == sql::writes::delete::DELETE_ALL.id => (3, vec![]),
             id if id == sql::writes::delete::ID_EQ.id => (1, vec![2, 3]),
             id if id == sql::writes::delete::PAYLOAD_RANGE.id => (2, vec![2]),
+            id if id == sql::writes::delete::RAW_PAYLOAD_ARITHMETIC.id => (2, vec![2]),
+            id if id == sql::writes::delete::RAW_PAYLOAD_FUNCTION.id => (1, vec![2, 3]),
             id if id == sql::writes::delete::TAG_IN.id => (2, vec![1]),
             id if id == sql::writes::delete::TEXT_MATCH.id => (2, vec![2]),
             id if id == sql::writes::delete::GEO_BBOX.id => (1, vec![2, 3]),
@@ -2146,26 +2148,32 @@ error: {err}"
         let remaining = ctx.sql(sql::scan::projection::INSERT_VERIFY.sql).await?.collect().await?;
         let remaining_batch = remaining.into_iter().next().expect("remaining batch");
         let expected = match case.id {
+            id if id == sql::writes::update::ID_ASSIGNMENT.id => {
+                (1, vec![Some(10), Some(20), Some(30)], vec![2, 3, 9])
+            }
             id if id == sql::writes::update::PAYLOAD_LITERAL_EXACT.id => {
-                (2, vec![Some(99), Some(10), Some(99)])
+                (2, vec![Some(99), Some(10), Some(99)], vec![1, 2, 3])
             }
             id if id == sql::writes::update::PAYLOAD_LITERAL_RESIDUAL_ARITHMETIC.id => {
-                (2, vec![Some(77), Some(10), Some(77)])
+                (2, vec![Some(77), Some(10), Some(77)], vec![1, 2, 3])
             }
             id if id == sql::writes::update::PAYLOAD_LITERAL_RESIDUAL_FUNCTION.id => {
-                (2, vec![Some(66), Some(10), Some(66)])
+                (2, vec![Some(66), Some(10), Some(66)], vec![1, 2, 3])
             }
             id if id == sql::writes::update::PAYLOAD_CASE_ASSIGNMENT.id => {
-                (2, vec![Some(50), Some(10), Some(60)])
+                (2, vec![Some(50), Some(10), Some(60)], vec![1, 2, 3])
             }
-            id if id == sql::writes::update::PAYLOAD_NULL.id => (1, vec![Some(30), None, Some(20)]),
+            id if id == sql::writes::update::PAYLOAD_NULL.id => {
+                (1, vec![Some(30), None, Some(20)], vec![1, 2, 3])
+            }
             id if id == sql::writes::update::PAYLOAD_LITERAL_ALL.id => {
-                (3, vec![Some(1), Some(1), Some(1)])
+                (3, vec![Some(1), Some(1), Some(1)], vec![1, 2, 3])
             }
             _ => panic!("unexpected update catalog case {}", case.id),
         };
 
         assert_eq!(batch_u64_values(&update_batch, "count"), vec![expected.0], "case={}", case.id);
+        assert_eq!(batch_u64_ids(&remaining_batch, "id"), expected.2, "case={}", case.id);
         assert_eq!(
             batch_optional_i64_values(&remaining_batch, "rank"),
             expected.1,

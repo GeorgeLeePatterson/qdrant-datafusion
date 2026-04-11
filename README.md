@@ -5,12 +5,11 @@
 The current crate scope is intentionally narrow: correct, paginated collection scans over the
 canonical Arrow carriers used by `ndarrow` and `nabled::arrow`, the exact pushdown-first SQL
 bridge for ordering and filtering, canonical-schema `INSERT INTO` / `REPLACE INTO` /
-`INSERT OVERWRITE`, exact `DELETE`, and canonical row-rewrite `UPDATE` mutation semantics,
+`INSERT OVERWRITE`, canonical `DELETE`, and canonical row-rewrite `UPDATE` mutation semantics,
 including `DataFusion` target-column reshaping into the write schema for inserts and
-exact-plus-residual filter handling for updates, and the first narrow planner slices for exact
-row-count-preserving `COUNT(...)` and top-facet grouped-count pushdown. It is not yet the broad
-SQL surface for
-`Qdrant` fusion, broader grouped retrieval, or broader planner rewrites.
+exact-plus-residual filter handling for delete/update, and the first narrow planner slices for
+exact row-count-preserving `COUNT(...)` and top-facet grouped-count pushdown. It is not yet the
+broad SQL surface for `Qdrant` fusion, broader grouped retrieval, or broader planner rewrites.
 
 ## Current Scan Contract
 
@@ -36,15 +35,14 @@ canonical carrier; missing values are not imputed during scan.
   - `INSERT INTO` now follows the current qdrant `InsertOnly` contract on the validated runtime line: existing ids are preserved while new ids insert
   - `REPLACE INTO` now follows the current qdrant `Upsert` contract on the validated runtime line: colliding ids are replaced while new ids insert
   - `INSERT OVERWRITE` now clears the collection first, then writes canonical rows through the same sink path
-- exact `DELETE FROM vectors [WHERE ...]` on the provider table through `QdrantDeleteExec`
-  - admitted delete predicates currently reuse the existing exact qdrant filter algebra
+- canonical `DELETE FROM vectors [WHERE ...]` on the provider table through `QdrantDeleteExec`
+  - exact admitted qdrant filters lower remotely; non-pushdownable predicates stay as local residual filters over materialized candidate rows before deletion
   - empty `DELETE FROM vectors` deletes all rows and returns the standard `count` result row
-  - broader residual/local delete semantics are not implied; unsupported delete predicates stay explicit in the mirrored SQL inventory
 - canonical row-rewrite `UPDATE ... SET ... [WHERE ...]` on the provider table through `QdrantUpdateExec`
-  - updates execute as stable-id row rewrites over the canonical provider schema rather than backend-specific partial mutation APIs
-  - current row identity stays stable: `id` assignment remains deferred
+  - updates execute as canonical row rewrites over the provider schema rather than backend-specific partial mutation APIs
   - exact admitted qdrant filters lower remotely; non-pushdownable predicates stay as local residual filters over the materialized candidate rows before rewrite
-  - current mirrored SQL inventory covers payload rewrites, `CASE` assignment, `NULL`, and whole-table update; `UPDATE ... FROM` remains upstream unsupported
+  - `id` assignment is admitted when the rewritten final ids remain unique within the update set and do not collide with untouched existing rows
+  - current mirrored SQL inventory covers payload rewrites, `CASE` assignment, `NULL`, `id` rewrite, and whole-table update; `UPDATE ... FROM` remains upstream unsupported
 - schema/projection-driven vector selection
 - SQL `LIMIT` pushdown to the scan stream
 - exact physical sort pushdown for `ORDER BY id ASC`
@@ -148,7 +146,7 @@ canonical carrier; missing values are not imputed during scan.
 
 ## Not Yet Admitted
 
-- broader write semantics beyond the current canonical `INSERT INTO` / `REPLACE INTO` / `INSERT OVERWRITE` / exact `DELETE` / row-rewrite `UPDATE` contract, including stable-id mutation, merge semantics, backend-specific partial payload/vector mutation APIs, richer reshaping than the current target-column normalization path, and delete shapes that need residual/local predicate execution
+- broader write semantics beyond the current canonical `INSERT INTO` / `REPLACE INTO` / `INSERT OVERWRITE` / canonical `DELETE` / row-rewrite `UPDATE` contract, including merge semantics, backend-specific partial payload/vector mutation APIs, richer reshaping than the current target-column normalization path, and broader joined mutation forms
 - broader payload/container distinctions beyond the current explicit `payload_exists(...)`, `payload_is_missing(...)`, `payload_is_null(...)`, `payload_is_empty(...)`, `payload_has_values(...)`, `payload_values_count(...)`, `payload_geo_distance(...) <= radius`, `payload_geo_within_bbox(...)`, `payload_geo_within_polygon(...)`, `payload_nested_match(...)`, `payload_text_match(...)`, `payload_text_any(...)`, and `payload_phrase_match(...)` subset
 - broader payload-key SQL `ORDER BY` pushdown beyond the admitted `payload:<path>` subset
 - broader aggregate/grouped SQL beyond the admitted scalar-facet subset

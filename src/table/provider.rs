@@ -17,7 +17,6 @@ use super::delete::QdrantDeleteExec;
 use super::insert::QdrantInsertSink;
 use super::update::QdrantUpdateExec;
 use super::{QdrantScanExec, QdrantScanSpec, QdrantTableProvider};
-use crate::arrow::schema::ID_FIELD_NAME;
 use crate::qdrant::filter::QdrantFilters;
 
 #[async_trait::async_trait]
@@ -86,14 +85,27 @@ impl datafusion::catalog::TableProvider for QdrantTableProvider {
 
     async fn delete_from(
         &self,
-        _state: &dyn Session,
+        state: &dyn Session,
         filters: Vec<Expr>,
     ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
-        let filters = QdrantFilters::try_new(&self.schema, &self.payload_schema, &filters)?;
+        let planning_schema = self.planning_schema();
+        let df_schema = DFSchema::try_from(Arc::clone(&planning_schema))?;
+        let (exact_filters, residual_filters): (Vec<_>, Vec<_>) =
+            filters.into_iter().partition(|filter| {
+                QdrantFilters::supports_exact(&self.schema, &self.payload_schema, filter)
+            });
+        let exact_filters =
+            QdrantFilters::try_new(&self.schema, &self.payload_schema, &exact_filters)?;
+        let residual_filters = residual_filters
+            .into_iter()
+            .map(|expr| state.create_physical_expr(expr, &df_schema))
+            .collect::<DataFusionResult<Vec<Arc<dyn PhysicalExpr>>>>()?;
         Ok(Arc::new(QdrantDeleteExec::new(
             Arc::clone(&self.client),
             self.table.table().to_owned(),
-            filters,
+            planning_schema,
+            exact_filters,
+            residual_filters,
         )))
     }
 
@@ -115,13 +127,6 @@ impl datafusion::catalog::TableProvider for QdrantTableProvider {
                     "UPDATE failed: column '{}' does not exist. Available columns: {}",
                     column_name,
                     available_columns.join(", ")
-                );
-            }
-            if column_name == ID_FIELD_NAME {
-                return plan_err!(
-                    "UPDATE failed: updating '{}' is not supported on the current qdrant \
-                     row-rewrite contract",
-                    ID_FIELD_NAME
                 );
             }
             physical_assignments.push((column_name, state.create_physical_expr(expr, &df_schema)?));

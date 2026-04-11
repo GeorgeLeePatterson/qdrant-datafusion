@@ -7,10 +7,9 @@ use std::sync::Arc;
 use datafusion::arrow::array::{ArrayRef, BooleanArray, Int64Array, RecordBatch, StringArray};
 use datafusion::arrow::compute::SortOptions;
 use datafusion::arrow::datatypes::{DataType, SchemaRef};
-use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{Result, exec_err};
+use datafusion::physical_expr::PhysicalSortExpr;
 use datafusion::physical_expr::expressions::Column;
-use datafusion::physical_expr::{PhysicalExpr, PhysicalSortExpr};
 use datafusion::physical_plan::execution_plan::Boundedness;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
@@ -175,13 +174,6 @@ macro_rules! impl_leaf_execution_plan {
         fn as_any(&self) -> &dyn Any { self }
 
         fn properties(&self) -> &Arc<PlanProperties> { &self.properties }
-
-        fn apply_expressions(
-            &self,
-            _f: &mut dyn FnMut(&dyn PhysicalExpr) -> Result<TreeNodeRecursion>,
-        ) -> Result<TreeNodeRecursion> {
-            Ok(TreeNodeRecursion::Continue)
-        }
 
         fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> { vec![] }
 

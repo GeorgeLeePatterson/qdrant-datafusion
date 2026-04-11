@@ -436,6 +436,12 @@ Use it to resume work without replaying the full repository history.
       arithmetic or scalar-expression projection shells into exact aggregate kernels
     - `tests/catalog/mod.rs`, `tests/e2e.rs`, and `src/table.rs` now prove exact count/facet
       closure through literal alias shells on the shared analyzer/kernel path
+75. `Q-076`: canonical mutation coverage now closes the remaining deferred delete/update gaps.
+    - `QdrantTableProvider::delete_from` now partitions exact admitted qdrant filters from residual local predicates instead of requiring exact-only delete lowering
+    - `QdrantDeleteExec` now scrolls exact-filter candidate rows, evaluates residual predicates locally, and deletes the matched ids through the same provider-owned row contract
+    - `QdrantTableProvider::update` now admits `id` assignment on the canonical row-rewrite path when the rewritten final ids remain unique within the update set and do not collide with untouched existing rows
+    - `tests/catalog/mod.rs` now moves the deferred `writes.delete.raw_payload_*` and `writes.update.id_assignment` cases onto the supported side, and it adds explicit invalid `id`-collision cases so the new boundary remains reviewable from the SQL inventory
+    - the remaining unsupported write cases are now upstream parser/planner limits or explicit invalid-input contract boundaries rather than deferred provider execution gaps
 
 ## Next
 
@@ -476,9 +482,9 @@ When the next implementation round starts:
    - top-level nullable vector columns
    - paginated `scroll`
    - current typed `qdrant-client` APIs only
-3. keep the mutation contract explicit: canonical `INSERT INTO` / `REPLACE INTO` / `INSERT OVERWRITE` / exact `DELETE` / row-rewrite `UPDATE` only unless broader semantics are deliberately specified
+3. keep the mutation contract explicit: canonical `INSERT INTO` / `REPLACE INTO` / `INSERT OVERWRITE` / canonical `DELETE` / row-rewrite `UPDATE` only unless broader semantics are deliberately specified
    - current admitted write reshaping is only the `DataFusion` target-column normalization path into the canonical provider schema
-   - current admitted update keeps stable ids and uses exact-plus-residual filter handling over the canonical provider row contract
+   - current admitted delete/update use exact-plus-residual filter handling over the canonical provider row contract, and `id` rewrite is only admitted when final ids remain unique and collision-free
 4. use `DataFusion` primary-source idioms before inventing project-local traversal or rewrite patterns
 5. admit only explicit pushdown subsets; reject unsupported cases cleanly instead of approximating them
    - when widening behavior, prefer one shared invariant-based recognizer over duplicated local shape checks

@@ -81,11 +81,48 @@ pub(crate) fn record_batch_to_points(
     Ok(points)
 }
 
+pub(crate) fn record_batch_id_strings(batch: &RecordBatch) -> DataFusionResult<Vec<String>> {
+    let id_index = batch.schema().index_of(ID_FIELD_NAME).map_err(|_| {
+        DataFusionError::Execution(format!(
+            "write batch is missing required '{ID_FIELD_NAME}' column"
+        ))
+    })?;
+    (0..batch.num_rows())
+        .map(|row| {
+            string_at(batch.column(id_index), row, ID_FIELD_NAME)?.ok_or_else(|| {
+                DataFusionError::Execution(format!(
+                    "row {row} is missing required '{ID_FIELD_NAME}' value"
+                ))
+            })
+        })
+        .collect()
+}
+
+pub(crate) fn record_batch_point_ids(batch: &RecordBatch) -> DataFusionResult<Vec<PointId>> {
+    record_batch_id_strings(batch)?
+        .into_iter()
+        .map(|value| Ok(point_id_from_string(value)))
+        .collect()
+}
+
+pub(crate) fn point_id_from_string(value: impl Into<String>) -> PointId {
+    let value = value.into();
+    value.parse::<u64>().map_or_else(|_| PointId::from(value), PointId::from)
+}
+
+pub(crate) fn point_id_to_string(value: &PointId) -> String {
+    match value.point_id_options.as_ref() {
+        Some(qdrant_client::qdrant::point_id::PointIdOptions::Num(value)) => value.to_string(),
+        Some(qdrant_client::qdrant::point_id::PointIdOptions::Uuid(value)) => value.clone(),
+        None => "<missing>".to_owned(),
+    }
+}
+
 fn point_id_at(array: &ArrayRef, row: usize) -> DataFusionResult<PointId> {
     let value = string_at(array, row, ID_FIELD_NAME)?.ok_or_else(|| {
         DataFusionError::Execution(format!("row {row} is missing required '{ID_FIELD_NAME}' value"))
     })?;
-    Ok(value.parse::<u64>().map_or_else(|_| PointId::from(value), PointId::from))
+    Ok(point_id_from_string(value))
 }
 
 fn payload_at(array: &ArrayRef, row: usize) -> DataFusionResult<Payload> {

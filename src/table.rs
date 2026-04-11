@@ -2,6 +2,7 @@
 mod delete;
 mod exec;
 mod insert;
+mod mutation;
 mod provider;
 pub(crate) mod scan_spec;
 mod scroll;
@@ -3307,6 +3308,54 @@ mod tests {
     }
 
     #[test]
+    fn physical_plan_builds_qdrant_delete_exec_for_exact_and_residual_filters() {
+        let provider = QdrantTableProvider {
+            payload_schema: payload_schema([(
+                "rank",
+                PayloadSchemaInfo {
+                    data_type: qdrant_client::qdrant::PayloadSchemaType::Integer as i32,
+                    params: Some(qdrant_client::qdrant::PayloadIndexParams {
+                        index_params: Some(
+                            qdrant_client::qdrant::payload_index_params::IndexParams::IntegerIndexParams(
+                                IntegerIndexParamsBuilder::new(true, true).build(),
+                            ),
+                        ),
+                    }),
+                    points: None,
+                },
+            )]),
+            ..test_provider(Schema::new(vec![
+                Field::new(ID_FIELD_NAME, DataType::Utf8, false),
+                Field::new(PAYLOAD_FIELD_NAME, DataType::Utf8, true),
+                Field::new(
+                    "vector",
+                    DataType::new_fixed_size_list(DataType::Float32, 1, false),
+                    true,
+                ),
+            ]))
+        };
+        let ctx = SessionContext::new();
+        drop(ctx.register_table("vectors", Arc::new(provider)).expect("register qdrant table"));
+
+        let dataframe = ctx
+            .sql("DELETE FROM vectors WHERE payload:rank >= 20 AND character_length(id) > 0")
+            .now_or_never()
+            .expect("sql future is ready")
+            .expect("delete dataframe");
+        let plan = dataframe
+            .create_physical_plan()
+            .now_or_never()
+            .expect("plan future is ready")
+            .expect("delete physical plan");
+        let display = displayable(plan.as_ref()).indent(true).to_string();
+        let _delete = qdrant_delete(&plan);
+
+        assert!(display.contains("QdrantDeleteExec"), "{display}");
+        assert!(display.contains("filter_leaves=1"), "{display}");
+        assert!(display.contains("residual_filters=1"), "{display}");
+    }
+
+    #[test]
     fn physical_plan_builds_qdrant_update_exec_for_exact_and_residual_filters() {
         let provider = QdrantTableProvider {
             payload_schema: payload_schema([(
@@ -3356,6 +3405,54 @@ mod tests {
         assert!(display.contains("assignments=1"), "{display}");
         assert!(display.contains("filter_leaves=1"), "{display}");
         assert!(display.contains("residual_filters=1"), "{display}");
+    }
+
+    #[test]
+    fn physical_plan_builds_qdrant_update_exec_for_id_assignment() {
+        let provider = QdrantTableProvider {
+            payload_schema: payload_schema([(
+                "rank",
+                PayloadSchemaInfo {
+                    data_type: qdrant_client::qdrant::PayloadSchemaType::Integer as i32,
+                    params: Some(qdrant_client::qdrant::PayloadIndexParams {
+                        index_params: Some(
+                            qdrant_client::qdrant::payload_index_params::IndexParams::IntegerIndexParams(
+                                IntegerIndexParamsBuilder::new(true, true).build(),
+                            ),
+                        ),
+                    }),
+                    points: None,
+                },
+            )]),
+            ..test_provider(Schema::new(vec![
+                Field::new(ID_FIELD_NAME, DataType::Utf8, false),
+                Field::new(PAYLOAD_FIELD_NAME, DataType::Utf8, true),
+                Field::new(
+                    "vector",
+                    DataType::new_fixed_size_list(DataType::Float32, 1, false),
+                    true,
+                ),
+            ]))
+        };
+        let ctx = SessionContext::new();
+        drop(ctx.register_table("vectors", Arc::new(provider)).expect("register qdrant table"));
+
+        let dataframe = ctx
+            .sql("UPDATE vectors SET id = '9' WHERE id = '1'")
+            .now_or_never()
+            .expect("sql future is ready")
+            .expect("update dataframe");
+        let plan = dataframe
+            .create_physical_plan()
+            .now_or_never()
+            .expect("plan future is ready")
+            .expect("update physical plan");
+        let display = displayable(plan.as_ref()).indent(true).to_string();
+        let _update = qdrant_update(&plan);
+
+        assert!(display.contains("QdrantUpdateExec"), "{display}");
+        assert!(display.contains("assignments=1"), "{display}");
+        assert!(display.contains("filter_leaves=1"), "{display}");
     }
 
     #[test]
