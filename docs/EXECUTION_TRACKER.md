@@ -442,6 +442,11 @@ Use it to resume work without replaying the full repository history.
     - `QdrantTableProvider::update` now admits `id` assignment on the canonical row-rewrite path when the rewritten final ids remain unique within the update set and do not collide with untouched existing rows
     - `tests/catalog/mod.rs` now moves the deferred `writes.delete.raw_payload_*` and `writes.update.id_assignment` cases onto the supported side, and it adds explicit invalid `id`-collision cases so the new boundary remains reviewable from the SQL inventory
     - the remaining unsupported write cases are now upstream parser/planner limits or explicit invalid-input contract boundaries rather than deferred provider execution gaps
+76. `Q-077`: the supported SQL catalog audit now distinguishes intended local semantics from real fallback gaps.
+    - the previous 13 `LocalFallback` cases were re-audited across aggregate shells, broader grouped `DISTINCT ON`, and coordination joins using the stricter definition that fallback means an admitted short-term capability gap
+    - `scan.aggregates.tag_group_local`, `scan.aggregates.having_facet`, `scan.aggregates.window_over_facet_subquery`, `query.grouped.multi_key_subquery`, and `coordination.formula.inner_join_qdrant_only_leaf` are now classified `Full`
+    - the coordinated `formula` `LEFT` / `RIGHT` joins and `fusion` `INNER` / `LEFT` / `RIGHT` joins for both `RRF` and `DBSF` remain `LocalFallback` because they still rely on explicit local join rewrites above qdrant branches
+    - `LocalFallback` therefore remains a live supported classification, with plan-shape assertions still enforced in `tests/e2e.rs`
 
 ## Next
 

@@ -209,7 +209,7 @@ Current branch reality:
 44. Admission-mode tracking and SQL-inventory tracking are now explicit and separate from feature tracking.
     - `docs/ADMISSION_MATRIX.md` now records which major semantic families are exact-only, exact-plus-residual, local-fallback, remote-only, or still strict-for-now
     - `tests/catalog/mod.rs` now mirrors supported / unsupported SQL catalogs consumed by `tests/e2e.rs` and `tests/unsupported_e2e.rs`, so capability movement is reviewable as queries, not only prose
-    - supported catalog entries now also distinguish `Full` from `LocalFallback`, and `LocalFallback` cases must prove their fallback plan shape in `tests/e2e.rs` instead of relying on prose-only notes
+    - supported catalog entries now also distinguish `Full` from `LocalFallback`; after the current audit only the still-gap-backed coordinated join cases remain `LocalFallback`, and they must still prove their fallback plan shape in `tests/e2e.rs` instead of relying on prose-only notes
     - the mirrored catalogs now also carry explicit subquery coverage per namespace plus broader `CTE`, `UNION ALL`, `UNNEST`, `WINDOW`, and join-matrix SQL inventory where those forms materially interact with qdrant admission behavior
     - that join matrix now explicitly covers representative `INNER`, `LEFT`, `RIGHT`, `FULL`, `CROSS`, `SEMI`, and `ANTI` forms plus `ON` / `USING` variants across the standard SQL scan/write surface, independent query-family branches joined locally above remote kernels, and the qdrant-specific coordination surface
     - unsupported catalog entries now distinguish `Deferred`, `ByDesign`, `Upstream`, and `InvalidInput` so the current public boundary is readable without code inspection
@@ -220,11 +220,11 @@ Current branch reality:
     - exact integer payload filters now also accept integral float literals, which closes the `qdrant_condition(qdrant_payload_num('rank') > 0)` path without weakening fractional exactness
 46. Explicit `RRF` fusion now composes over aligned local joins when the score inputs come from independently-closable query branches.
     - `qdrant_fusion_score(...)` still admits the exact coordinated `FULL OUTER JOIN USING (id)` remote rewrite for the current coordinated subset
-    - explicit `RRF` score-column inputs now additionally admit a local fallback over aligned `INNER` / `LEFT` / `RIGHT` joins on `id`
+    - explicit `RRF` score-column inputs now additionally admit a local aligned-join fallback over `INNER` / `LEFT` / `RIGHT` joins on `id`
     - the optimizer materializes per-branch local rank columns, rewrites the fusion surface to explicit local `RRF` arithmetic, and leaves the outer SQL join local
 47. Explicit `DBSF` fusion now composes over aligned local joins when the score inputs come from independently-closable query branches.
     - `qdrant_fusion_score(...)` still admits the exact coordinated `FULL OUTER JOIN USING (id)` remote rewrite for the current coordinated subset
-    - explicit `DBSF` score-column inputs now additionally admit a local fallback over aligned `INNER` / `LEFT` / `RIGHT` joins on `id`
+    - explicit `DBSF` score-column inputs now additionally admit a local aligned-join fallback over `INNER` / `LEFT` / `RIGHT` joins on `id`
     - the optimizer now materializes per-branch local normalized score contributions using the same mean / sample-stddev contract as qdrant's current DBSF implementation, then leaves the outer SQL join local
     - `CROSS JOIN` remains by-design unsupported because it does not align the same candidate across branches
 

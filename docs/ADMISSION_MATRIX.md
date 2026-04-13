@@ -30,6 +30,10 @@ The supported catalog is explicitly classified as well:
   stronger qdrant-owned contract; these entries must carry explicit plan-shape assertions in
   `tests/e2e.rs`
 
+The current catalog audit leaves only the coordinated join-gap cases in `LocalFallback`; broader
+aggregate shells, broader grouped `DISTINCT ON`, and the branch-local qdrant-only formula-leaf
+case are now classified `Full`.
+
 The unsupported catalog is also explicitly classified so review does not depend on reading code or
 tracker prose alone:
 

@@ -1064,30 +1064,21 @@ pub(crate) mod supported {
                 "WITH base AS (SELECT payload:tag AS tag, 1 AS marker FROM vectors) SELECT tag, \
                  COUNT(marker) AS total FROM base GROUP BY tag ORDER BY total DESC LIMIT 2",
             );
-            pub(crate) const TAG_GROUP_LOCAL: SqlCase = SqlCase::local_fallback(
+            pub(crate) const TAG_GROUP_LOCAL: SqlCase = SqlCase::new(
                 "scan.aggregates.tag_group_local",
                 "SELECT payload:tag AS tag, COUNT(*) AS total FROM vectors GROUP BY payload:tag \
                  ORDER BY total DESC, tag",
-                &["AggregateExec", "SortExec"],
-                &[],
-                &["QdrantFacetExec"],
             );
-            pub(crate) const HAVING_FACET: SqlCase = SqlCase::local_fallback(
+            pub(crate) const HAVING_FACET: SqlCase = SqlCase::new(
                 "scan.aggregates.having_facet",
                 "SELECT payload:tag AS tag, COUNT(*) AS total FROM vectors GROUP BY payload:tag \
                  HAVING COUNT(*) >= 1 ORDER BY total DESC, tag",
-                &["AggregateExec", "FilterExec"],
-                &[],
-                &["QdrantFacetExec"],
             );
-            pub(crate) const WINDOW_OVER_FACET_SUBQUERY: SqlCase = SqlCase::local_fallback(
+            pub(crate) const WINDOW_OVER_FACET_SUBQUERY: SqlCase = SqlCase::new(
                 "scan.aggregates.window_over_facet_subquery",
                 "SELECT tag, total, ROW_NUMBER() OVER (ORDER BY total DESC, tag) AS row_num FROM \
                  (SELECT payload:tag AS tag, COUNT(*) AS total FROM vectors GROUP BY payload:tag) \
                  facet ORDER BY row_num",
-                &["AggregateExec", "WindowAggExec"],
-                &[],
-                &["QdrantFacetExec"],
             );
             pub(crate) const SUBQUERY: SqlCase = SqlCase::new(
                 "scan.aggregates.subquery",
@@ -2830,7 +2821,7 @@ pub(crate) mod supported {
                     ") grouped_b"
                 ),
             );
-            pub(crate) const MULTI_KEY_SUBQUERY: SqlCase = SqlCase::local_fallback(
+            pub(crate) const MULTI_KEY_SUBQUERY: SqlCase = SqlCase::new(
                 "query.grouped.multi_key_subquery",
                 concat!(
                     "SELECT * FROM (",
@@ -2839,9 +2830,6 @@ pub(crate) mod supported {
                     "FROM vectors ORDER BY payload:tag, id",
                     ") grouped"
                 ),
-                &["QdrantQueryExec", "AggregateExec"],
-                &[],
-                &["QdrantQueryGroupsExec"],
             );
 
             pub(crate) const ALL: &[SqlCase] = &[
@@ -2992,7 +2980,7 @@ pub(crate) mod supported {
                 &["JoinExec", "HashJoinExec"],
                 &["prefetch=2"],
             );
-            pub(crate) const INNER_JOIN_QDRANT_ONLY_LEAF: SqlCase = SqlCase::local_fallback(
+            pub(crate) const INNER_JOIN_QDRANT_ONLY_LEAF: SqlCase = SqlCase::new(
                 "coordination.formula.inner_join_qdrant_only_leaf",
                 concat!(
                     "SELECT dense.id, qdrant_formula_score(dense.score + \
@@ -3003,9 +2991,6 @@ pub(crate) mod supported {
                      ORDER BY score DESC LIMIT 5) sparse ON dense.id = sparse.id ",
                     "ORDER BY score DESC LIMIT 2"
                 ),
-                &["QdrantQueryExec", "__qdrant_formula_score"],
-                &["JoinExec", "HashJoinExec"],
-                &[],
             );
 
             pub(crate) const ALL: &[SqlCase] = &[
