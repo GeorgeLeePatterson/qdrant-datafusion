@@ -10,6 +10,8 @@ pub enum Error {
     MissingCollectionInfo(String),
     #[error("Collection info params not found for collection '{0}'")]
     MissingCollectionInfoParams(String),
+    #[error("Invalid collection schema: {0}")]
+    InvalidCollectionSchema(String),
 }
 
 impl From<qdrant_client::QdrantError> for Error {

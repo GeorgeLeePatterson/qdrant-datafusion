@@ -22,7 +22,7 @@ pub const GRPC_PORT_ENV: &str = "QDRANT_HTTP_PORT";
 pub const API_KEY_ENV: &str = "QDRANT_API_KEY";
 pub const QDRANT_API_KEY_ENV: &str = "QDRANT__SERVICE__API_KEY";
 
-pub const QDRANT_VERSION: &str = "latest";
+pub const QDRANT_VERSION: &str = "v1.17.0";
 pub const QDRANT_REST_PORT: u16 = 6333;
 pub const QDRANT_GRPC_PORT: u16 = 6334;
 pub const QDRANT_ENDPOINT: &str = "localhost";
@@ -51,7 +51,6 @@ pub fn init_tracing(directives: Option<&[(&str, &str)]>) {
 /// Common tracing filters
 ///
 /// # Panics
-#[allow(unused)]
 pub fn get_filter(rust_log: &str, directives: Option<&[(&str, &str)]>) -> EnvFilter {
     let mut env_dirs = vec![];
     let level = if rust_log.is_empty() {
@@ -149,13 +148,7 @@ impl QdrantContainer {
         sleep(Duration::from_secs(2)).await;
 
         let container = RwLock::new(Some(container));
-        Ok(QdrantContainer {
-            endpoint,
-            rest_port,
-            grpc_port,
-            api_key: api_key.to_string(),
-            container,
-        })
+        Ok(QdrantContainer { endpoint, rest_port, grpc_port, api_key: api_key.clone(), container })
     }
 
     pub fn get_url(&self) -> String { format!("http://{}:{}", self.endpoint, self.grpc_port) }

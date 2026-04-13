@@ -1,423 +1,1141 @@
-//! Schema-driven [`RecordBatch`] builder for `Qdrant` data
-use std::collections::HashMap;
+//! Schema-driven [`RecordBatch`] builder for `Qdrant` data.
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
-use datafusion::arrow::array::*;
-use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::arrow::array::{
+    ArrayRef, FixedSizeListArray, Float32Array, Float32Builder, Int32Array, ListArray,
+    NullBufferBuilder, StringBuilder, StructArray, UInt32Array,
+};
+use datafusion::arrow::buffer::{NullBuffer, OffsetBuffer, ScalarBuffer};
+use datafusion::arrow::datatypes::{DataType, Field, SchemaRef};
 use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::common::{ScalarValue, exec_err};
 use datafusion::error::{DataFusionError, Result as DataFusionResult};
 use qdrant_client::qdrant::{
-    ScoredPoint, SparseVector, VectorOutput, VectorsOutput, point_id, vector_output, vectors_output,
+    PointId, RetrievedPoint, ScoredPoint, Value, VectorOutput, VectorsOutput, point_id, value,
+    vector_output, vectors_output,
 };
 
-use super::schema::is_multi_vector_field;
+use super::schema::{
+    ID_FIELD_NAME, PAYLOAD_FIELD_NAME, QdrantFieldBinding, UNNAMED_VECTOR_FIELD_NAME,
+    field_uses_unnamed_vector_contract,
+};
 
-/// Convert flat vector data into multi-vector format with proper validation.
-///
-/// This function implements the same conversion logic as `Qdrant`'s Rust client `try_into_multi()`
-/// method. It takes a flat array of floats and splits it into multiple sub-vectors based on the
-/// vectors count. This handles Qdrant's deprecated protobuf format for multi-vectors.
-///
-/// # Arguments
-/// * `data` - Flat array of float values representing concatenated vectors
-/// * `vectors_count` - Number of vectors to split the data into
-///
-/// # Returns
-/// A vector of vectors, where each sub-vector represents one embedding.
-///
-/// # Errors
-/// Returns a `DataFusionError` if the data length is not evenly divisible by the vectors count,
-/// which indicates malformed multi-vector data.
-///
-/// # Examples
-/// ```rust,ignore
-/// use qdrant_datafusion::arrow::deserialize::convert_to_multi_vector;
-///
-/// // Convert [1.0, 2.0, 3.0, 4.0] into 2 vectors of length 2
-/// let data = vec![1.0, 2.0, 3.0, 4.0];
-/// let result = convert_to_multi_vector(&data, 2).unwrap();
-/// assert_eq!(result, vec![vec![1.0, 2.0], vec![3.0, 4.0]]);
-/// ```
-pub fn convert_to_multi_vector(
-    data: &[f32],
-    vectors_count: u32,
-) -> DataFusionResult<Vec<Vec<f32>>> {
-    if data.len() % vectors_count as usize != 0 {
-        return Err(DataFusionError::External(Box::new(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!(
-                "Malformed multi vector: data length {} is not divisible by vectors count {}",
-                data.len(),
-                vectors_count
-            ),
-        ))));
+fn vector_kind(vector: &vector_output::Vector) -> &'static str {
+    match vector {
+        vector_output::Vector::Dense(_) => "dense",
+        vector_output::Vector::Sparse(_) => "sparse",
+        vector_output::Vector::MultiDense(_) => "multidense",
+    }
+}
+
+struct DenseVectorRows {
+    name:    String,
+    unnamed: bool,
+    width:   usize,
+    values:  Vec<f32>,
+    nulls:   NullBufferBuilder,
+}
+
+impl DenseVectorRows {
+    fn new(name: String, unnamed: bool, width: usize, capacity: usize) -> Self {
+        Self {
+            name,
+            unnamed,
+            width,
+            values: Vec::with_capacity(capacity.saturating_mul(width)),
+            nulls: NullBufferBuilder::new(capacity),
+        }
     }
 
-    let chunk_size = data.len() / vectors_count as usize;
-    Ok(data.chunks(chunk_size).map(<[f32]>::to_vec).collect())
-}
-
-/// Internal vector content representation for efficient processing.
-///
-/// This enum provides a clean abstraction over `Qdrant`'s various vector formats,
-/// normalizing them for consistent processing in the record batch builder.
-/// It handles both newer and deprecated protobuf formats from Qdrant.
-#[derive(Debug)]
-pub enum Vector {
-    Dense(Vec<f32>),
-    Sparse(SparseVector),
-    MultiDense(Vec<Vec<f32>>),
-}
-
-impl Vector {
-    /// Extract vector content from `VectorOutput`
-    fn from_vector_output(vector_output: VectorOutput) -> Option<Self> {
-        // Check newer format first
-        if let Some(vector) = vector_output.vector {
-            return match vector {
-                vector_output::Vector::Dense(dense) => Some(Self::Dense(dense.data)),
-                vector_output::Vector::Sparse(sparse) => Some(Self::Sparse(sparse)),
-                vector_output::Vector::MultiDense(multi) => {
-                    Some(Self::MultiDense(multi.vectors.into_iter().map(|v| v.data).collect()))
+    fn push(&mut self, vector: Option<vector_output::Vector>) -> DataFusionResult<()> {
+        match vector {
+            Some(vector_output::Vector::Dense(dense)) => {
+                if dense.data.len() != self.width {
+                    return exec_err!(
+                        "'{}' dense width expected={}, found={}",
+                        self.name,
+                        self.width,
+                        dense.data.len()
+                    );
                 }
-            };
+                self.values.extend(dense.data);
+                self.nulls.append_non_null();
+            }
+            Some(other) => {
+                return exec_err!(
+                    "'{}' expected dense vector, found {}",
+                    self.name,
+                    vector_kind(&other)
+                );
+            }
+            None => {
+                self.values.resize(self.values.len() + self.width, 0.0);
+                self.nulls.append_null();
+            }
         }
+        Ok(())
+    }
 
-        // Fall back to deprecated format
-        if let Some(vectors_count) = vector_output.vectors_count
-            && let Ok(multi_vectors) = convert_to_multi_vector(&vector_output.data, vectors_count)
-        {
-            // Multi-vector in deprecated format
-            return Some(Self::MultiDense(multi_vectors));
+    fn finish(self) -> DataFusionResult<ArrayRef> {
+        let width_i32 = int32_from_usize(&self.name, "dense vector width", self.width)?;
+        if !self.values.len().is_multiple_of(self.width) {
+            return exec_err!(
+                "'{}' packed dense length {} is not divisible by width {}",
+                self.name,
+                self.values.len(),
+                self.width
+            );
         }
+        let row_count = self.values.len() / self.width;
+        let nulls = self.nulls.build();
+        validate_null_count(&self.name, row_count, nulls.as_ref())?;
 
-        // Check for sparse in deprecated format
-        if let Some(indices) = vector_output.indices {
-            return Some(Self::Sparse(SparseVector {
-                indices: indices.data,
-                values:  vector_output.data,
-            }));
-        }
-
-        // No vectors found
-        if vector_output.data.is_empty() {
-            return None;
-        }
-
-        // Regular dense vector in deprecated format
-        Some(Self::Dense(vector_output.data))
+        let item_field = Arc::new(Field::new("item", DataType::Float32, false));
+        let values: ArrayRef = Arc::new(Float32Array::from(self.values));
+        Ok(Arc::new(FixedSizeListArray::new(item_field, width_i32, values, nulls)))
     }
 }
 
-/// Schema-driven field extractor - one per schema field
-enum FieldExtractor {
+struct MultiVectorRows {
+    name:         String,
+    unnamed:      bool,
+    width:        usize,
+    width_i32:    i32,
+    data_offsets: Vec<i32>,
+    running_size: i32,
+    values:       Vec<f32>,
+    shapes:       Vec<i32>,
+    nulls:        NullBufferBuilder,
+}
+
+impl MultiVectorRows {
+    fn new(name: String, unnamed: bool, width: usize, capacity: usize) -> DataFusionResult<Self> {
+        Ok(Self {
+            width_i32: int32_from_usize(&name, "multivector width", width)?,
+            name,
+            unnamed,
+            width,
+            data_offsets: vec![0],
+            running_size: 0,
+            values: Vec::new(),
+            shapes: Vec::with_capacity(capacity.saturating_mul(2)),
+            nulls: NullBufferBuilder::new(capacity),
+        })
+    }
+
+    fn push(&mut self, vector: Option<vector_output::Vector>) -> DataFusionResult<()> {
+        match vector {
+            Some(vector_output::Vector::MultiDense(multi)) => {
+                let row_count = multi.vectors.len();
+                let mut row_size = 0_usize;
+                for vector in multi.vectors {
+                    if vector.data.len() != self.width {
+                        return exec_err!(
+                            "'{}' multivector row expected={}, found={}",
+                            self.name,
+                            self.width,
+                            vector.data.len()
+                        );
+                    }
+                    row_size += vector.data.len();
+                    self.values.extend(vector.data);
+                }
+                let row_size = int32_from_usize(&self.name, "multivector packed length", row_size)?;
+                self.running_size = checked_add_i32(
+                    &self.name,
+                    "multivector packed length",
+                    self.running_size,
+                    row_size,
+                )?;
+                self.data_offsets.push(self.running_size);
+                self.shapes.push(int32_from_usize(&self.name, "multivector row count", row_count)?);
+                self.shapes.push(self.width_i32);
+                self.nulls.append_non_null();
+            }
+            Some(other) => {
+                return exec_err!(
+                    "'{}' expected multivector, found {}",
+                    self.name,
+                    vector_kind(&other)
+                );
+            }
+            None => {
+                self.data_offsets.push(self.running_size);
+                self.shapes.push(0);
+                self.shapes.push(self.width_i32);
+                self.nulls.append_null();
+            }
+        }
+        Ok(())
+    }
+
+    fn finish(self) -> DataFusionResult<ArrayRef> {
+        let row_count = self.data_offsets.len().saturating_sub(1);
+        if self.shapes.len() != row_count.saturating_mul(2) {
+            return exec_err!(
+                "'{}' packed multivector shapes length {} does not match row count {row_count}",
+                self.name,
+                self.shapes.len()
+            );
+        }
+        let nulls = self.nulls.build();
+        validate_null_count(&self.name, row_count, nulls.as_ref())?;
+
+        let data_item_field = Arc::new(Field::new_list_field(DataType::Float32, false));
+        let data_values: ArrayRef = Arc::new(Float32Array::from(self.values));
+        let data_list: ArrayRef = Arc::new(ListArray::new(
+            data_item_field,
+            OffsetBuffer::new(ScalarBuffer::from(self.data_offsets)),
+            data_values,
+            None,
+        ));
+
+        let shape_item_field = Arc::new(Field::new("item", DataType::Int32, false));
+        let shape_values: ArrayRef = Arc::new(Int32Array::from(self.shapes));
+        let shape_array: ArrayRef =
+            Arc::new(FixedSizeListArray::new(shape_item_field, 2, shape_values, None));
+
+        let struct_fields = vec![
+            Field::new("data", data_list.data_type().clone(), false),
+            Field::new("shape", shape_array.data_type().clone(), false),
+        ];
+        Ok(Arc::new(StructArray::new(struct_fields.into(), vec![data_list, shape_array], nulls)))
+    }
+}
+
+struct SparseVectorRows {
+    name:          String,
+    unnamed:       bool,
+    shapes:        Vec<i32>,
+    row_ptrs:      Vec<i32>,
+    row_ptrs_offs: Vec<i32>,
+    col_indices:   Vec<u32>,
+    col_offs:      Vec<i32>,
+    values:        Vec<f32>,
+    value_offs:    Vec<i32>,
+    nulls:         NullBufferBuilder,
+}
+
+impl SparseVectorRows {
+    fn new(name: String, unnamed: bool, capacity: usize) -> Self {
+        Self {
+            name,
+            unnamed,
+            shapes: Vec::with_capacity(capacity.saturating_mul(2)),
+            row_ptrs: Vec::new(),
+            row_ptrs_offs: vec![0],
+            col_indices: Vec::new(),
+            col_offs: vec![0],
+            values: Vec::new(),
+            value_offs: vec![0],
+            nulls: NullBufferBuilder::new(capacity),
+        }
+    }
+
+    fn push(&mut self, vector: Option<vector_output::Vector>) -> DataFusionResult<()> {
+        match vector {
+            Some(vector_output::Vector::Sparse(sparse)) => {
+                if sparse.indices.len() != sparse.values.len() {
+                    return exec_err!(
+                        "'{}' sparse indices length {} does not match values length {}",
+                        self.name,
+                        sparse.indices.len(),
+                        sparse.values.len()
+                    );
+                }
+                let nnz = sparse.indices.len();
+                let nnz_i32 = int32_from_usize(&self.name, "sparse non-zero length", nnz)?;
+                let cols = sparse.indices.iter().copied().max().map_or(Ok(0), |index| {
+                    let Some(cols) = index.checked_add(1) else {
+                        return exec_err!("'{}' sparse dimension exceeds u32 limits", self.name);
+                    };
+                    int32_from_usize(&self.name, "sparse dimension", cols as usize)
+                })?;
+
+                self.shapes.push(1);
+                self.shapes.push(cols);
+                self.row_ptrs.extend([0, nnz_i32]);
+                self.row_ptrs_offs.push(checked_add_i32(
+                    &self.name,
+                    "sparse row pointer offsets",
+                    *self.row_ptrs_offs.last().expect("offset seed"),
+                    2,
+                )?);
+                self.col_indices.extend(sparse.indices);
+                self.col_offs.push(checked_add_i32(
+                    &self.name,
+                    "sparse column offsets",
+                    *self.col_offs.last().expect("offset seed"),
+                    nnz_i32,
+                )?);
+                self.values.extend(sparse.values);
+                self.value_offs.push(checked_add_i32(
+                    &self.name,
+                    "sparse value offsets",
+                    *self.value_offs.last().expect("offset seed"),
+                    nnz_i32,
+                )?);
+                self.nulls.append_non_null();
+            }
+            Some(other) => {
+                return exec_err!(
+                    "'{}' expected sparse vector, found {}",
+                    self.name,
+                    vector_kind(&other)
+                );
+            }
+            None => {
+                self.shapes.extend([1, 0]);
+                self.row_ptrs.extend([0, 0]);
+                self.row_ptrs_offs.push(checked_add_i32(
+                    &self.name,
+                    "sparse row pointer offsets",
+                    *self.row_ptrs_offs.last().expect("offset seed"),
+                    2,
+                )?);
+                self.col_offs.push(*self.col_offs.last().expect("offset seed"));
+                self.value_offs.push(*self.value_offs.last().expect("offset seed"));
+                self.nulls.append_null();
+            }
+        }
+        Ok(())
+    }
+
+    fn finish(self) -> DataFusionResult<ArrayRef> {
+        let row_count = self.row_ptrs_offs.len().saturating_sub(1);
+        if self.shapes.len() != row_count.saturating_mul(2) {
+            return exec_err!(
+                "'{}' packed sparse shapes length {} does not match row count {row_count}",
+                self.name,
+                self.shapes.len()
+            );
+        }
+        if self.col_offs.len() != row_count + 1 || self.value_offs.len() != row_count + 1 {
+            return exec_err!("'{}' sparse offsets do not match row count {row_count}", self.name);
+        }
+        let nulls = self.nulls.build();
+        validate_null_count(&self.name, row_count, nulls.as_ref())?;
+
+        let shape_item_field = Arc::new(Field::new("item", DataType::Int32, false));
+        let shape_values: ArrayRef = Arc::new(Int32Array::from(self.shapes));
+        let shape_array: ArrayRef =
+            Arc::new(FixedSizeListArray::new(shape_item_field, 2, shape_values, None));
+
+        let row_ptr_item_field = Arc::new(Field::new_list_field(DataType::Int32, false));
+        let row_ptr_values: ArrayRef = Arc::new(Int32Array::from(self.row_ptrs));
+        let row_ptr_array: ArrayRef = Arc::new(ListArray::new(
+            row_ptr_item_field,
+            OffsetBuffer::new(ScalarBuffer::from(self.row_ptrs_offs)),
+            row_ptr_values,
+            None,
+        ));
+
+        let col_item_field = Arc::new(Field::new_list_field(DataType::UInt32, false));
+        let col_values: ArrayRef = Arc::new(UInt32Array::from(self.col_indices));
+        let col_array: ArrayRef = Arc::new(ListArray::new(
+            col_item_field,
+            OffsetBuffer::new(ScalarBuffer::from(self.col_offs)),
+            col_values,
+            None,
+        ));
+
+        let value_item_field = Arc::new(Field::new_list_field(DataType::Float32, false));
+        let value_values: ArrayRef = Arc::new(Float32Array::from(self.values));
+        let value_array: ArrayRef = Arc::new(ListArray::new(
+            value_item_field,
+            OffsetBuffer::new(ScalarBuffer::from(self.value_offs)),
+            value_values,
+            None,
+        ));
+
+        let struct_fields = vec![
+            Field::new("shape", shape_array.data_type().clone(), false),
+            Field::new("row_ptrs", row_ptr_array.data_type().clone(), false),
+            Field::new("col_indices", col_array.data_type().clone(), false),
+            Field::new("values", value_array.data_type().clone(), false),
+        ];
+        Ok(Arc::new(StructArray::new(
+            struct_fields.into(),
+            vec![shape_array, row_ptr_array, col_array, value_array],
+            nulls,
+        )))
+    }
+}
+
+enum FieldAppender {
     Id(StringBuilder),
     Payload(StringBuilder),
-    DenseVector { name: String, builder: ListBuilder<Float32Builder> },
-    MultiVector { name: String, builder: ListBuilder<ListBuilder<Float32Builder>> },
-    SparseIndices { name: String, builder: ListBuilder<UInt32Builder> },
-    SparseValues { name: String, builder: ListBuilder<Float32Builder> },
+    PayloadScalar(PayloadScalarRows),
+    Score(Float32Builder),
+    DenseVector(DenseVectorRows),
+    MultiVector(MultiVectorRows),
+    SparseVector(SparseVectorRows),
 }
 
-impl FieldExtractor {
-    /// Create field extractor from schema field
-    fn from_schema_field(field: &datafusion::arrow::datatypes::Field, capacity: usize) -> Self {
-        match field.name().as_str() {
-            "id" => Self::Id(StringBuilder::with_capacity(capacity, capacity * 16)),
-            "payload" => Self::Payload(StringBuilder::with_capacity(capacity, capacity * 64)),
-            name if name.ends_with("_indices") => Self::SparseIndices {
-                name:    name.to_string(),
-                builder: ListBuilder::with_capacity(UInt32Builder::new(), capacity),
-            },
-            name if name.ends_with("_values") => Self::SparseValues {
-                name:    name.to_string(),
-                builder: ListBuilder::with_capacity(Float32Builder::new(), capacity),
-            },
-            name if is_multi_vector_field(field) => Self::MultiVector {
-                name:    name.to_string(),
-                builder: ListBuilder::with_capacity(
-                    ListBuilder::new(Float32Builder::new()),
-                    capacity,
-                ),
-            },
-            name => Self::DenseVector {
-                name:    name.to_string(),
-                builder: ListBuilder::with_capacity(Float32Builder::new(), capacity),
-            },
+struct PayloadScalarRows {
+    name:      String,
+    path:      String,
+    data_type: DataType,
+    values:    Vec<ScalarValue>,
+}
+
+impl PayloadScalarRows {
+    fn new(field: &Field, path: String, capacity: usize) -> Self {
+        Self {
+            name: field.name().clone(),
+            path,
+            data_type: field.data_type().clone(),
+            values: Vec::with_capacity(capacity),
         }
+    }
+
+    fn push(&mut self, payload: &HashMap<String, Value>) -> DataFusionResult<()> {
+        self.values.push(payload_scalar_value(
+            &self.name,
+            &self.path,
+            &self.data_type,
+            payload_value_at_path(payload, &self.path),
+        )?);
+        Ok(())
+    }
+
+    fn finish(self) -> DataFusionResult<ArrayRef> {
+        if self.values.is_empty() {
+            return Ok(datafusion::arrow::array::new_empty_array(&self.data_type));
+        }
+        ScalarValue::iter_to_array(self.values)
     }
 }
 
-/// Schema-driven [`RecordBatch`] builder for `Qdrant` data.
-///
-/// This is the core component that converts `Qdrant` `ScoredPoint` data into Arrow `RecordBatch`es
-/// for `DataFusion` consumption. It uses a clean, schema-driven architecture that eliminates the
-/// complex nested matching logic of previous implementations.
-///
-/// # Architecture
-/// The builder is initialized with an Arrow schema and creates one `FieldExtractor` per schema
-/// field in the exact same order. During processing, each point is processed once with all fields
-/// updated in a single pass, achieving O(F) performance where F is the number of fields.
-///
-/// # Performance Features
-/// - **Single-Pass Processing**: Each point is destructured once and all fields updated
-/// - **Owned Iteration**: No unnecessary borrowing or reference management
-/// - **Pre-Allocated Builders**: Capacity is allocated upfront for optimal memory usage
-/// - **Inline Logic**: All processing logic is inline with no hidden function calls
-///
-/// # Examples
-/// ```rust,ignore
-/// use qdrant_datafusion::arrow::deserialize::QdrantRecordBatchBuilder;
-/// use datafusion::arrow::datatypes::{Schema, Field, DataType};
-/// use std::sync::Arc;
-///
-/// // Create schema and builder
-/// let schema = Arc::new(Schema::new(vec![
-///     Field::new("id", DataType::Utf8, false),
-///     Field::new("vector", DataType::List(
-///         Arc::new(Field::new("item", DataType::Float32, true))
-///     ), true),
-/// ]));
-///
-/// let mut builder = QdrantRecordBatchBuilder::new(schema, 1000);
-///
-/// // Process points (would normally come from Qdrant query)
-/// // for point in qdrant_points {
-/// //     builder.append_point(point);
-/// // }
-///
-/// // Create final record batch
-/// // let batch = builder.finish()?;
-/// ```
 pub struct QdrantRecordBatchBuilder {
-    schema:           SchemaRef,
-    field_extractors: Vec<FieldExtractor>, // 1:1 with schema fields, in schema order
+    schema:          SchemaRef,
+    field_appenders: Vec<FieldAppender>,
 }
 
 impl QdrantRecordBatchBuilder {
-    /// Create builder from schema with proper capacity allocation
-    pub fn new(schema: SchemaRef, point_count: usize) -> Self {
-        // Schema-driven initialization - one extractor per field, in schema order
-        let field_extractors = schema
+    /// Create a schema-driven record-batch builder for Qdrant scan output.
+    ///
+    /// # Errors
+    /// Returns an error if the projected schema contains unsupported field contracts.
+    pub fn new(
+        schema: SchemaRef,
+        point_count: usize,
+        score_field_names: Option<&BTreeSet<String>>,
+        payload_output_paths: &BTreeMap<String, String>,
+    ) -> DataFusionResult<Self> {
+        let unnamed_vector_contract = schema
             .fields()
             .iter()
-            .map(|field| FieldExtractor::from_schema_field(field, point_count))
-            .collect();
+            .find(|field| field.name() == UNNAMED_VECTOR_FIELD_NAME)
+            .is_some_and(|field| field_uses_unnamed_vector_contract(schema.as_ref(), field));
+        let field_appenders = schema
+            .fields()
+            .iter()
+            .map(|field| {
+                if field.name() == ID_FIELD_NAME {
+                    Ok(FieldAppender::Id(StringBuilder::with_capacity(
+                        point_count,
+                        point_count * 16,
+                    )))
+                } else if field.name() == PAYLOAD_FIELD_NAME {
+                    Ok(FieldAppender::Payload(StringBuilder::with_capacity(
+                        point_count,
+                        point_count * 64,
+                    )))
+                } else if let Some(path) = payload_output_paths.get(field.name()) {
+                    Ok(FieldAppender::PayloadScalar(PayloadScalarRows::new(
+                        field,
+                        path.clone(),
+                        point_count,
+                    )))
+                } else if score_field_names.is_some_and(|names| names.contains(field.name())) {
+                    Ok(FieldAppender::Score(Float32Builder::with_capacity(point_count)))
+                } else {
+                    match QdrantFieldBinding::from_field(field) {
+                        QdrantFieldBinding::DenseFixed { width } => {
+                            Ok(FieldAppender::DenseVector(DenseVectorRows::new(
+                                field.name().clone(),
+                                unnamed_vector_contract
+                                    && field.name() == UNNAMED_VECTOR_FIELD_NAME,
+                                width,
+                                point_count,
+                            )))
+                        }
+                        QdrantFieldBinding::MultiDense { width } => {
+                            let Some(width) = width else {
+                                return exec_err!(
+                                    "field '{}' is missing multivector width metadata",
+                                    field.name()
+                                );
+                            };
+                            Ok(FieldAppender::MultiVector(MultiVectorRows::new(
+                                field.name().clone(),
+                                unnamed_vector_contract
+                                    && field.name() == UNNAMED_VECTOR_FIELD_NAME,
+                                width,
+                                point_count,
+                            )?))
+                        }
+                        QdrantFieldBinding::Sparse => {
+                            Ok(FieldAppender::SparseVector(SparseVectorRows::new(
+                                field.name().clone(),
+                                unnamed_vector_contract
+                                    && field.name() == UNNAMED_VECTOR_FIELD_NAME,
+                                point_count,
+                            )))
+                        }
+                        _ => {
+                            exec_err!(
+                                "unsupported scan field contract for '{}' with data type {}",
+                                field.name(),
+                                field.data_type()
+                            )
+                        }
+                    }
+                }
+            })
+            .collect::<DataFusionResult<Vec<_>>>()?;
 
-        Self { schema, field_extractors }
+        Ok(Self { schema, field_appenders })
     }
 
-    /// Append a point using owned destructuring - defines its own invariants
-    pub fn append_point(&mut self, point: ScoredPoint) {
-        // Single destructuring
-        let ScoredPoint { id, payload, vectors, .. } = point;
+    /// Append a single Qdrant point to the in-progress batch.
+    ///
+    /// # Errors
+    /// Returns an error if the point does not match the admitted scan schema contract.
+    pub fn append_point(&mut self, point: ScoredPoint) -> DataFusionResult<()> {
+        let ScoredPoint { id, payload, vectors, score, .. } = point;
+        self.append_parts(id, &payload, vectors, Some(score))
+    }
 
-        // Build lookup once per point
-        let vector_lookup = build_vector_lookup(vectors);
+    /// Append a single retrieved Qdrant point to the in-progress batch.
+    ///
+    /// # Errors
+    /// Returns an error if the point does not match the admitted scan schema contract.
+    pub fn append_retrieved_point(&mut self, point: RetrievedPoint) -> DataFusionResult<()> {
+        let RetrievedPoint { id, payload, vectors, .. } = point;
+        self.append_parts(id, &payload, vectors, None)
+    }
 
-        // Schema-driven extraction - inline logic, no hidden functions
-        for extractor in &mut self.field_extractors {
-            match extractor {
-                FieldExtractor::Id(builder) => {
-                    if let Some(id) = &id {
-                        match &id.point_id_options {
-                            Some(point_id::PointIdOptions::Num(n)) => {
-                                builder.append_value(n.to_string());
-                            }
-                            Some(point_id::PointIdOptions::Uuid(s)) => builder.append_value(s),
-                            None => builder.append_value(""),
-                        }
-                    } else {
-                        builder.append_null();
-                    }
+    fn append_parts(
+        &mut self,
+        id: Option<PointId>,
+        payload: &HashMap<String, Value>,
+        vectors: Option<VectorsOutput>,
+        score: Option<f32>,
+    ) -> DataFusionResult<()> {
+        let point_id = id.and_then(|id| id.point_id_options);
+        let (mut unnamed_vector, mut named_vectors) =
+            match vectors.and_then(|vectors| vectors.vectors_options) {
+                Some(vectors_output::VectorsOptions::Vector(vector)) => (Some(vector), None),
+                Some(vectors_output::VectorsOptions::Vectors(named_vectors)) => {
+                    (None, Some(named_vectors.vectors))
                 }
+                None => (None, None),
+            };
 
-                FieldExtractor::Payload(builder) => {
-                    if !payload.is_empty()
-                        && let Ok(json) = serde_json::to_string(&payload)
-                    {
-                        builder.append_value(json);
-                    } else {
-                        builder.append_null();
+        for appender in &mut self.field_appenders {
+            match appender {
+                FieldAppender::Id(builder) => match point_id.as_ref() {
+                    Some(point_id::PointIdOptions::Num(number)) => {
+                        builder.append_value(number.to_string());
                     }
+                    Some(point_id::PointIdOptions::Uuid(uuid)) => builder.append_value(uuid),
+                    None => return exec_err!("Qdrant returned a point without an id"),
+                },
+                FieldAppender::Payload(builder) => builder.append_value(
+                    serde_json::to_string(payload)
+                        .map_err(|error| DataFusionError::External(Box::new(error)))?,
+                ),
+                FieldAppender::PayloadScalar(rows) => rows.push(payload)?,
+                FieldAppender::Score(builder) => builder.append_option(score),
+                FieldAppender::DenseVector(rows) => {
+                    rows.push(take_vector(
+                        rows.unnamed,
+                        &rows.name,
+                        &mut unnamed_vector,
+                        &mut named_vectors,
+                    )?)?;
                 }
-
-                FieldExtractor::DenseVector { name, builder } => {
-                    if let Some(Vector::Dense(data)) = vector_lookup.get(name) {
-                        builder.values().append_slice(data);
-                        builder.append(true);
-                    } else {
-                        builder.append(false);
-                    }
+                FieldAppender::MultiVector(rows) => {
+                    rows.push(take_vector(
+                        rows.unnamed,
+                        &rows.name,
+                        &mut unnamed_vector,
+                        &mut named_vectors,
+                    )?)?;
                 }
-
-                FieldExtractor::MultiVector { name, builder } => {
-                    if let Some(Vector::MultiDense(vectors)) = vector_lookup.get(name) {
-                        for vector in vectors {
-                            builder.values().values().append_slice(vector);
-                            builder.values().append(true);
-                        }
-                        builder.append(true);
-                    } else {
-                        builder.append(false);
-                    }
-                }
-
-                FieldExtractor::SparseIndices { name, builder } => {
-                    let sparse_name = name.trim_end_matches("_indices");
-                    if let Some(Vector::Sparse(sparse)) = vector_lookup.get(sparse_name) {
-                        builder.values().append_slice(&sparse.indices);
-                        builder.append(true);
-                    } else {
-                        builder.append(false);
-                    }
-                }
-
-                FieldExtractor::SparseValues { name, builder } => {
-                    let sparse_name = name.trim_end_matches("_values");
-                    if let Some(Vector::Sparse(sparse)) = vector_lookup.get(sparse_name) {
-                        builder.values().append_slice(&sparse.values);
-                        builder.append(true);
-                    } else {
-                        builder.append(false);
-                    }
+                FieldAppender::SparseVector(rows) => {
+                    rows.push(take_vector(
+                        rows.unnamed,
+                        &rows.name,
+                        &mut unnamed_vector,
+                        &mut named_vectors,
+                    )?)?;
                 }
             }
         }
+
+        Ok(())
     }
 
-    /// Finish building and create the final `RecordBatch`
+    /// Finish the batch and materialize the projected Arrow arrays.
     ///
     /// # Errors
-    /// - Returns an error if `RecordBatch` creation fails.
+    /// Returns an error if the accumulated rows cannot be materialized into a valid `RecordBatch`.
     pub fn finish(self) -> DataFusionResult<RecordBatch> {
-        let mut arrays: Vec<ArrayRef> = Vec::with_capacity(self.schema.fields().len());
-
-        // Extract arrays from field extractors in schema order
-        for extractor in self.field_extractors {
-            let array: ArrayRef = match extractor {
-                FieldExtractor::Id(mut builder) | FieldExtractor::Payload(mut builder) => {
-                    Arc::new(builder.finish())
+        let arrays = self
+            .field_appenders
+            .into_iter()
+            .map(|appender| match appender {
+                FieldAppender::Id(mut builder) | FieldAppender::Payload(mut builder) => {
+                    Ok(Arc::new(builder.finish()) as ArrayRef)
                 }
-                FieldExtractor::DenseVector { mut builder, .. }
-                | FieldExtractor::SparseValues { mut builder, .. } => Arc::new(builder.finish()),
-                FieldExtractor::MultiVector { mut builder, .. } => Arc::new(builder.finish()),
-                FieldExtractor::SparseIndices { mut builder, .. } => Arc::new(builder.finish()),
-            };
-            arrays.push(array);
-        }
+                FieldAppender::PayloadScalar(rows) => rows.finish(),
+                FieldAppender::Score(mut builder) => Ok(Arc::new(builder.finish()) as ArrayRef),
+                FieldAppender::DenseVector(rows) => rows.finish(),
+                FieldAppender::MultiVector(rows) => rows.finish(),
+                FieldAppender::SparseVector(rows) => rows.finish(),
+            })
+            .collect::<DataFusionResult<Vec<_>>>()?;
 
         RecordBatch::try_new(self.schema, arrays)
-            .map_err(|e| DataFusionError::ArrowError(Box::new(e), None))
+            .map_err(|error| DataFusionError::ArrowError(Box::new(error), None))
     }
 }
 
-/// Simple helper - builds flat lookup map once per point
-fn build_vector_lookup(vectors: Option<VectorsOutput>) -> HashMap<String, Vector> {
-    let mut lookup = HashMap::new();
+fn int32_from_usize(name: &str, context: &str, value: usize) -> DataFusionResult<i32> {
+    let Ok(value) = i32::try_from(value) else {
+        return exec_err!("'{name}' {context} exceeds Arrow i32 limits: {value}");
+    };
+    Ok(value)
+}
 
-    if let Some(vectors) = vectors {
-        match vectors.vectors_options {
-            Some(vectors_output::VectorsOptions::Vector(vector_output)) => {
-                // Unnamed case - use "vector" as key
-                if let Some(content) = Vector::from_vector_output(vector_output) {
-                    drop(lookup.insert("vector".to_string(), content));
-                }
-            }
-            Some(vectors_output::VectorsOptions::Vectors(named_vectors)) => {
-                // Named case - use actual names
-                for (name, vector_output) in named_vectors.vectors {
-                    if let Some(content) = Vector::from_vector_output(vector_output) {
-                        drop(lookup.insert(name, content));
-                    }
-                }
-            }
-            None => {}
+fn checked_add_i32(name: &str, context: &str, left: i32, right: i32) -> DataFusionResult<i32> {
+    let Some(sum) = left.checked_add(right) else {
+        return exec_err!("'{name}' {context} exceeds Arrow i32 limits");
+    };
+    Ok(sum)
+}
+
+fn take_vector(
+    unnamed: bool,
+    name: &str,
+    unnamed_vector: &mut Option<VectorOutput>,
+    named_vectors: &mut Option<HashMap<String, VectorOutput>>,
+) -> DataFusionResult<Option<vector_output::Vector>> {
+    let vector_output = if unnamed {
+        unnamed_vector.take()
+    } else {
+        named_vectors.as_mut().and_then(|vectors| vectors.remove(name))
+    };
+
+    match vector_output {
+        Some(vector_output) => {
+            let Some(vector) = vector_output.vector else {
+                return exec_err!("Qdrant returned a vector output without a typed vector body");
+            };
+            Ok(Some(vector))
+        }
+        None => Ok(None),
+    }
+}
+
+fn payload_value_at_path<'a>(payload: &'a HashMap<String, Value>, path: &str) -> Option<&'a Value> {
+    let mut segments = path.split('.');
+    let mut current = payload.get(segments.next()?)?;
+    for segment in segments {
+        let value::Kind::StructValue(struct_value) = current.kind.as_ref()? else {
+            return None;
+        };
+        current = struct_value.fields.get(segment)?;
+    }
+    Some(current)
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "payload scalar materialization follows the projected Arrow type contract"
+)]
+fn payload_scalar_value(
+    name: &str,
+    path: &str,
+    data_type: &DataType,
+    value: Option<&Value>,
+) -> DataFusionResult<ScalarValue> {
+    let Some(value) = value else {
+        return ScalarValue::try_new_null(data_type);
+    };
+    match data_type {
+        DataType::Utf8 => Ok(ScalarValue::Utf8(Some(payload_string_value(value)))),
+        DataType::LargeUtf8 => Ok(ScalarValue::LargeUtf8(Some(payload_string_value(value)))),
+        DataType::Boolean => Ok(ScalarValue::Boolean(Some(payload_bool_value(name, path, value)?))),
+        DataType::Int8 => Ok(ScalarValue::Int8(Some(
+            i8::try_from(payload_i64_value(name, path, value)?).map_err(|_| {
+                DataFusionError::Execution(format!(
+                    "payload output field '{name}' at path '{path}' exceeds Int8 range"
+                ))
+            })?,
+        ))),
+        DataType::Int16 => Ok(ScalarValue::Int16(Some(
+            i16::try_from(payload_i64_value(name, path, value)?).map_err(|_| {
+                DataFusionError::Execution(format!(
+                    "payload output field '{name}' at path '{path}' exceeds Int16 range"
+                ))
+            })?,
+        ))),
+        DataType::Int32 => Ok(ScalarValue::Int32(Some(
+            i32::try_from(payload_i64_value(name, path, value)?).map_err(|_| {
+                DataFusionError::Execution(format!(
+                    "payload output field '{name}' at path '{path}' exceeds Int32 range"
+                ))
+            })?,
+        ))),
+        DataType::Int64 => Ok(ScalarValue::Int64(Some(payload_i64_value(name, path, value)?))),
+        DataType::UInt8 => Ok(ScalarValue::UInt8(Some(
+            u8::try_from(payload_u64_value(name, path, value)?).map_err(|_| {
+                DataFusionError::Execution(format!(
+                    "payload output field '{name}' at path '{path}' exceeds UInt8 range"
+                ))
+            })?,
+        ))),
+        DataType::UInt16 => Ok(ScalarValue::UInt16(Some(
+            u16::try_from(payload_u64_value(name, path, value)?).map_err(|_| {
+                DataFusionError::Execution(format!(
+                    "payload output field '{name}' at path '{path}' exceeds UInt16 range"
+                ))
+            })?,
+        ))),
+        DataType::UInt32 => Ok(ScalarValue::UInt32(Some(
+            u32::try_from(payload_u64_value(name, path, value)?).map_err(|_| {
+                DataFusionError::Execution(format!(
+                    "payload output field '{name}' at path '{path}' exceeds UInt32 range"
+                ))
+            })?,
+        ))),
+        DataType::UInt64 => Ok(ScalarValue::UInt64(Some(payload_u64_value(name, path, value)?))),
+        DataType::Float32 => {
+            Ok(ScalarValue::Float32(Some(payload_f64_value(name, path, value)? as f32)))
+        }
+        DataType::Float64 => Ok(ScalarValue::Float64(Some(payload_f64_value(name, path, value)?))),
+        _ => exec_err!(
+            "payload output field '{name}' at path '{path}' has unsupported projected type {}",
+            data_type
+        ),
+    }
+}
+
+fn payload_string_value(value: &Value) -> String {
+    match value.kind.as_ref() {
+        Some(value::Kind::StringValue(string)) => string.clone(),
+        Some(value::Kind::IntegerValue(integer)) => integer.to_string(),
+        Some(value::Kind::DoubleValue(double)) => double.to_string(),
+        Some(value::Kind::BoolValue(boolean)) => boolean.to_string(),
+        Some(value::Kind::NullValue(_)) | None => "null".to_owned(),
+        Some(value::Kind::StructValue(_) | value::Kind::ListValue(_)) => {
+            serde_json::Value::from(value.clone()).to_string()
         }
     }
+}
 
-    lookup
+fn payload_bool_value(name: &str, path: &str, value: &Value) -> DataFusionResult<bool> {
+    if let Some(value::Kind::BoolValue(boolean)) = value.kind.as_ref() {
+        Ok(*boolean)
+    } else {
+        exec_err!(
+            "payload output field '{name}' at path '{path}' expected bool, found {}",
+            payload_value_kind(value)
+        )
+    }
+}
+
+fn payload_i64_value(name: &str, path: &str, value: &Value) -> DataFusionResult<i64> {
+    if let Some(value::Kind::IntegerValue(integer)) = value.kind.as_ref() {
+        Ok(*integer)
+    } else {
+        exec_err!(
+            "payload output field '{name}' at path '{path}' expected integer, found {}",
+            payload_value_kind(value)
+        )
+    }
+}
+
+fn payload_u64_value(name: &str, path: &str, value: &Value) -> DataFusionResult<u64> {
+    let integer = payload_i64_value(name, path, value)?;
+    u64::try_from(integer).map_err(|_| {
+        DataFusionError::Execution(format!(
+            "payload output field '{name}' at path '{path}' expected non-negative integer"
+        ))
+    })
+}
+
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "integer payload values may be projected into floating-point outputs"
+)]
+fn payload_f64_value(name: &str, path: &str, value: &Value) -> DataFusionResult<f64> {
+    match value.kind.as_ref() {
+        Some(value::Kind::DoubleValue(double)) => Ok(*double),
+        Some(value::Kind::IntegerValue(integer)) => Ok(*integer as f64),
+        _ => exec_err!(
+            "payload output field '{name}' at path '{path}' expected numeric, found {}",
+            payload_value_kind(value)
+        ),
+    }
+}
+
+fn payload_value_kind(value: &Value) -> &'static str {
+    match value.kind.as_ref() {
+        Some(value::Kind::BoolValue(_)) => "bool",
+        Some(value::Kind::IntegerValue(_)) => "integer",
+        Some(value::Kind::DoubleValue(_)) => "double",
+        Some(value::Kind::StringValue(_)) => "string",
+        Some(value::Kind::StructValue(_)) => "struct",
+        Some(value::Kind::ListValue(_)) => "list",
+        Some(value::Kind::NullValue(_)) | None => "null",
+    }
+}
+
+fn validate_null_count(
+    name: &str,
+    row_count: usize,
+    nulls: Option<&NullBuffer>,
+) -> DataFusionResult<()> {
+    if let Some(nulls) = nulls
+        && nulls.len() != row_count
+    {
+        return exec_err!(
+            "'{name}' validity length {} does not match row count {row_count}",
+            nulls.len()
+        );
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
+    #![allow(deprecated)]
+
+    use std::collections::HashMap;
+
+    use arrow_schema::extension::{
+        EXTENSION_TYPE_METADATA_KEY, EXTENSION_TYPE_NAME_KEY, ExtensionType, VariableShapeTensor,
+    };
+    use datafusion::arrow::array::types::Float32Type;
+    use datafusion::arrow::array::{Array, Int64Array, StringArray};
+    use datafusion::arrow::datatypes::Schema;
+    use ndarrow::{
+        CsrMatrixBatchExtension, csr_matrix_batch_iter, fixed_size_list_as_array2,
+        fixed_size_list_as_array2_masked, variable_shape_tensor_iter,
+    };
+    use qdrant_client::qdrant::{DenseVector, MultiDenseVector, SparseVector, vector_output};
+
     use super::*;
 
-    #[test]
-    fn test_convert_to_multi_vector_error() {
-        // Test the error path when data length is not divisible by vectors count
-        let data = vec![1.0, 2.0, 3.0]; // length = 3
-        let vectors_count = 2; // 3 % 2 != 0
+    fn assert_f32_eq(left: f32, right: f32) {
+        assert!((left - right).abs() < 1.0e-6, "left={left}, right={right}");
+    }
 
-        let result = convert_to_multi_vector(&data, vectors_count);
+    fn multivector_test_field(array: &StructArray, width: i32, nullable: bool) -> Field {
+        let extension = VariableShapeTensor::try_new(
+            DataType::Float32,
+            2,
+            None,
+            None,
+            Some(vec![None, Some(width)]),
+        )
+        .expect("variable tensor extension");
+        extension.supports_data_type(array.data_type()).expect("compatible multivector storage");
 
-        assert!(result.is_err());
-        if let Err(DataFusionError::External(boxed_error)) = result {
-            let error_msg = boxed_error.to_string();
-            assert!(error_msg.contains("Malformed multi vector"));
-            assert!(error_msg.contains("data length 3 is not divisible by vectors count 2"));
-        } else {
-            panic!("Expected DataFusionError::External");
-        }
+        Field::new("multi", array.data_type().clone(), nullable).with_metadata(HashMap::from([
+            (EXTENSION_TYPE_NAME_KEY.to_owned(), VariableShapeTensor::NAME.to_owned()),
+            (
+                EXTENSION_TYPE_METADATA_KEY.to_owned(),
+                serde_json::json!({ "uniform_shape": [serde_json::Value::Null, width] })
+                    .to_string(),
+            ),
+        ]))
     }
 
     #[test]
-    fn test_vector_from_new_format() {
-        use qdrant_client::qdrant::{DenseVector, MultiDenseVector, SparseVector, vector_output};
+    fn append_retrieved_point_uses_current_qdrant_vector_shape() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(ID_FIELD_NAME, DataType::Utf8, false),
+            Field::new(PAYLOAD_FIELD_NAME, DataType::Utf8, false),
+            Field::new(
+                UNNAMED_VECTOR_FIELD_NAME,
+                DataType::new_fixed_size_list(DataType::Float32, 3, false),
+                true,
+            ),
+        ]));
+        let mut builder =
+            QdrantRecordBatchBuilder::new(Arc::clone(&schema), 1, None, &BTreeMap::new())
+                .expect("builder");
 
-        // Test newer format dense vector (lines 55-59)
-        let dense_vector_output = VectorOutput {
-            vector:        Some(vector_output::Vector::Dense(DenseVector {
-                data: vec![1.0, 2.0, 3.0],
+        builder
+            .append_retrieved_point(RetrievedPoint {
+                id:          Some(1_u64.into()),
+                payload:     HashMap::new(),
+                vectors:     Some(VectorsOutput {
+                    vectors_options: Some(vectors_output::VectorsOptions::Vector(VectorOutput {
+                        vector:        Some(vector_output::Vector::Dense(DenseVector {
+                            data: vec![1.0, 2.0, 3.0],
+                        })),
+                        data:          vec![],
+                        indices:       None,
+                        vectors_count: None,
+                    })),
+                }),
+                shard_key:   None,
+                order_value: None,
+            })
+            .expect("append point");
+
+        let batch = builder.finish().expect("batch");
+        let array =
+            batch.column(2).as_any().downcast_ref::<FixedSizeListArray>().expect("fixed-size list");
+        let view = fixed_size_list_as_array2::<Float32Type>(array).expect("ndarray view");
+        assert_eq!(view.shape(), &[1, 3]);
+        assert_f32_eq(view[[0, 2]], 3.0);
+    }
+
+    #[test]
+    fn append_retrieved_point_rejects_missing_typed_body() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(ID_FIELD_NAME, DataType::Utf8, false),
+            Field::new(PAYLOAD_FIELD_NAME, DataType::Utf8, false),
+            Field::new(
+                UNNAMED_VECTOR_FIELD_NAME,
+                DataType::new_fixed_size_list(DataType::Float32, 3, false),
+                true,
+            ),
+        ]));
+        let mut builder =
+            QdrantRecordBatchBuilder::new(schema, 1, None, &BTreeMap::new()).expect("builder");
+
+        let result = builder.append_retrieved_point(RetrievedPoint {
+            id:          Some(1_u64.into()),
+            payload:     HashMap::new(),
+            vectors:     Some(VectorsOutput {
+                vectors_options: Some(vectors_output::VectorsOptions::Vector(VectorOutput {
+                    vector:        None,
+                    data:          vec![],
+                    indices:       None,
+                    vectors_count: None,
+                })),
+            }),
+            shard_key:   None,
+            order_value: None,
+        });
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn append_retrieved_point_materializes_payload_path_outputs() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(ID_FIELD_NAME, DataType::Utf8, false),
+            Field::new("rank", DataType::Int64, true),
+            Field::new("tag", DataType::Utf8, true),
+            Field::new("nested_rank", DataType::Int64, true),
+        ]));
+        let payload_outputs = BTreeMap::from([
+            ("rank".to_owned(), "rank".to_owned()),
+            ("tag".to_owned(), "tag".to_owned()),
+            ("nested_rank".to_owned(), "metadata.rank".to_owned()),
+        ]);
+        let mut builder =
+            QdrantRecordBatchBuilder::new(schema, 1, None, &payload_outputs).expect("builder");
+
+        let mut payload = HashMap::new();
+        drop(payload.insert("rank".to_owned(), Value { kind: Some(value::Kind::IntegerValue(7)) }));
+        drop(payload.insert("tag".to_owned(), Value {
+            kind: Some(value::Kind::StringValue("gold".to_owned())),
+        }));
+        drop(payload.insert("metadata".to_owned(), Value {
+            kind: Some(value::Kind::StructValue(qdrant_client::qdrant::Struct {
+                fields: HashMap::from([("rank".to_owned(), Value {
+                    kind: Some(value::Kind::IntegerValue(3)),
+                })]),
             })),
-            data:          vec![], // Should be ignored when vector.is_some()
-            indices:       None,
-            vectors_count: None,
-        };
+        }));
 
-        let result = Vector::from_vector_output(dense_vector_output);
-        if let Some(Vector::Dense(data)) = result {
-            assert_eq!(data, vec![1.0, 2.0, 3.0]);
-        } else {
-            panic!("Expected Dense vector");
-        }
+        builder
+            .append_retrieved_point(RetrievedPoint {
+                id: Some(1_u64.into()),
+                payload,
+                vectors: None,
+                shard_key: None,
+                order_value: None,
+            })
+            .expect("append point");
 
-        // Test newer format sparse vector
-        let sparse_vector_output = VectorOutput {
-            vector:        Some(vector_output::Vector::Sparse(SparseVector {
-                indices: vec![0, 2, 5],
-                values:  vec![0.1, 0.2, 0.3],
-            })),
-            data:          vec![], // Should be ignored
-            indices:       None,
-            vectors_count: None,
-        };
+        let batch = builder.finish().expect("batch");
+        let ranks = batch.column(1).as_any().downcast_ref::<Int64Array>().expect("rank int64");
+        let tags = batch.column(2).as_any().downcast_ref::<StringArray>().expect("tag utf8");
+        let nested =
+            batch.column(3).as_any().downcast_ref::<Int64Array>().expect("nested rank int64");
 
-        let result = Vector::from_vector_output(sparse_vector_output);
-        if let Some(Vector::Sparse(sparse)) = result {
-            assert_eq!(sparse.indices, vec![0, 2, 5]);
-            assert_eq!(sparse.values, vec![0.1, 0.2, 0.3]);
-        } else {
-            panic!("Expected Sparse vector");
-        }
+        assert_eq!(ranks.value(0), 7);
+        assert_eq!(tags.value(0), "gold");
+        assert_eq!(nested.value(0), 3);
+    }
 
-        // Test newer format multi-dense vector
-        let multi_vector_output = VectorOutput {
-            vector:        Some(vector_output::Vector::MultiDense(MultiDenseVector {
-                vectors: vec![DenseVector { data: vec![1.0, 2.0] }, DenseVector {
-                    data: vec![3.0, 4.0],
-                }],
-            })),
-            data:          vec![], // Should be ignored
-            indices:       None,
-            vectors_count: None,
-        };
+    #[test]
+    fn dense_vector_arrays_round_trip_into_ndarrow_views() {
+        let mut rows = DenseVectorRows::new("embedding".to_string(), false, 3, 2);
+        rows.push(Some(vector_output::Vector::Dense(DenseVector { data: vec![1.0, 2.0, 3.0] })))
+            .expect("row 0");
+        rows.push(Some(vector_output::Vector::Dense(DenseVector { data: vec![4.0, 5.0, 6.0] })))
+            .expect("row 1");
+        let array = rows.finish().expect("dense array");
+        let array = array.as_any().downcast_ref::<FixedSizeListArray>().expect("fixed-size list");
 
-        let result = Vector::from_vector_output(multi_vector_output);
-        if let Some(Vector::MultiDense(multi)) = result {
-            assert_eq!(multi, vec![vec![1.0, 2.0], vec![3.0, 4.0]]);
-        } else {
-            panic!("Expected MultiDense vector");
-        }
+        let view = fixed_size_list_as_array2::<Float32Type>(array).expect("ndarray view");
+        assert_eq!(view.shape(), &[2, 3]);
+        assert_f32_eq(view[[0, 0]], 1.0);
+        assert_f32_eq(view[[1, 2]], 6.0);
+    }
+
+    #[test]
+    fn dense_vector_arrays_preserve_outer_nulls() {
+        let mut rows = DenseVectorRows::new("embedding".to_string(), false, 3, 3);
+        rows.push(Some(vector_output::Vector::Dense(DenseVector { data: vec![1.0, 2.0, 3.0] })))
+            .expect("row 0");
+        rows.push(None).expect("row 1");
+        rows.push(Some(vector_output::Vector::Dense(DenseVector { data: vec![4.0, 5.0, 6.0] })))
+            .expect("row 2");
+        let array = rows.finish().expect("dense array");
+        let array = array.as_any().downcast_ref::<FixedSizeListArray>().expect("fixed-size list");
+
+        let (view, mask) =
+            fixed_size_list_as_array2_masked::<Float32Type>(array).expect("masked view");
+        let mask = mask.expect("outer null mask");
+        assert_eq!(array.null_count(), 1);
+        assert_eq!(view.shape(), &[3, 3]);
+        assert!(mask.is_valid(0));
+        assert!(!mask.is_valid(1));
+        assert!(mask.is_valid(2));
+        assert_f32_eq(view[[0, 0]], 1.0);
+        assert_f32_eq(view[[2, 2]], 6.0);
+    }
+
+    #[test]
+    fn multivector_arrays_round_trip_into_ndarrow_views() {
+        let mut rows =
+            MultiVectorRows::new("multi".to_string(), false, 2, 2).expect("multivector rows");
+        rows.push(Some(vector_output::Vector::MultiDense(MultiDenseVector {
+            vectors: vec![DenseVector { data: vec![1.0, 2.0] }, DenseVector {
+                data: vec![3.0, 4.0],
+            }],
+        })))
+        .expect("row 0");
+        rows.push(Some(vector_output::Vector::MultiDense(MultiDenseVector {
+            vectors: vec![DenseVector { data: vec![5.0, 6.0] }],
+        })))
+        .expect("row 1");
+        let array = rows.finish().expect("multivector array");
+        let array = array.as_any().downcast_ref::<StructArray>().expect("struct");
+        let field = multivector_test_field(array, 2, true);
+
+        let rows = variable_shape_tensor_iter::<Float32Type>(&field, array)
+            .expect("variable tensor iterator")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("valid multivector rows");
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].0, 0);
+        assert_eq!(rows[0].1.shape(), &[2, 2]);
+        assert_f32_eq(rows[0].1[[0, 0]], 1.0);
+        assert_f32_eq(rows[0].1[[1, 1]], 4.0);
+        assert_eq!(rows[1].1.shape(), &[1, 2]);
+        assert_f32_eq(rows[1].1[[0, 1]], 6.0);
+    }
+
+    #[test]
+    fn multivector_arrays_preserve_outer_nulls() {
+        let mut rows =
+            MultiVectorRows::new("multi".to_string(), false, 2, 3).expect("multivector rows");
+        rows.push(Some(vector_output::Vector::MultiDense(MultiDenseVector {
+            vectors: vec![DenseVector { data: vec![1.0, 2.0] }, DenseVector {
+                data: vec![3.0, 4.0],
+            }],
+        })))
+        .expect("row 0");
+        rows.push(None).expect("row 1");
+        rows.push(Some(vector_output::Vector::MultiDense(MultiDenseVector {
+            vectors: vec![DenseVector { data: vec![5.0, 6.0] }],
+        })))
+        .expect("row 2");
+        let array = rows.finish().expect("multivector array");
+        let array = array.as_any().downcast_ref::<StructArray>().expect("struct");
+
+        assert_eq!(array.null_count(), 1);
+        assert!(array.is_valid(0));
+        assert!(array.is_null(1));
+        assert!(array.is_valid(2));
+    }
+
+    #[test]
+    fn sparse_vector_arrays_round_trip_into_ndarrow_views() {
+        let mut rows = SparseVectorRows::new("keywords".to_string(), false, 2);
+        rows.push(Some(vector_output::Vector::Sparse(SparseVector {
+            indices: vec![0, 5],
+            values:  vec![0.1, 0.9],
+        })))
+        .expect("row 0");
+        rows.push(Some(vector_output::Vector::Sparse(SparseVector {
+            indices: vec![1, 3, 4],
+            values:  vec![0.2, 0.3, 0.4],
+        })))
+        .expect("row 1");
+        let array = rows.finish().expect("sparse array");
+        let array = array.as_any().downcast_ref::<StructArray>().expect("struct");
+        let mut field = Field::new("keywords", array.data_type().clone(), true);
+        field
+            .try_with_extension_type(
+                CsrMatrixBatchExtension::try_new(array.data_type(), ()).expect("csr extension"),
+            )
+            .expect("compatible csr storage");
+
+        let rows = csr_matrix_batch_iter::<Float32Type>(&field, array)
+            .expect("csr iterator")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("valid sparse rows");
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].0, 0);
+        assert_eq!(rows[0].1.nrows, 1);
+        assert_eq!(rows[0].1.ncols, 6);
+        assert_eq!(rows[0].1.col_indices, &[0, 5]);
+        assert_eq!(rows[0].1.values, &[0.1, 0.9]);
+        assert_eq!(rows[1].1.nrows, 1);
+        assert_eq!(rows[1].1.ncols, 5);
+        assert_eq!(rows[1].1.col_indices, &[1, 3, 4]);
+        assert_eq!(rows[1].1.values, &[0.2, 0.3, 0.4]);
+    }
+
+    #[test]
+    fn sparse_vector_arrays_preserve_outer_nulls() {
+        let mut rows = SparseVectorRows::new("keywords".to_string(), false, 3);
+        rows.push(Some(vector_output::Vector::Sparse(SparseVector {
+            indices: vec![0, 5],
+            values:  vec![0.1, 0.9],
+        })))
+        .expect("row 0");
+        rows.push(None).expect("row 1");
+        rows.push(Some(vector_output::Vector::Sparse(SparseVector {
+            indices: vec![1, 3, 4],
+            values:  vec![0.2, 0.3, 0.4],
+        })))
+        .expect("row 2");
+        let array = rows.finish().expect("sparse array");
+        let array = array.as_any().downcast_ref::<StructArray>().expect("struct");
+
+        assert_eq!(array.null_count(), 1);
+        assert!(array.is_valid(0));
+        assert!(array.is_null(1));
+        assert!(array.is_valid(2));
     }
 }

@@ -1,16 +1,21 @@
 #![doc = include_str!("../README.md")]
 
+mod analyzer;
 pub mod arrow;
+pub mod context;
 pub mod error;
+pub mod expr_fn;
 pub mod prelude;
+mod qdrant;
 pub mod stream;
 pub mod table;
 #[cfg(feature = "test-utils")]
 pub mod test_utils;
-pub mod udfs;
-pub mod utils;
 
 #[cfg(feature = "test-utils")]
 mod dev_deps {
-    use {testcontainers as _, tokio as _, tracing as _, tracing_subscriber as _};
+    use testcontainers as _;
+    use tokio as _;
+    use tracing as _;
+    use tracing_subscriber as _;
 }
